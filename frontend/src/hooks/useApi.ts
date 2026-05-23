@@ -1,0 +1,180 @@
+// src/hooks/useApi.ts
+// React Query hooks — data fetching, caching, polling
+
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { projects, jobs, speakers, segments, tts, health } from '@/api/client'
+import type { ProjectCreate, SpeakerUpdate, SegmentUpdate } from '@/types'
+
+// ── Health ────────────────────────────────────────────────────
+export function useHealth() {
+  return useQuery({
+    queryKey: ['health'],
+    queryFn: health.check,
+    refetchInterval: 30000,   // check every 30s
+    staleTime: 10000,
+  })
+}
+
+// ── Projects ──────────────────────────────────────────────────
+export function useProjects() {
+  return useQuery({
+    queryKey: ['projects'],
+    queryFn: projects.list,
+    staleTime: 5000,
+  })
+}
+
+export function useProject(id: string | null) {
+  return useQuery({
+    queryKey: ['project', id],
+    queryFn: () => projects.get(id!),
+    enabled: !!id,
+  })
+}
+
+export function useCreateProject() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (data: ProjectCreate) => projects.create(data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['projects'] }),
+  })
+}
+
+export function useDeleteProject() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => projects.delete(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['projects'] }),
+  })
+}
+
+// ── Jobs ──────────────────────────────────────────────────────
+export function useProjectJobs(projectId: string | null) {
+  return useQuery({
+    queryKey: ['jobs', projectId],
+    queryFn: () => jobs.listByProject(projectId!),
+    enabled: !!projectId,
+    staleTime: 3000,
+  })
+}
+
+export function useJob(jobId: string | null) {
+  return useQuery({
+    queryKey: ['job', jobId],
+    queryFn: () => jobs.get(jobId!),
+    enabled: !!jobId,
+    // Poll every 2 seconds while job is running
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      const running = ['pending', 'extracting', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing']
+      return status && running.includes(status) ? 2000 : false
+    },
+  })
+}
+
+export function useUploadVideo() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ projectId, file }: { projectId: string; file: File }) =>
+      jobs.upload(projectId, file),
+    onSuccess: (_, { projectId }) => {
+      qc.invalidateQueries({ queryKey: ['jobs', projectId] })
+    },
+  })
+}
+
+export function useUploadWithSubtitle() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      projectId, video, subtitle,
+    }: { projectId: string; video: File; subtitle: File }) =>
+      jobs.uploadWithSubtitle(projectId, video, subtitle),
+    onSuccess: (_, { projectId }) => {
+      qc.invalidateQueries({ queryKey: ['jobs', projectId] })
+    },
+  })
+}
+
+export function useDeleteJob() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ jobId, projectId: _projectId }: { jobId: string; projectId: string }) =>
+      jobs.delete(jobId),
+    onSuccess: (_, { projectId }) => {
+      qc.invalidateQueries({ queryKey: ['jobs', projectId] })
+    },
+  })
+}
+
+// ── Speakers ──────────────────────────────────────────────────
+export function useSpeakers(projectId: string | null) {
+  return useQuery({
+    queryKey: ['speakers', projectId],
+    queryFn: () => speakers.listByProject(projectId!),
+    enabled: !!projectId,
+  })
+}
+
+export function useUpdateSpeaker() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ speakerId, data }: { speakerId: string; data: SpeakerUpdate }) =>
+      speakers.update(speakerId, data),
+    onSuccess: (updated) => {
+      qc.invalidateQueries({ queryKey: ['speakers', updated.project_id] })
+    },
+  })
+}
+
+// ── Segments ──────────────────────────────────────────────────
+export function useSegments(jobId: string | null) {
+  return useQuery({
+    queryKey: ['segments', jobId],
+    queryFn: () => segments.listByJob(jobId!),
+    enabled: !!jobId,
+    staleTime: 5000,
+  })
+}
+
+export function useUpdateSegment() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ segmentId, data }: { segmentId: string; data: SegmentUpdate }) =>
+      segments.update(segmentId, data),
+    onSuccess: (updated) => {
+      qc.invalidateQueries({ queryKey: ['segments', updated.job_id] })
+    },
+  })
+}
+
+export function useApproveAll() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (jobId: string) => segments.approveAll(jobId),
+    onSuccess: (_, jobId) => {
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    },
+  })
+}
+
+// ── TTS ───────────────────────────────────────────────────────
+export function useSynthesizeJob() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (jobId: string) => tts.synthesizeJob(jobId),
+    onSuccess: (_, jobId) => {
+      qc.invalidateQueries({ queryKey: ['job', jobId] })
+    },
+  })
+}
+
+export function useMixFinalAudio() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (jobId: string) => tts.mixFinalAudio(jobId),
+    onSuccess: (_, jobId) => {
+      qc.invalidateQueries({ queryKey: ['job', jobId] })
+    },
+  })
+}

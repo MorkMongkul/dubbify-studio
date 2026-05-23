@@ -1,0 +1,45 @@
+# ── Web framework ─────────────────────────────────────────────
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.12         # file upload support
+
+# ── Async job queue ───────────────────────────────────────────
+celery==5.4.0
+redis==5.0.8
+
+# ── Database ──────────────────────────────────────────────────
+sqlalchemy==2.0.35
+alembic==1.13.2
+psycopg2-binary==2.9.9           # PostgreSQL driver
+aiosqlite==0.20.0                # SQLite for local dev/testing
+
+# ── Audio processing ──────────────────────────────────────────
+ffmpeg-python==0.2.0
+pydub==0.25.1
+
+# ── ASR ───────────────────────────────────────────────────────
+openai-whisper==20240930
+torch==2.4.1
+torchaudio==2.4.1
+
+# ── Speaker diarization ───────────────────────────────────────
+pyannote.audio==3.3.2
+
+# ── Gender / age detection ────────────────────────────────────
+speechbrain==1.0.1
+
+# ── Translation ───────────────────────────────────────────────
+transformers==4.44.2
+sentencepiece==0.2.0             # required by NLLB-200
+sacremoses==0.1.1
+
+# ── Utilities ─────────────────────────────────────────────────
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-jose[cryptography]==3.3.0  # JWT auth
+passlib[bcrypt]==1.7.4            # password hashing
+httpx==0.27.2                     # async HTTP client (calls VoxCPM2 GPU server)
+aiofiles==24.1.0                  # async file I/O
+soundfile==0.12.1
+numpy==1.26.4
+python-dotenv==1.0.1
