@@ -145,15 +145,24 @@ async def run_subtitle_pipeline(
 
         logger.info(f"Translating {len(source_texts)} subtitle lines...")
 
-        en_texts, km_texts = await asyncio.gather(
-            translate_batch(
+        # Translate sequentially — EN first, then KM
+        # Running both simultaneously doubles the API pressure and causes 429s
+        # Source is already English for this video — skip EN translation
+        if project.source_lang == "en":
+            # Source IS English — use source text as english_text directly
+            en_texts = source_texts
+            logger.info("Source is English — skipping EN translation")
+        else:
+            logger.info(f"Translating {len(source_texts)} lines to English...")
+            en_texts = await translate_batch(
                 source_texts, project.source_lang, "en",
                 segments_context=segments_context,
-            ),
-            translate_batch(
-                source_texts, project.source_lang, project.target_lang,
-                segments_context=segments_context,
-            ),
+            )
+
+        logger.info(f"Translating {len(source_texts)} lines to Khmer...")
+        km_texts = await translate_batch(
+            source_texts, project.source_lang, project.target_lang,
+            segments_context=segments_context,
         )
 
         # ── STAGE 6: Save segments to DB ──────────────────────

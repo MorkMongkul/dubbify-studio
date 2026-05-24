@@ -4,20 +4,19 @@ Centralised settings — all env vars live here.
 Loaded once at startup via pydantic-settings.
 """
 from pydantic_settings import BaseSettings
-from pydantic import field_validator
 from typing import List
 import os
 
 
 class Settings(BaseSettings):
     # ── App ───────────────────────────────────────────────────
-    APP_NAME: str = "KhmerDubber Studio"
+    APP_NAME: str = "Dubbify Studio API"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
     SECRET_KEY: str = "change-me-in-production"
 
     # ── Database ──────────────────────────────────────────────
-    # Falls back to local SQLite when empty (great for dev/testing)
+    # Leave empty to use SQLite (dev). Set postgresql+asyncpg:// for production.
     DATABASE_URL: str = ""
 
     @property
@@ -33,25 +32,29 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./uploads"
     MAX_UPLOAD_SIZE_MB: int = 500
 
-    # ── GPU service URLs ──────────────────────────────────────
-    VOXCPM2_API_URL: str = ""
-    WHISPER_API_URL: str = ""       # empty = run Whisper locally
-    VOXCPM2_API_KEY: str = ""
-
-    # ── HuggingFace ───────────────────────────────────────────
-    HF_TOKEN: str = ""
-
-    # ── pyannoteAI (speaker diarization cloud API) ────────────
+    # ── pyannoteAI — speaker diarization + transcription ──────
+    # Free trial at: dashboard.pyannote.ai
     PYANNOTEAI_TOKEN: str = ""
 
-    # ── Groq (Whisper ASR — free at console.groq.com) ────────
-    GROQ_API_KEY: str = ""
-
-    # ── Google Gemini (translation — aistudio.google.com) ────
+    # ── Google Gemini — translation ───────────────────────────
+    # Free at: aistudio.google.com
     GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-2.5-flash-lite"
 
-    # ── Translation ───────────────────────────────────────────
-    TRANSLATION_BACKEND: str = "nllb"   # "nllb" | "deepl"
+    # ── Translation backend ───────────────────────────────────
+    # "gemini" = Gemini batch translation (recommended)
+    # "deep"   = Google Translate via deep-translator (fallback)
+    TRANSLATION_BACKEND: str = "gemini"
+
+    # ── VoxCPM2 TTS — voice synthesis ────────────────────────
+    # Deploy on Lightning AI or RunPod, paste URL here
+    VOXCPM2_API_URL: str = ""
+    VOXCPM2_API_KEY: str = ""
+
+    # ── Optional services ─────────────────────────────────────
+    HF_TOKEN: str = ""
+    GROQ_API_KEY: str = ""
+    WHISPER_API_URL: str = ""
     DEEPL_API_KEY: str = ""
 
     # ── CORS ──────────────────────────────────────────────────

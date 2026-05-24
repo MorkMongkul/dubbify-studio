@@ -141,18 +141,19 @@ async def run_pipeline(job_id: str, db: AsyncSession) -> None:
             for seg in diarized
         ]
 
-        # Translate EN and KM — Gemini uses full conversation context
-        # deep-translator falls back automatically if GEMINI_API_KEY not set
+        # Translate EN then KM sequentially — never simultaneously
+        # Simultaneous calls double the API pressure and cause 429s
         import asyncio
-        en_texts, km_texts = await asyncio.gather(
-            translate_batch(
-                source_texts, project.source_lang, "en",
-                segments_context=segments_context,
-            ),
-            translate_batch(
-                source_texts, project.source_lang, project.target_lang,
-                segments_context=segments_context,
-            ),
+        logger.info(f"Translating {len(source_texts)} segments to English...")
+        en_texts = await translate_batch(
+            source_texts, project.source_lang, "en",
+            segments_context=segments_context,
+        )
+
+        logger.info(f"Translating {len(source_texts)} segments to Khmer...")
+        km_texts = await translate_batch(
+            source_texts, project.source_lang, project.target_lang,
+            segments_context=segments_context,
         )
 
         # ── STAGE 5: Save all segments to DB ─────────────────
