@@ -10,7 +10,7 @@ export function useHealth() {
   return useQuery({
     queryKey: ['health'],
     queryFn: health.check,
-    refetchInterval: 30000,   // check every 30s
+    refetchInterval: 30000,
     staleTime: 10000,
   })
 }
@@ -63,10 +63,9 @@ export function useJob(jobId: string | null) {
     queryKey: ['job', jobId],
     queryFn: () => jobs.get(jobId!),
     enabled: !!jobId,
-    // Poll every 2 seconds while job is running
     refetchInterval: (query) => {
       const status = query.state.data?.status
-      const running = ['pending', 'extracting', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing']
+      const running = ['pending', 'uploading', 'extracting', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing']
       return status && running.includes(status) ? 2000 : false
     },
   })
@@ -99,11 +98,20 @@ export function useUploadWithSubtitle() {
 export function useDeleteJob() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ jobId, projectId: _projectId }: { jobId: string; projectId: string }) =>
+    mutationFn: ({ jobId }: { jobId: string; projectId: string }) =>
       jobs.delete(jobId),
     onSuccess: (_, { projectId }) => {
       qc.invalidateQueries({ queryKey: ['jobs', projectId] })
     },
+  })
+}
+
+// ── Subtitle Tracks ───────────────────────────────────────────
+export function useSubtitleTracks(jobId: string | null) {
+  return useQuery({
+    queryKey: ['subtitle-tracks', jobId],
+    queryFn: () => jobs.getSubtitleTracks(jobId!),
+    enabled: !!jobId,
   })
 }
 
@@ -113,6 +121,7 @@ export function useSpeakers(projectId: string | null) {
     queryKey: ['speakers', projectId],
     queryFn: () => speakers.listByProject(projectId!),
     enabled: !!projectId,
+    staleTime: 10000,
   })
 }
 
@@ -142,6 +151,16 @@ export function useUpdateSegment() {
   return useMutation({
     mutationFn: ({ segmentId, data }: { segmentId: string; data: SegmentUpdate }) =>
       segments.update(segmentId, data),
+    onSuccess: (updated) => {
+      qc.invalidateQueries({ queryKey: ['segments', updated.job_id] })
+    },
+  })
+}
+
+export function useApproveSegment() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (segmentId: string) => segments.approve(segmentId),
     onSuccess: (updated) => {
       qc.invalidateQueries({ queryKey: ['segments', updated.job_id] })
     },
