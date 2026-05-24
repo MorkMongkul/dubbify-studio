@@ -22,10 +22,13 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-GEMINI_API_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.5-flash:generateContent"
-)
+def _gemini_url() -> str:
+    """Build Gemini API URL using model from settings (configurable via GEMINI_MODEL in .env)."""
+    model = getattr(settings, "GEMINI_MODEL", "gemini-2.5-flash")
+    return (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:generateContent"
+    )
 
 # Language names for the prompt
 LANG_NAMES = {
@@ -68,46 +71,49 @@ def _build_gemini_prompt(
     target_lang: str,
 ) -> str:
     """
-    Build a context-aware prompt for Gemini.
-
-    Sends the full conversation so far + current line.
-    Gemini translates with emotional and tonal awareness.
+    Build a dubbing-quality prompt for Gemini.
+    Instructs Gemini to think like a voice actor, not a translator.
     """
     src_name = LANG_NAMES.get(source_lang, source_lang)
     tgt_name = LANG_NAMES.get(target_lang, target_lang)
 
-    # Build conversation context (previous lines)
+    # Build conversation context (up to 12 previous lines)
     context_lines = []
     for i, seg in enumerate(segments[:current_index]):
-        if seg.get("source_text", "").strip():
+        text = _clean_chinese(seg.get("source_text", "")).strip()
+        if text:
             speaker = seg.get("speaker_label", f"SPEAKER_{i:02d}")
-            text    = _clean_chinese(seg["source_text"])
-            context_lines.append(f"  {speaker}: {text}")
+            context_lines.append(f"  [{speaker}]: {text}")
 
-    context_block = "\n".join(context_lines[-10:]) if context_lines else "  (start of scene)"
+    context_block = (
+        "\n".join(context_lines[-12:]) if context_lines
+        else "  (opening scene)"
+    )
 
-    current_seg    = segments[current_index]
-    current_text   = _clean_chinese(current_seg.get("source_text", ""))
+    current_seg     = segments[current_index]
+    current_text    = _clean_chinese(current_seg.get("source_text", ""))
     current_speaker = current_seg.get("speaker_label", "SPEAKER_00")
 
-    prompt = f"""You are a professional dubbing translator for {src_name} drama/film content.
-Translate the CURRENT LINE from {src_name} to {tgt_name}.
+    prompt = f"""You are a professional voice dubbing scriptwriter specializing in {src_name} drama/film.
+Your job is to write the {tgt_name} SPOKEN LINE for a voice actor to perform — not a subtitle translation.
 
-Rules:
-- Natural spoken language, NOT literal word-for-word translation
-- Match the emotion and tone of the original (angry, tender, formal, casual etc.)
-- Keep it concise — dubbing must fit the original speaking duration
-- Use natural {tgt_name} expressions that a native speaker would say
-- Do NOT add explanations, notes, or punctuation beyond what's natural
-- Return ONLY the translated text, nothing else
+CRITICAL RULES for dubbing scripts:
+- Write how a REAL PERSON SPEAKS, not how a book is written
+- Use SHORT, PUNCHY sentences — voice actors need to breathe
+- Match the EMOTION: angry lines sound angry, tender lines sound tender, funny lines sound funny
+- Use NATURAL EVERYDAY {tgt_name} — the kind people actually say out loud
+- NEVER use formal/literary vocabulary when casual words exist
+- Keep roughly the SAME LENGTH as the original — the actor must sync to the video
+- NO stage directions, NO explanations, NO quotation marks — just the spoken words
+- If the line is very short (one word, exclamation), keep it very short
 
-CONVERSATION CONTEXT (previous lines):
+SCENE CONTEXT (what was said before):
 {context_block}
 
-CURRENT LINE to translate ({current_speaker}):
+LINE TO ADAPT for voice actor [{current_speaker}]:
 {current_text}
 
-{tgt_name} translation:"""
+Write ONLY the {tgt_name} spoken line, nothing else:"""
 
     return prompt
 
@@ -129,18 +135,18 @@ async def _translate_with_gemini(
     if not clean_text:
         return ""
 
-    # Build context-aware prompt if segments provided
     if context_segments and current_index < len(context_segments):
         prompt = _build_gemini_prompt(
             context_segments, current_index, source_lang, target_lang
         )
     else:
-        # Simple prompt without context (for single-line calls)
         src_name = LANG_NAMES.get(source_lang, source_lang)
         tgt_name = LANG_NAMES.get(target_lang, target_lang)
         prompt = (
-            f"Translate this {src_name} text to natural spoken {tgt_name} "
-            f"suitable for voice dubbing. Return only the translation:\n{clean_text}"
+            f"You are a dubbing scriptwriter. Write the natural spoken {tgt_name} "
+            f"version of this {src_name} line for a voice actor. "
+            f"Use casual everyday speech, match the emotion, keep it short. "
+            f"Return ONLY the spoken line:\n{clean_text}"
         )
 
     headers = {
@@ -151,19 +157,18 @@ async def _translate_with_gemini(
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
-            "temperature": 0.3,      # low = consistent, not too creative
-            "maxOutputTokens": 512,
+            "temperature": 0.4,      # slightly creative for natural speech
+            "maxOutputTokens": 256,  # dubbing lines are short
         },
     }
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
-        resp = await client.post(GEMINI_API_URL, json=payload, headers=headers)
+        resp = await client.post(_gemini_url(), json=payload, headers=headers)
 
     if resp.status_code == 429:
-        logger.warning("Gemini rate limit — waiting 5s...")
-        await asyncio.sleep(5)
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(GEMINI_API_URL, json=payload, headers=headers)
+        error_body = resp.text[:500]
+        logger.warning(f"Gemini 429 response: {error_body}")
+        raise RuntimeError(f"Gemini API error 429: {error_body}")
 
     if resp.status_code != 200:
         raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text[:200]}")
@@ -171,9 +176,11 @@ async def _translate_with_gemini(
     data = resp.json()
     try:
         result = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        # Clean up any quotes Gemini might add
+        result = result.strip('"\'')
         return result
     except (KeyError, IndexError) as e:
-        raise RuntimeError(f"Unexpected Gemini response format: {data}")
+        raise RuntimeError(f"Unexpected Gemini response: {data}")
 
 
 def _translate_with_deep(text: str, source_lang: str, target_lang: str) -> str:
@@ -211,6 +218,144 @@ async def translate_text(
     )
 
 
+async def _translate_batch_with_gemini(
+    texts: list[str],
+    source_lang: str,
+    target_lang: str,
+    segments_context: list = None,
+) -> list[str]:
+    """
+    Translate ALL lines in a single Gemini API call.
+
+    Instead of 246 calls (one per line), this makes 1 call with all lines.
+    Gemini's large context window handles 500+ lines easily in one request.
+    This completely avoids RPM limits — you use 1 request instead of N requests.
+
+    Returns list of translated strings in the same order as input.
+    """
+    if not texts:
+        return []
+
+    src_name = LANG_NAMES.get(source_lang, source_lang)
+    tgt_name = LANG_NAMES.get(target_lang, target_lang)
+
+    # Build numbered list of all lines to translate
+    numbered_lines = "\n".join(
+        f"{i+1}. {_clean_chinese(text)}"
+        for i, text in enumerate(texts)
+        if text.strip()
+    )
+
+    # Build scene context (first few lines for tone setting)
+    context_preview = ""
+    if segments_context and len(segments_context) > 0:
+        preview_lines = []
+        for seg in segments_context[:5]:
+            text = _clean_chinese(seg.get("source_text", "")).strip()
+            if text:
+                speaker = seg.get("speaker_label", "SPEAKER")
+                preview_lines.append(f"  [{speaker}]: {text}")
+        if preview_lines:
+            context_preview = f"""
+SCENE CONTEXT (opening lines to understand tone/setting):
+{chr(10).join(preview_lines)}
+"""
+
+    prompt = f"""You are a professional Khmer dubbing scriptwriter with expertise in {src_name} drama/film.
+
+STEP 1 — ANALYZE THE SCENE (do this internally, don't write it out):
+Read all the lines below and determine:
+- Era: Is this ancient/wuxia/xianxia (immortals, cultivation, dynasty) or modern/contemporary?
+- Tone: Formal/royal, family drama, action, comedy, romantic?
+- Relationships: Who is speaking to whom — child to parent, student to master, subjects to royalty?
+
+STEP 2 — CHOOSE THE RIGHT KHMER REGISTER based on what you detected:
+
+For ANCIENT/WUXIA/XIANXIA (immortals, cultivation, martial arts, historical):
+- Use classical Khmer vocabulary that feels like old stories/legends
+- Address words: father → "ឪពុក" or "ប្រុស", master → "លោកគ្រូ", elder → "អ្នកតា"
+- Speech sounds like Khmer folk tales — dignified but not stiff
+
+For MODERN/CONTEMPORARY (cities, phones, offices, schools):
+- Use everyday casual Khmer
+- Address words: dad → "ប៉ា", mom → "មា", grandpa → "តា"
+- Speech sounds like how young Khmers actually talk today
+
+For BOTH registers:
+- SHORT sentences — voice actors need to breathe and sync to video
+- Match the EMOTION of each line (anger, sadness, wonder, warmth)
+- Keep roughly the SAME LENGTH as the original
+- NEVER add words that aren't in the original meaning
+{context_preview}
+STEP 3 — TRANSLATE ALL {len(texts)} LINES from {src_name} to Khmer.
+
+Return ONLY a numbered list:
+1. [Khmer spoken line]
+2. [Khmer spoken line]
+...for all {len(texts)} lines.
+
+No era analysis, no explanations — just the numbered Khmer lines.
+
+LINES TO TRANSLATE:
+{numbered_lines}
+
+Khmer translations:"""
+
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": settings.GEMINI_API_KEY,
+    }
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.4,
+            "maxOutputTokens": 8192,   # enough for 500+ lines
+        },
+    }
+
+    # Single API call for all lines
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0)) as client:
+        resp = await client.post(_gemini_url(), json=payload, headers=headers)
+
+    if resp.status_code == 429:
+        error_body = resp.text[:500]
+        logger.warning(f"Gemini 429 response: {error_body}")
+        raise RuntimeError(f"Gemini API error 429: {error_body}")
+
+    if resp.status_code != 200:
+        raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text[:200]}")
+
+    data = resp.json()
+    try:
+        raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except (KeyError, IndexError):
+        raise RuntimeError(f"Unexpected Gemini response: {data}")
+
+    # Parse numbered response back into list
+    results = [""] * len(texts)
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Match "1. translation" or "1) translation"
+        import re
+        match = re.match(r'^(\d+)[.)]\s*(.+)$', line)
+        if match:
+            idx = int(match.group(1)) - 1
+            translation = match.group(2).strip().strip('"\'')
+            if 0 <= idx < len(results):
+                results[idx] = translation
+
+    # Fill any missed lines with deep-translator fallback
+    for i, (result, original) in enumerate(zip(results, texts)):
+        if not result and original.strip():
+            logger.warning(f"Line {i+1} missing from batch response — using deep-translator")
+            results[i] = _translate_with_deep(original, source_lang, target_lang)
+
+    return results
+
+
 async def translate_batch(
     texts: list[str],
     source_lang: str = "zh",
@@ -218,11 +363,11 @@ async def translate_batch(
     segments_context: list = None,
 ) -> list[str]:
     """
-    Translate a batch of texts.
+    Translate a batch of texts using a single Gemini API call.
 
-    When backend=gemini and segments_context is provided,
-    each line is translated with full conversation context —
-    producing natural, emotional dubbing-quality translations.
+    Uses batch processing — all lines sent in one request.
+    This uses only 1 RPM credit regardless of how many lines.
+    For very large batches (>200 lines), splits into chunks of 150.
     """
     if not texts:
         return []
@@ -230,35 +375,61 @@ async def translate_batch(
     backend = settings.TRANSLATION_BACKEND.lower()
 
     if backend == "gemini" and settings.GEMINI_API_KEY:
-        # Translate sequentially with context (each line sees previous lines)
-        # Semaphore prevents hitting rate limits
-        sem = asyncio.Semaphore(3)
+        # Split large batches into chunks of 150 lines
+        # Each chunk = 1 API call, so 500 lines = 4 calls total
+        CHUNK_SIZE = 150
+        all_results = []
 
-        async def translate_one(i: int, text: str) -> str:
-            if not text.strip():
-                return ""
-            async with sem:
-                try:
-                    return await _translate_with_gemini(
-                        text=text,
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                        context_segments=segments_context,
-                        current_index=i,
-                    )
-                except Exception as e:
-                    logger.warning(f"Gemini failed for segment {i}: {e} — using deep-translator")
-                    loop = asyncio.get_event_loop()
-                    return await loop.run_in_executor(
-                        None, _translate_with_deep, text, source_lang, target_lang
-                    )
+        chunks = [texts[i:i+CHUNK_SIZE] for i in range(0, len(texts), CHUNK_SIZE)]
+        context_chunks = []
+        if segments_context:
+            context_chunks = [
+                segments_context[i:i+CHUNK_SIZE]
+                for i in range(0, len(segments_context), CHUNK_SIZE)
+            ]
 
-        tasks = [translate_one(i, t) for i, t in enumerate(texts)]
-        return await asyncio.gather(*tasks)
+        for chunk_idx, chunk in enumerate(chunks):
+            ctx = context_chunks[chunk_idx] if context_chunks else None
+            logger.info(
+                f"Translating batch {chunk_idx+1}/{len(chunks)} "
+                f"({len(chunk)} lines → {target_lang}) — 1 API call"
+            )
+            try:
+                chunk_results = await _translate_batch_with_gemini(
+                    chunk, source_lang, target_lang, ctx
+                )
+                all_results.extend(chunk_results)
 
-    # Fallback: deep-translator (no context, fast)
-    max_concurrent = 4
-    sem = asyncio.Semaphore(max_concurrent)
+                # Small delay between chunks to be safe
+                if chunk_idx < len(chunks) - 1:
+                    await asyncio.sleep(2.0)
+
+            except Exception as e:
+                if "429" in str(e):
+                    logger.warning(f"429 on chunk {chunk_idx+1} — waiting 60s then retrying...")
+                    await asyncio.sleep(60)
+                    try:
+                        chunk_results = await _translate_batch_with_gemini(
+                            chunk, source_lang, target_lang, ctx
+                        )
+                        all_results.extend(chunk_results)
+                    except Exception as e2:
+                        logger.warning(f"Chunk {chunk_idx+1} failed again — using deep-translator")
+                        for text in chunk:
+                            all_results.append(
+                                _translate_with_deep(text, source_lang, target_lang)
+                            )
+                else:
+                    logger.error(f"Gemini batch failed: {e} — using deep-translator")
+                    for text in chunk:
+                        all_results.append(
+                            _translate_with_deep(text, source_lang, target_lang)
+                        )
+
+        return all_results
+
+    # Fallback: deep-translator
+    sem = asyncio.Semaphore(4)
 
     async def translate_one_deep(text: str) -> str:
         async with sem:
