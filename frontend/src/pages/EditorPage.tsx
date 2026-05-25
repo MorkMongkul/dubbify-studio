@@ -23,8 +23,7 @@ import { Button }          from '@/components/ui/Button'
 import { StatusBadge }     from '@/components/ui/Badge'
 import { AIStatusIndicator } from '@/components/ui/AIStatusIndicator'
 
-import { JOB_STATUS_CONFIG } from '@/types'
-import { isJobRunning } from '@/lib/utils'
+import { getJobStatusConfig, isJobRunning } from '@/lib/utils'
 
 export default function EditorPage() {
   const { projectId, jobId } = useParams<{ projectId: string; jobId: string }>()
@@ -50,7 +49,7 @@ export default function EditorPage() {
   const { mutate: mix,        isPending: mixing }        = useMixFinalAudio()
 
   const isRunning = job ? isJobRunning(job.status) : false
-  const config    = job ? JOB_STATUS_CONFIG[job.status] : null
+  const config    = job ? getJobStatusConfig(job.status) : null
 
   const handleSynthesize = () => {
     if (!jobId) return
@@ -69,17 +68,22 @@ export default function EditorPage() {
   }
 
   const handleExport = () => {
-    if (!job?.dubbed_video_url) {
+    if (!job?.output_url) {
       toast.error('No dubbed video available yet. Run Mix first.')
       return
     }
-    window.open(job.dubbed_video_url, '_blank')
+    window.open(job.output_url, '_blank')
   }
 
-  const jobReady   = job?.status === 'ready' || job?.status === 'done'
-  const canMix     = job?.status === 'ready' || job?.status === 'done'
-  const canExport  = job?.status === 'done'
-  const videoUrl   = job?.video_url ?? undefined
+  // Synthesize: only possible when there are approved segments
+  const hasApprovedSegs = segs.some((s) => s.is_approved)
+  // Mix: only possible when at least one segment has been synthesised
+  const hasTtsAudio     = segs.some((s) => s.tts_audio_path !== '')
+
+  const jobReady  = job?.status === 'completed' && segs.length > 0
+  const canMix    = hasTtsAudio
+  const canExport = !!job?.output_url
+  const videoUrl  = job?.video_url ?? undefined
 
   return (
     <div className="h-screen w-screen flex flex-col bg-surface-0 overflow-hidden">
@@ -130,9 +134,9 @@ export default function EditorPage() {
             <div
               className="status-pip"
               style={{
-                background: isRunning ? 'rgba(124,58,237,0.10)' : job.status === 'done' ? 'rgba(16,185,129,0.08)' : 'rgba(255,255,255,0.05)',
-                borderColor: isRunning ? 'rgba(124,58,237,0.25)' : job.status === 'done' ? 'rgba(16,185,129,0.22)' : 'var(--color-border)',
-                color: isRunning ? '#A78BFA' : job.status === 'done' ? '#34D399' : 'var(--color-text-muted)',
+                background: isRunning ? 'rgba(124,58,237,0.10)' : job.status === 'completed' ? 'rgba(16,185,129,0.08)' : 'rgba(255,255,255,0.05)',
+                borderColor: isRunning ? 'rgba(124,58,237,0.25)' : job.status === 'completed' ? 'rgba(16,185,129,0.22)' : 'var(--color-border)',
+                color: isRunning ? '#A78BFA' : job.status === 'completed' ? '#34D399' : 'var(--color-text-muted)',
               }}
             >
               {isRunning && <span className="inline-block h-1.5 w-1.5 rounded-full bg-brand-400 animate-pulse" />}
@@ -159,8 +163,9 @@ export default function EditorPage() {
             size="sm"
             onClick={handleSynthesize}
             loading={synthesizing}
-            disabled={!jobReady || synthesizing}
+            disabled={!jobReady || !hasApprovedSegs || synthesizing}
             icon={<Mic2 size={12} />}
+            title={!hasApprovedSegs ? 'Approve segments first' : undefined}
           >
             Synthesize
           </Button>
@@ -174,6 +179,7 @@ export default function EditorPage() {
             loading={mixing}
             disabled={!canMix || mixing}
             icon={<Music size={12} />}
+            title={!canMix ? 'Run Synthesize first' : undefined}
           >
             Mix
           </Button>
@@ -226,12 +232,12 @@ export default function EditorPage() {
                 <Loader2 size={20} className="animate-spin" />
                 <span className="text-sm">Loading editor…</span>
               </div>
-            ) : job?.status === 'error' ? (
+            ) : job?.status === 'failed' ? (
               <div className="flex flex-col items-center gap-3 text-center">
                 <div className="h-14 w-14 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center">
                   <AlertCircle size={22} className="text-red-400" />
                 </div>
-                <p className="text-sm text-text-muted">Job failed: {job.error_message || 'Unknown error'}</p>
+                <p className="text-sm text-text-muted">Job failed: {job?.error_msg || 'Unknown error'}</p>
                 <Button variant="outline" size="sm" onClick={() => navigate(`/projects/${projectId}`)} icon={<ChevronLeft size={13} />}>
                   Back to Project
                 </Button>

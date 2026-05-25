@@ -38,8 +38,9 @@ export function ProjectCard({ project, index = 0 }: ProjectCardProps) {
   const handleOpen = () => navigate(`/projects/${project.id}`)
 
   return (
+    <>
     <motion.div
-      className="group relative rounded-lg border overflow-hidden cursor-pointer"
+      className="group relative rounded-lg border cursor-pointer"
       style={{
         background: 'var(--color-surface-2)',
         borderColor: 'var(--color-border)',
@@ -76,7 +77,7 @@ export function ProjectCard({ project, index = 0 }: ProjectCardProps) {
 
         {/* Menu button */}
         <div
-          className="absolute top-2 right-2 z-10"
+          className="absolute top-2 right-2 z-50"
           onClick={(e) => e.stopPropagation()}
         >
           <button
@@ -88,7 +89,7 @@ export function ProjectCard({ project, index = 0 }: ProjectCardProps) {
           <AnimatePresence>
             {menuOpen && (
               <motion.div
-                className="absolute right-0 top-full mt-1 w-36 rounded-lg border overflow-hidden z-20"
+                className="absolute right-0 top-full mt-1 w-28 rounded-md border overflow-hidden z-50"
                 style={{
                   background: 'var(--color-surface-4)',
                   borderColor: 'var(--color-border-strong)',
@@ -99,18 +100,18 @@ export function ProjectCard({ project, index = 0 }: ProjectCardProps) {
                 transition={{ duration: 0.08 }}
               >
                 <button
-                  className="flex items-center gap-2 w-full px-3 py-2 text-xs text-white/60 hover:text-white hover:bg-white/5 transition-colors"
+                  className="flex items-center gap-1.5 w-full px-2.5 py-1.5 text-[11px] text-white/60 hover:text-white hover:bg-white/5 transition-colors"
                   onClick={handleOpen}
                 >
-                  <FolderOpen size={12} /> Open
+                  <FolderOpen size={11} /> Open
                 </button>
                 <div className="h-px mx-2" style={{ background: 'var(--color-border)' }} />
                 <button
-                  className="flex items-center gap-2 w-full px-3 py-2 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
+                  className="flex items-center gap-1.5 w-full px-2.5 py-1.5 text-[11px] text-red-400 hover:bg-red-500/10 transition-colors"
                   onClick={handleDelete}
                   disabled={deleting}
                 >
-                  <Trash2 size={12} />
+                  <Trash2 size={11} />
                   {deleting ? 'Deleting…' : 'Delete'}
                 </button>
               </motion.div>
@@ -137,8 +138,9 @@ export function ProjectCard({ project, index = 0 }: ProjectCardProps) {
       </div>
 
       {menuOpen && (
-        <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
+        <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
       )}
     </motion.div>
+    </>
   )
 }

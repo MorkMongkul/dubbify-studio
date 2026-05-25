@@ -13,15 +13,14 @@ import { PageTransition } from '@/components/layout/PageTransition'
 import { Button } from '@/components/ui/Button'
 import { StatusBadge } from '@/components/ui/Badge'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { getLanguageName, isJobRunning } from '@/lib/utils'
-import { JOB_STATUS_CONFIG } from '@/types'
+import { getLanguageName, getJobStatusConfig, isJobRunning } from '@/lib/utils'
 import type { Job } from '@/types'
 
 function JobCard({ job, projectId }: { job: Job; projectId: string }) {
   const navigate = useNavigate()
-  const config  = JOB_STATUS_CONFIG[job.status]
+  const config  = getJobStatusConfig(job.status)
   const running = isJobRunning(job.status)
-  const ready   = ['ready','done','synthesizing','mixing'].includes(job.status)
+  const ready   = ['completed', 'synthesizing', 'mixing'].includes(job.status)
   const createdAt = new Date(job.created_at).toLocaleString('en-US', {
     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
   })
@@ -69,7 +68,7 @@ function JobCard({ job, projectId }: { job: Job; projectId: string }) {
             <Loader2 size={11} className="animate-spin text-brand-400" />
             <span>{config.description}</span>
           </div>
-        ) : job.status === 'error' ? (
+        ) : job.status === 'failed' ? (
           <div className="flex items-center gap-1.5 text-[11px] text-red-400">
             <AlertCircle size={11} />
             <span>Pipeline failed</span>
@@ -103,7 +102,8 @@ export default function ProjectPage() {
 
   const srcLang = project ? getLanguageName(project.source_language) : ''
   const tgtLang = project ? getLanguageName(project.target_language) : ''
-  const hasActiveJob = jobList?.some((j) => isJobRunning(j.status))
+  // One project = one video: hide upload once any job exists
+  const hasAnyJob = (jobList?.length ?? 0) > 0
 
   return (
     <PageTransition>
@@ -159,8 +159,8 @@ export default function ProjectPage() {
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-3xl mx-auto px-6 py-5 space-y-5">
 
-            {/* Upload section */}
-            {!hasActiveJob && (
+            {/* Upload section — only shown when no job exists yet */}
+            {!hasAnyJob && !loadingJobs && (
               <motion.div
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}

@@ -3,7 +3,9 @@
 
 import { clsx, type ClassValue } from 'clsx'
 import { twMerge } from 'tailwind-merge'
-import { SPEAKER_COLORS } from '@/types'
+import { SPEAKER_COLORS, getJobStatusConfig } from '@/types'
+
+export { getJobStatusConfig }
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -77,13 +79,13 @@ export function debounce<T extends (...args: Parameters<T>) => void>(
 
 /** Map job status to pipeline step index */
 export function getJobStepIndex(status: string): number {
-  const steps = ['uploading', 'extracting', 'diarizing', 'transcribing', 'translating', 'ready', 'synthesizing', 'mixing', 'done']
+  const steps = ['pending', 'extracting', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing', 'completed', 'failed']
   return steps.indexOf(status)
 }
 
 /** Check if job is still processing */
 export function isJobRunning(status: string): boolean {
-  const running = ['pending', 'uploading', 'extracting', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing']
+  const running = ['pending', 'extracting', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing']
   return running.includes(status)
 }
 

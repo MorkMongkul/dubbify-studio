@@ -7,16 +7,14 @@ export type ProjectStatus = 'active' | 'archived' | 'draft'
 
 export type JobStatus =
   | 'pending'
-  | 'uploading'
   | 'extracting'
   | 'diarizing'
   | 'transcribing'
   | 'translating'
-  | 'ready'
   | 'synthesizing'
   | 'mixing'
-  | 'done'
-  | 'error'
+  | 'completed'
+  | 'failed'
 
 export type SegmentStatus = 'pending' | 'approved' | 'editing'
 
@@ -43,13 +41,17 @@ export interface Job {
   id: string
   project_id: string
   status: JobStatus
-  video_filename?: string
-  video_url?: string
-  dubbed_video_url?: string
-  error_message?: string
-  progress?: number
+  progress: number
+  error_msg: string
+  video_path: string
+  audio_path: string
+  output_path: string
+  duration_secs: number
+  // Computed by backend — HTTP URLs served via /uploads static mount
+  video_url?: string | null
+  output_url?: string | null
   created_at: string
-  updated_at: string
+  completed_at?: string | null
 }
 
 export interface SubtitleTrack {
@@ -80,21 +82,24 @@ export interface SpeakerUpdate {
 export interface Segment {
   id: string
   job_id: string
-  speaker_id?: string
-  speaker_label?: string
-  start_time: number   // seconds
-  end_time: number     // seconds
-  original_text: string
-  translated_text?: string
-  status: SegmentStatus
-  audio_url?: string
-  created_at: string
-  updated_at: string
+  speaker_id?: string | null
+  start_time: number      // seconds
+  end_time: number        // seconds
+  source_text: string     // original language (e.g. Chinese)
+  english_text: string    // intermediate English
+  khmer_text: string      // final translated text (target language)
+  tts_audio_path: string  // path to synthesised .wav (empty if not yet done)
+  tts_duration_secs: number
+  is_approved: boolean
+  notes: string
 }
 
 export interface SegmentUpdate {
-  translated_text?: string
-  status?: SegmentStatus
+  source_text?: string
+  english_text?: string
+  khmer_text?: string
+  is_approved?: boolean
+  notes?: string
 }
 
 // ── API Responses ─────────────────────────────────────────────────
@@ -143,26 +148,33 @@ export const JOB_STATUS_CONFIG: Record<JobStatus, {
   color: StatusColor
   description: string
 }> = {
-  pending:     { label: 'Pending',      color: 'gray',   description: 'Waiting to start' },
-  uploading:   { label: 'Uploading',    color: 'blue',   description: 'Uploading video file' },
-  extracting:  { label: 'Extracting',   color: 'violet', description: 'Extracting audio and subtitles' },
-  diarizing:   { label: 'Diarizing',    color: 'violet', description: 'Detecting speakers' },
-  transcribing:{ label: 'Transcribing', color: 'violet', description: 'AI speech recognition' },
-  translating: { label: 'Translating',  color: 'blue',   description: 'Translating dialogue' },
-  ready:       { label: 'Ready',        color: 'green',  description: 'Ready for editing' },
-  synthesizing:{ label: 'Synthesizing', color: 'violet', description: 'Generating AI voices' },
-  mixing:      { label: 'Mixing',       color: 'blue',   description: 'Mixing dubbed audio' },
-  done:        { label: 'Done',         color: 'green',  description: 'Export ready' },
-  error:       { label: 'Error',        color: 'red',    description: 'An error occurred' },
+  pending:      { label: 'Pending',      color: 'gray',   description: 'Waiting to start' },
+  extracting:   { label: 'Extracting',   color: 'violet', description: 'Extracting audio and subtitles' },
+  diarizing:    { label: 'Diarizing',    color: 'violet', description: 'Detecting speakers' },
+  transcribing: { label: 'Transcribing', color: 'violet', description: 'AI speech recognition' },
+  translating:  { label: 'Translating',  color: 'blue',   description: 'Translating dialogue' },
+  synthesizing: { label: 'Synthesizing', color: 'violet', description: 'Generating AI voices' },
+  mixing:       { label: 'Mixing',       color: 'blue',   description: 'Mixing dubbed audio' },
+  completed:    { label: 'Completed',    color: 'green',  description: 'Export ready' },
+  failed:       { label: 'Failed',       color: 'red',    description: 'An error occurred' },
+}
+
+/** Safe lookup — returns a fallback config if an unknown status arrives from the API */
+export function getJobStatusConfig(status: string) {
+  return JOB_STATUS_CONFIG[status as JobStatus] ?? {
+    label: status,
+    color: 'gray' as StatusColor,
+    description: 'Unknown status',
+  }
 }
 
 export const PIPELINE_STEPS: { key: JobStatus; label: string; icon: string }[] = [
-  { key: 'uploading',    label: 'Upload',      icon: 'upload' },
-  { key: 'extracting',   label: 'Extract',     icon: 'layers' },
-  { key: 'diarizing',    label: 'Speakers',    icon: 'users' },
-  { key: 'transcribing', label: 'Transcribe',  icon: 'mic' },
-  { key: 'translating',  label: 'Translate',   icon: 'globe' },
-  { key: 'ready',        label: 'Ready',       icon: 'check-circle' },
+  { key: 'extracting',   label: 'Extract',    icon: 'audio-waveform' },
+  { key: 'diarizing',    label: 'Speakers',   icon: 'users' },
+  { key: 'transcribing', label: 'Transcribe', icon: 'file-text' },
+  { key: 'translating',  label: 'Translate',  icon: 'globe' },
+  { key: 'synthesizing', label: 'Synthesize', icon: 'mic' },
+  { key: 'mixing',       label: 'Mix',        icon: 'music' },
 ]
 
 export const SPEAKER_COLORS = [
