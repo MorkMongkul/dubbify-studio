@@ -10,7 +10,7 @@ interface SubtitleOverlayProps {
 }
 
 export function SubtitleOverlay({ segment, speakerName, speakerColor }: SubtitleOverlayProps) {
-  const text = segment.translated_text || segment.original_text
+  const text = segment.khmer_text || segment.source_text
 
   return (
     <AnimatePresence>

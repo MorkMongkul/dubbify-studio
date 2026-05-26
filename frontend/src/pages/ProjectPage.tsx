@@ -2,7 +2,7 @@
 import { useNavigate, useParams, Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
-  ArrowLeft, Clapperboard, ChevronRight, Clock,
+  ArrowLeft, ChevronRight, Clock,
   Loader2, AlertCircle, CheckCircle2, PenLine,
   UploadCloud, Activity, VideoIcon
 } from 'lucide-react'
@@ -41,7 +41,7 @@ function JobCard({ job, projectId }: { job: Job; projectId: string }) {
         <div className="flex items-center gap-2 min-w-0">
           <VideoIcon size={12} className="text-white/35 shrink-0" />
           <span className="text-[12px] font-medium text-white truncate">
-            {job.video_filename ?? 'Video Upload'}
+            {job.video_path ? job.video_path.split('/').pop() : 'Video Upload'}
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -100,8 +100,8 @@ export default function ProjectPage() {
   const { data: project, isLoading: loadingProject } = useProject(projectId ?? null)
   const { data: jobList, isLoading: loadingJobs, refetch: refetchJobs } = useProjectJobs(projectId ?? null)
 
-  const srcLang = project ? getLanguageName(project.source_language) : ''
-  const tgtLang = project ? getLanguageName(project.target_language) : ''
+  const srcLang = project ? getLanguageName(project.source_lang) : ''
+  const tgtLang = project ? getLanguageName(project.target_lang) : ''
   // One project = one video: hide upload once any job exists
   const hasAnyJob = (jobList?.length ?? 0) > 0
 

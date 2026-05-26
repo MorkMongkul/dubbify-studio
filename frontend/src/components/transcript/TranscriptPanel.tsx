@@ -38,7 +38,7 @@ export function TranscriptPanel({
     }
   }, [activeSegmentId])
 
-  const approvedCount = segments.filter((s) => s.status === 'approved').length
+  const approvedCount = segments.filter((s) => s.is_approved).length
   const totalCount    = segments.length
 
   const handleApproveAll = () => {

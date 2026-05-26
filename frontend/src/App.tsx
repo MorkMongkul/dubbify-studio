@@ -5,7 +5,7 @@ import { AnimatePresence } from 'framer-motion'
 import { AppShell } from '@/components/layout/AppShell'
 import ProjectsPage from '@/pages/ProjectsPage'
 import ProjectPage  from '@/pages/ProjectPage'
-import EditorPage   from '@/pages/EditorPage'
+import WorkspacePage from '@/pages/WorkspacePage'
 import SettingsPage from '@/pages/SettingsPage'
 import { initTheme } from '@/store/themeStore'
 
@@ -27,12 +27,12 @@ function AnimatedRoutes() {
   return (
     <AnimatePresence mode="wait" initial={false}>
       <Routes location={location} key={location.pathname}>
-        <Route path="/"                                  element={<Navigate to="/projects" replace />} />
+        <Route path="/"                                  element={<WorkspacePage />} />
         <Route path="/projects"                          element={<ProjectsPage />} />
         <Route path="/projects/:projectId"               element={<ProjectPage />} />
-        <Route path="/projects/:projectId/jobs/:jobId"   element={<EditorPage />} />
+        <Route path="/projects/:projectId/jobs/:jobId"   element={<WorkspacePage />} />
         <Route path="/settings"                          element={<SettingsPage />} />
-        <Route path="*"                                  element={<Navigate to="/projects" replace />} />
+        <Route path="*"                                  element={<Navigate to="/" replace />} />
       </Routes>
     </AnimatePresence>
   )

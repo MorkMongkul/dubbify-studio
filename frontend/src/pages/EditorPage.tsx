@@ -20,8 +20,6 @@ import { TimelineEditor } from '@/components/timeline/TimelineEditor'
 import { TranscriptPanel }from '@/components/transcript/TranscriptPanel'
 import { SpeakerPanel }   from '@/components/speakers/SpeakerPanel'
 import { Button }          from '@/components/ui/Button'
-import { StatusBadge }     from '@/components/ui/Badge'
-import { AIStatusIndicator } from '@/components/ui/AIStatusIndicator'
 
 import { getJobStatusConfig, isJobRunning } from '@/lib/utils'
 

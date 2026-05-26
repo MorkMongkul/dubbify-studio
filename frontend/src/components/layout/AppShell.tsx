@@ -10,7 +10,7 @@ interface AppShellProps {
 }
 
 // Editor has its own full-screen layout — no sidebar
-const EDITOR_PATTERN = /\/projects\/[^/]+\/jobs\//
+const EDITOR_PATTERN = /^\/($|projects\/[^/]+\/jobs\/)/
 
 export function AppShell({ children }: AppShellProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)

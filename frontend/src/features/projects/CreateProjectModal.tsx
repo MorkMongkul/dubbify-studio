@@ -19,16 +19,16 @@ export function CreateProjectModal({ open, onClose }: CreateProjectModalProps) {
 
   const [form, setForm] = useState({
     name: '',
-    source_language: 'zh',
-    target_language: 'kh',
+    source_lang: 'zh',
+    target_lang: 'kh',
   })
   const [errors, setErrors] = useState<Record<string, string>>({})
 
   const validate = () => {
     const e: Record<string, string> = {}
     if (!form.name.trim()) e.name = 'Project name is required'
-    if (form.source_language === form.target_language) {
-      e.target_language = 'Source and target languages must differ'
+    if (form.source_lang === form.target_lang) {
+      e.target_lang = 'Source and target languages must differ'
     }
     setErrors(e)
     return Object.keys(e).length === 0
@@ -42,7 +42,7 @@ export function CreateProjectModal({ open, onClose }: CreateProjectModalProps) {
       onSuccess: (project) => {
         toast.success(`Project "${project.name}" created`)
         onClose()
-        setForm({ name: '', source_language: 'en', target_language: 'th' })
+        setForm({ name: '', source_lang: 'zh', target_lang: 'kh' })
         navigate(`/projects/${project.id}`)
       },
       onError: () => toast.error('Failed to create project'),
@@ -73,16 +73,16 @@ export function CreateProjectModal({ open, onClose }: CreateProjectModalProps) {
             label="Source Language"
             required
             options={LANGUAGE_OPTIONS}
-            value={form.source_language}
-            onChange={(e) => setForm((f) => ({ ...f, source_language: e.target.value }))}
+            value={form.source_lang}
+            onChange={(e) => setForm((f) => ({ ...f, source_lang: e.target.value }))}
           />
           <SelectField
             label="Target Language"
             required
             options={LANGUAGE_OPTIONS}
-            value={form.target_language}
-            error={errors.target_language}
-            onChange={(e) => setForm((f) => ({ ...f, target_language: e.target.value }))}
+            value={form.target_lang}
+            error={errors.target_lang}
+            onChange={(e) => setForm((f) => ({ ...f, target_lang: e.target.value }))}
           />
         </div>
 

@@ -19,7 +19,7 @@ interface SegmentCardProps {
 export function SegmentCard({ segment, speaker, speakerIndex, isActive, onSeek }: SegmentCardProps) {
   const { editingSegmentId, setEditingSegment, setActiveSegment } = useEditorStore()
   const isEditing = editingSegmentId === segment.id
-  const [draft, setDraft] = useState(segment.translated_text ?? '')
+  const [draft, setDraft] = useState(segment.khmer_text ?? '')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const { mutate: updateSegment, isPending: saving } = useUpdateSegment()
@@ -27,7 +27,7 @@ export function SegmentCard({ segment, speaker, speakerIndex, isActive, onSeek }
 
   const speakerColor = speaker?.color ?? getSpeakerColor(speakerIndex)
   const speakerName  = speaker?.name ?? speaker?.label ?? `Speaker ${speakerIndex + 1}`
-  const isApproved   = segment.status === 'approved'
+  const isApproved   = segment.is_approved
 
   // Auto-focus textarea when editing starts
   useEffect(() => {
@@ -47,18 +47,18 @@ export function SegmentCard({ segment, speaker, speakerIndex, isActive, onSeek }
 
   const handleEdit = (e: React.MouseEvent) => {
     e.stopPropagation()
-    setDraft(segment.translated_text ?? '')
+    setDraft(segment.khmer_text ?? '')
     setEditingSegment(segment.id)
   }
 
   const handleCancel = () => {
-    setDraft(segment.translated_text ?? '')
+    setDraft(segment.khmer_text ?? '')
     setEditingSegment(null)
   }
 
   const handleSave = () => {
     updateSegment(
-      { segmentId: segment.id, data: { translated_text: draft } },
+      { segmentId: segment.id, data: { khmer_text: draft } },
       {
         onSuccess: () => { setEditingSegment(null); toast.success('Segment saved') },
         onError:   () => toast.error('Failed to save segment'),
@@ -135,7 +135,7 @@ export function SegmentCard({ segment, speaker, speakerIndex, isActive, onSeek }
         {/* Original text */}
         <div className="mb-2.5">
           <p className="text-[10px] font-medium text-text-disabled uppercase tracking-wider mb-1">Original</p>
-          <p className="text-xs text-text-secondary leading-relaxed">{segment.original_text}</p>
+          <p className="text-xs text-text-secondary leading-relaxed">{segment.source_text}</p>
         </div>
 
         {/* Translated text / editor */}
@@ -194,10 +194,10 @@ export function SegmentCard({ segment, speaker, speakerIndex, isActive, onSeek }
                 key="text"
                 className={cn(
                   'text-xs leading-relaxed',
-                  segment.translated_text ? 'text-text-primary' : 'text-text-disabled italic'
+                  segment.khmer_text ? 'text-text-primary' : 'text-text-disabled italic'
                 )}
               >
-                {segment.translated_text || 'No translation yet'}
+                {segment.khmer_text || 'No translation yet'}
               </motion.p>
             )}
           </AnimatePresence>

@@ -23,8 +23,8 @@ export type SegmentStatus = 'pending' | 'approved' | 'editing'
 export interface Project {
   id: string
   name: string
-  source_language: string
-  target_language: string
+  source_lang: string
+  target_lang: string
   status: ProjectStatus
   created_at: string
   updated_at: string
@@ -33,8 +33,8 @@ export interface Project {
 
 export interface ProjectCreate {
   name: string
-  source_language: string
-  target_language: string
+  source_lang: string
+  target_lang: string
 }
 
 export interface Job {

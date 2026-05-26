@@ -201,7 +201,7 @@ export function TimelineEditor({ segments, speakers, duration, className }: Time
                     const left  = timeToPixels(seg.start_time, zoom, PX_PER_SEC)
                     const width = Math.max(4, timeToPixels(seg.end_time - seg.start_time, zoom, PX_PER_SEC))
                     const isActive = seg.id === activeSegmentId
-                    const isApproved = seg.status === 'approved'
+                    const isApproved = seg.is_approved
 
                     return (
                       <motion.div
@@ -225,14 +225,14 @@ export function TimelineEditor({ segments, speakers, duration, className }: Time
                           setCurrentTime(seg.start_time)
                           setActiveSegment(seg.id)
                         }}
-                        title={seg.original_text}
+                        title={seg.source_text}
                       >
                         {width > 50 && (
                           <span
                             className="absolute inset-0 px-1.5 flex items-center text-[10px] font-medium overflow-hidden whitespace-nowrap"
                             style={{ color: 'rgba(255,255,255,0.85)' }}
                           >
-                            {seg.original_text}
+                            {seg.source_text}
                           </span>
                         )}
                         {isApproved && (

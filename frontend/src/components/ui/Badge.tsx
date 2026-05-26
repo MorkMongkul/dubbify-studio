@@ -51,19 +51,16 @@ export function Badge({ children, variant = 'default', dot, pulse, className }: 
   )
 }
 
-// Convenience: Job status badge
 const statusVariantMap: Record<JobStatus, BadgeVariant> = {
-  pending:     'gray',
-  uploading:   'blue',
-  extracting:  'violet',
-  diarizing:   'violet',
-  transcribing:'violet',
-  translating: 'blue',
-  ready:       'green',
-  synthesizing:'violet',
-  mixing:      'blue',
-  done:        'green',
-  error:       'red',
+  pending:      'gray',
+  extracting:   'violet',
+  diarizing:    'violet',
+  transcribing: 'violet',
+  translating:  'blue',
+  synthesizing: 'violet',
+  mixing:       'blue',
+  completed:    'green',
+  failed:       'red',
 }
 
 interface StatusBadgeProps {

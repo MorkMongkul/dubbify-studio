@@ -1,7 +1,7 @@
 // src/pages/ProjectsPage.tsx
 import { useState, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Plus, Search, Clapperboard, SlidersHorizontal, RefreshCw, AlertCircle, LayoutGrid, List } from 'lucide-react'
+import { Plus, Search, Clapperboard, RefreshCw, AlertCircle, LayoutGrid } from 'lucide-react'
 import { useProjects } from '@/hooks/useApi'
 import { ProjectCard } from '@/features/projects/ProjectCard'
 import { CreateProjectModal } from '@/features/projects/CreateProjectModal'
@@ -21,8 +21,8 @@ export default function ProjectsPage() {
     return allProjects.filter(
       (p) =>
         p.name.toLowerCase().includes(q) ||
-        (p.source_language ?? '').toLowerCase().includes(q) ||
-        (p.target_language ?? '').toLowerCase().includes(q)
+        (p.source_lang ?? '').toLowerCase().includes(q) ||
+        (p.target_lang ?? '').toLowerCase().includes(q)
     )
   }, [allProjects, search])
 

@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  Clapperboard, MoreHorizontal, Trash2, FolderOpen,
+  MoreHorizontal, Trash2, FolderOpen,
   ArrowRight, Clock, VideoIcon, ChevronRight
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -21,8 +21,8 @@ export function ProjectCard({ project, index = 0 }: ProjectCardProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const { mutate: deleteProject, isPending: deleting } = useDeleteProject()
 
-  const srcLang = getLanguageName(project.source_language)
-  const tgtLang = getLanguageName(project.target_language)
+  const srcLang = getLanguageName(project.source_lang)
+  const tgtLang = getLanguageName(project.target_lang)
   const createdAt = new Date(project.created_at).toLocaleDateString('en-US', {
     month: 'short', day: 'numeric', year: 'numeric'
   })
