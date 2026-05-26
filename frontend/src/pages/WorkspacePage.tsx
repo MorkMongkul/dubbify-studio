@@ -6,11 +6,10 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useDropzone } from 'react-dropzone'
 import {
-  ChevronLeft, ChevronRight, Mic2, Download, 
+  ChevronLeft, ChevronRight, Mic2, Download,
   Loader2, AlertCircle, Zap,
-  PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen,
   Music, UploadCloud, Film, FileText, X,
-  Activity, Users, VideoIcon, Clock
+  Activity, VideoIcon, Clock
 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -23,27 +22,13 @@ import { useEditorStore } from '@/store/editorStore'
 import { VideoPlayer } from '@/components/video/VideoPlayer'
 import { TimelineEditor } from '@/components/timeline/TimelineEditor'
 import { TranscriptPanel } from '@/components/transcript/TranscriptPanel'
-import { SpeakerPanel } from '@/components/speakers/SpeakerPanel'
 import { Button } from '@/components/ui/Button'
 import { PipelineStepper } from '@/features/upload/PipelineStepper'
 import { LANGUAGE_OPTIONS } from '@/types'
+import type { Job } from '@/types'
 import { getLanguageName, getJobStatusConfig, isJobRunning, cn } from '@/lib/utils'
 
-// Placeholders for sidebar views when editor is empty
-function SpeakerPanelPlaceholder() {
-  return (
-    <div className="h-full flex flex-col items-center justify-center p-5 text-center bg-neutral-bg2 select-none">
-      <div className="h-10 w-10 rounded-xl bg-neutral-bg3 border border-border flex items-center justify-center text-white/30 mb-3">
-        <Users size={16} />
-      </div>
-      <p className="text-xs font-semibold text-white/80 mb-1">No Speakers Detected</p>
-      <p className="text-[10px] text-text-muted max-w-[160px] leading-normal">
-        Upload a video file to automatically detect and clone speaker voices.
-      </p>
-    </div>
-  )
-}
-
+// Placeholder when transcript is empty
 function TranscriptPanelPlaceholder() {
   return (
     <div className="h-full flex flex-col items-center justify-center p-6 text-center bg-neutral-bg2 select-none border-l border-border">
@@ -64,8 +49,8 @@ export default function WorkspacePage() {
 
   // --- Store States ---
   const {
-    duration, leftPanelCollapsed, rightPanelCollapsed,
-    toggleLeftPanel, toggleRightPanel, resetEditor,
+    duration, rightPanelCollapsed,
+    toggleRightPanel, resetEditor,
   } = useEditorStore()
 
   // Reset editor state on jobId change
@@ -73,12 +58,19 @@ export default function WorkspacePage() {
     if (jobId) {
       resetEditor()
     }
-  }, [jobId])
+  }, [jobId, resetEditor])
 
   // --- API Query States (Active Session) ---
   const { data: job, isLoading: loadingJob } = useJob(jobId ?? null)
   const { data: segs = [], isLoading: loadingSegs } = useSegments(jobId ?? null)
   const { data: spks = [] } = useSpeakers(projectId ?? null)
+
+  // Merge optimistic local segment position overrides from Zustand
+  const { segmentPositions } = useEditorStore()
+  const displaySegs = segs.map(s => {
+    const pos = segmentPositions[s.id]
+    return pos ? { ...s, ...pos } : s
+  })
 
   const { mutate: synthesize, isPending: synthesizing } = useSynthesizeJob()
   const { mutate: mix, isPending: mixing } = useMixFinalAudio()
@@ -100,7 +92,7 @@ export default function WorkspacePage() {
   const { mutateAsync: createProject, isPending: creatingProject } = useCreateProject()
   const { mutateAsync: uploadVideo, isPending: uploadingVideo } = useUploadVideo()
   const { mutateAsync: uploadWithSub, isPending: uploadingWithSub } = useUploadWithSubtitle()
-  
+
   const isUploading = uploadingVideo || uploadingWithSub
   const isSetupLoading = creatingProject || isUploading
 
@@ -226,15 +218,15 @@ export default function WorkspacePage() {
       clearInterval(interval)
       setUploadProgress(100)
       toast.success('Upload complete! Starting AI pipeline.')
-      
+
       setVideoFile(null)
       setSubtitleFile(null)
       setSessionName('')
 
       navigate(`/projects/${project.id}/jobs/${res.job_id}`)
-    } catch (err: any) {
+    } catch (err) {
       setUploadProgress(0)
-      const detail = err?.message || 'Failed to start pipeline'
+      const detail = (err as Error)?.message || 'Failed to start pipeline'
       setUploadError(detail)
       toast.error(detail, { duration: 6000 })
     }
@@ -281,8 +273,8 @@ export default function WorkspacePage() {
                 isSubDragActive
                   ? 'border-brand bg-brand/5'
                   : subtitleFile
-                  ? 'border-brand-light/35 bg-brand/5'
-                  : 'border-border hover:border-border-strong hover:bg-white/3 bg-neutral-bg3',
+                    ? 'border-brand-light/35 bg-brand/5'
+                    : 'border-border hover:border-border-strong hover:bg-white/3 bg-neutral-bg3',
               )}
             >
               <input {...getSubInputProps()} />
@@ -354,7 +346,7 @@ export default function WorkspacePage() {
                 <span className="flex-1 leading-snug">{uploadError}</span>
               </div>
             )}
-            
+
             <Button
               variant="default"
               size="sm"
@@ -362,8 +354,8 @@ export default function WorkspacePage() {
               onClick={handleStartPipeline}
               loading={isSetupLoading}
             >
-              {isSetupLoading 
-                ? `Dubbing... (${Math.round(uploadProgress)}%)` 
+              {isSetupLoading
+                ? `Dubbing... (${Math.round(uploadProgress)}%)`
                 : 'Start AI Dubbing Pipeline'
               }
             </Button>
@@ -415,7 +407,7 @@ export default function WorkspacePage() {
                 <p className="text-[10px] text-text-muted mb-4 max-w-[200px] leading-normal">
                   Drop a file directly into the video player or timeline to load
                 </p>
-                
+
                 {/* Manual file select */}
                 <label className="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-brand/20 bg-brand/5 hover:bg-brand/10 text-xs font-medium text-brand-300 cursor-pointer select-none transition-colors">
                   <input
@@ -443,7 +435,7 @@ export default function WorkspacePage() {
                     <Loader2 size={12} className="animate-spin" /> Loading...
                   </div>
                 )}
-                
+
                 {!loadingProjects && allProjects?.length === 0 && (
                   <div className="flex flex-col items-center justify-center h-full text-center text-text-muted p-4">
                     <VideoIcon size={20} className="opacity-20 mb-1" />
@@ -484,7 +476,7 @@ export default function WorkspacePage() {
   }
 
   // Renders the processing view inside the center video player frame
-  const renderPipelinePlayerArea = (activeJob: any) => {
+  const renderPipelinePlayerArea = (activeJob: Job) => {
     return (
       <div className="flex flex-col h-full w-full justify-center p-6 text-center">
         <div className="max-w-md mx-auto w-full space-y-4">
@@ -519,10 +511,10 @@ export default function WorkspacePage() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-surface-0 overflow-hidden text-white relative">
-      
+
       {/* Global Drag and Drop Area Wrapper */}
-      <div 
-        {...getRootProps()} 
+      <div
+        {...getRootProps()}
         className="flex-1 flex flex-col min-h-0 overflow-hidden relative"
       >
         <input {...getInputProps()} />
@@ -530,7 +522,7 @@ export default function WorkspacePage() {
         {/* Global Drag and Drop Active Overlay */}
         <AnimatePresence>
           {isDragActive && (
-            <motion.div 
+            <motion.div
               className="absolute inset-0 bg-brand/10 border-2 border-dashed border-brand/80 backdrop-blur-xs z-50 flex flex-col items-center justify-center pointer-events-none"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -576,7 +568,7 @@ export default function WorkspacePage() {
             </div>
 
             <div className="w-px h-4 mx-2" style={{ background: 'var(--color-border)' }} />
-            
+
             <div className="flex items-center gap-1 text-[10px] text-text-muted">
               {jobId ? (
                 <>
@@ -606,12 +598,9 @@ export default function WorkspacePage() {
           <div className="flex items-center gap-1.5">
             {jobId && (
               <>
-                {/* Panel triggers */}
-                <button className="tool-btn" onClick={toggleLeftPanel} title={leftPanelCollapsed ? 'Show speakers' : 'Hide speakers'}>
-                  {leftPanelCollapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
-                </button>
+                {/* Transcript panel toggle */}
                 <button className="tool-btn" onClick={toggleRightPanel} title={rightPanelCollapsed ? 'Show transcript' : 'Hide transcript'}>
-                  {rightPanelCollapsed ? <PanelRightOpen size={13} /> : <PanelRightClose size={13} />}
+                  {rightPanelCollapsed ? <FileText size={13} /> : <X size={13} />}
                 </button>
 
                 <div className="w-px h-4 mx-1" style={{ background: 'var(--color-border)' }} />
@@ -660,51 +649,24 @@ export default function WorkspacePage() {
           </div>
         </header>
 
-        {/* ─── Main Editor Grid Layout ──────────────────────────────── */}
-        <div 
-          className="flex-1 flex min-h-0 overflow-hidden w-full"
-          onClick={(e) => e.stopPropagation()} // ignore clicks on background panels
+        {/* ─── Main Editor: strict 3-layer flex-col ─────────────────── */}
+        <div
+          className="flex-1 flex flex-col min-h-0 overflow-hidden w-full"
+          onClick={(e) => e.stopPropagation()}
         >
-          
-          {/* Left Sidebar: Speakers Panel or Placeholder */}
-          <AnimatePresence initial={false}>
-            {!leftPanelCollapsed && (
-              <motion.div
-                className="h-full border-r border-border overflow-hidden shrink-0 bg-neutral-bg2"
-                initial={{ width: 0, opacity: 0 }}
-                animate={{ width: 220, opacity: 1 }}
-                exit={{ width: 0, opacity: 0 }}
-                transition={{ type: 'spring', stiffness: 400, damping: 40 }}
-              >
-                {jobId && !isRunning && job?.status !== 'failed' ? (
-                  <SpeakerPanel
-                    speakers={spks}
-                    projectId={projectId!}
-                    className="h-full"
-                  />
-                ) : (
-                  <SpeakerPanelPlaceholder />
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
+          {/* ── LAYER 1: Video area (full width) + Transcript as right-side overlay ── */}
+          <div className="flex-1 min-h-0 relative overflow-hidden">
 
-          {/* Center Area: Player (or Dropzone/Stepper) + Timeline (or Placeholder) */}
-          <div className="flex-1 flex flex-col min-w-0 overflow-hidden bg-neutral-bg1">
-            
-            {/* Center Top: Player Grid Element */}
-            <div className="flex-1 min-h-0 flex items-center justify-center p-4 bg-black/25 relative overflow-hidden">
+            {/* Video — always fills the entire area, never moves */}
+            <div className="absolute inset-0 flex items-center justify-center p-4 bg-black/25">
               <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_center,transparent_60%,rgba(0,0,0,0.3)_100%)]" />
-              
-              {/* Conditional inside Player box */}
+
               {loadingJob ? (
-                // 1. Loading job indicator
                 <div className="flex items-center gap-3 text-text-muted">
                   <Loader2 size={18} className="animate-spin text-brand" />
                   <span className="text-xs">Loading session data...</span>
                 </div>
               ) : jobId && job?.status === 'failed' ? (
-                // 2. Failure message
                 <div className="flex flex-col items-center gap-3 text-center max-w-sm">
                   <div className="h-12 w-12 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400">
                     <AlertCircle size={20} />
@@ -718,63 +680,27 @@ export default function WorkspacePage() {
                   </Button>
                 </div>
               ) : jobId && job && isRunning ? (
-                // 3. Pipeline Stepper (actively processing)
                 renderPipelinePlayerArea(job)
               ) : jobId && job && !isRunning ? (
-                // 4. Completed Video Player
                 <VideoPlayer
                   videoUrl={videoUrl}
-                  segments={segs}
+                  segments={displaySegs}
                   speakers={spks}
                   className="max-h-full max-w-full aspect-video w-full"
                 />
               ) : (
-                // 5. Setup View (tabbed Upload Dropzone / Recent sessions)
                 <div className="glass-card max-w-lg w-full h-[320px] shadow-glow-sm overflow-hidden flex flex-col bg-neutral-bg2/90 border border-white/5">
                   {renderSetupPlayerArea()}
                 </div>
               )}
             </div>
 
-            {/* Center Bottom: Timeline Grid Element */}
-            {jobId && !loadingJob && job && !isRunning && job.status !== 'failed' ? (
-              // 1. Active Editor Timeline
-              <TimelineEditor
-                segments={segs}
-                speakers={spks}
-                duration={duration || (segs.length > 0 ? Math.max(...segs.map((s) => s.end_time)) + 5 : 60)}
-                className="shrink-0 h-48 border-t border-border bg-neutral-bg2"
-              />
-            ) : (
-              // 2. Dashed placeholder timeline
-              <div 
-                className="shrink-0 h-48 border-t border-border bg-neutral-bg2/50 flex flex-col items-center justify-center text-center p-6 border-dashed"
-                style={{ borderWidth: '2px 0 0 0' }}
-              >
-                <div className="h-7 w-7 rounded-lg bg-neutral-bg3 border border-border/60 flex items-center justify-center text-white/20 mb-2">
-                  <Film size={13} />
-                </div>
-                <span className="text-[11px] font-semibold text-white/50">Timeline Editor</span>
-                <span className="text-[10px] text-text-disabled mt-1 max-w-xs leading-normal">
-                  Drop a video above or here to initialize timeline segments.
-                </span>
-              </div>
-            )}
-          </div>
-
-          {/* Right Sidebar: Transcript Panel or Placeholder */}
-          <AnimatePresence initial={false}>
+            {/* Transcript Panel — absolute overlay on the right, video never shifts */}
             {!rightPanelCollapsed && (
-              <motion.div
-                className="h-full border-l border-border overflow-hidden shrink-0 bg-neutral-bg2"
-                initial={{ width: 0, opacity: 0 }}
-                animate={{ width: 360, opacity: 1 }}
-                exit={{ width: 0, opacity: 0 }}
-                transition={{ type: 'spring', stiffness: 400, damping: 40 }}
-              >
+              <div className="absolute top-0 right-0 bottom-0 w-[360px] border-l border-border bg-neutral-bg2 overflow-hidden flex flex-col z-10 shadow-[-8px_0_24px_rgba(0,0,0,0.35)]">
                 {jobId && !isRunning && job?.status !== 'failed' ? (
                   <TranscriptPanel
-                    segments={segs}
+                    segments={displaySegs}
                     speakers={spks}
                     jobId={jobId!}
                     isLoading={loadingSegs}
@@ -783,10 +709,32 @@ export default function WorkspacePage() {
                 ) : (
                   <TranscriptPanelPlaceholder />
                 )}
-              </motion.div>
+              </div>
             )}
-          </AnimatePresence>
+          </div>
 
+          {/* ── LAYER 2 + 3: TimelineEditor (toolbar + tracks) — always full width ── */}
+          {jobId && !loadingJob && job && !isRunning && job.status !== 'failed' ? (
+            <TimelineEditor
+              segments={displaySegs}
+              speakers={spks}
+              duration={duration || (displaySegs.length > 0 ? Math.max(...displaySegs.map((s) => s.end_time)) + 5 : 60)}
+              className="shrink-0 border-t border-border bg-neutral-bg2"
+            />
+          ) : (
+            <div
+              className="shrink-0 h-48 border-t border-border bg-neutral-bg2/50 flex flex-col items-center justify-center text-center p-6"
+              style={{ borderTopStyle: 'dashed' }}
+            >
+              <div className="h-7 w-7 rounded-lg bg-neutral-bg3 border border-border/60 flex items-center justify-center text-white/20 mb-2">
+                <Film size={13} />
+              </div>
+              <span className="text-[11px] font-semibold text-white/50">Timeline Editor</span>
+              <span className="text-[10px] text-text-disabled mt-1 max-w-xs leading-normal">
+                Drop a video above or here to initialize timeline segments.
+              </span>
+            </div>
+          )}
         </div>
       </div>
     </div>

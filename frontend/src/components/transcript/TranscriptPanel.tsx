@@ -25,7 +25,7 @@ export function TranscriptPanel({
   const { setCurrentTime } = useEditorStore()
   const { mutate: approveAll, isPending: approvingAll } = useApproveAll()
   const scrollRef = useRef<HTMLDivElement>(null)
-  const cardRefs  = useRef<Map<string, HTMLDivElement>>(new Map())
+  const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map())
 
   useEffect(() => {
     if (!activeSegmentId) return
@@ -39,16 +39,16 @@ export function TranscriptPanel({
   }, [activeSegmentId])
 
   const approvedCount = segments.filter((s) => s.is_approved).length
-  const totalCount    = segments.length
+  const totalCount = segments.length
 
   const handleApproveAll = () => {
     approveAll(jobId, {
       onSuccess: () => toast.success(`All ${totalCount} segments approved`),
-      onError:   () => toast.error('Failed to approve all'),
+      onError: () => toast.error('Failed to approve all'),
     })
   }
 
-  const getSpeaker      = (seg: Segment) => speakers.find((sp) => sp.id === seg.speaker_id)
+  const getSpeaker = (seg: Segment) => speakers.find((sp) => sp.id === seg.speaker_id)
   const getSpeakerIndex = (seg: Segment) => speakers.findIndex((sp) => sp.id === seg.speaker_id)
 
   return (

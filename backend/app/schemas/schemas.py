@@ -2,10 +2,12 @@
 app/schemas/schemas.py
 Pydantic v2 schemas for all API request bodies and responses.
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 from typing import Optional, List
 from datetime import datetime
 from app.models.models import JobStatus, Gender, AgeGroup
+from pathlib import Path
+from app.core.config import settings
 
 
 # ── Project schemas ───────────────────────────────────────────
@@ -41,6 +43,34 @@ class JobResponse(BaseModel):
     duration_secs: float
     created_at: datetime
     completed_at: Optional[datetime]
+
+    @computed_field
+    def video_url(self) -> Optional[str]:
+        if not self.video_path:
+            return None
+        p = Path(self.video_path)
+        try:
+            parts = p.parts
+            if "uploads" in parts:
+                idx = parts.index("uploads")
+                return "/" + "/".join(parts[idx:])
+            return f"/uploads/{p.name}"
+        except Exception:
+            return None
+
+    @computed_field
+    def output_url(self) -> Optional[str]:
+        if not self.output_path:
+            return None
+        p = Path(self.output_path)
+        try:
+            parts = p.parts
+            if "uploads" in parts:
+                idx = parts.index("uploads")
+                return "/" + "/".join(parts[idx:])
+            return f"/uploads/{p.name}"
+        except Exception:
+            return None
 
     model_config = {"from_attributes": True}
 
@@ -82,6 +112,9 @@ class SpeakerResponse(BaseModel):
 
 # ── Segment schemas ───────────────────────────────────────────
 class SegmentUpdate(BaseModel):
+    speaker_id: Optional[str] = None
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
     source_text: Optional[str] = None
     english_text: Optional[str] = None
     khmer_text: Optional[str] = None

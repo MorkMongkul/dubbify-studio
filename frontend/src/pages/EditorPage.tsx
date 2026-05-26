@@ -36,12 +36,19 @@ export default function EditorPage() {
   // Reset editor state on mount
   useEffect(() => {
     resetEditor()
-  }, [jobId])
+  }, [jobId, resetEditor])
 
   // Server state
   const { data: job, isLoading: loadingJob } = useJob(jobId ?? null)
   const { data: segs = [], isLoading: loadingSegs } = useSegments(jobId ?? null)
   const { data: spks = [] } = useSpeakers(projectId ?? null)
+
+  // Merge optimistic local segment position overrides from Zustand
+  const { segmentPositions } = useEditorStore()
+  const displaySegs = segs.map(s => {
+    const pos = segmentPositions[s.id]
+    return pos ? { ...s, ...pos } : s
+  })
 
   const { mutate: synthesize, isPending: synthesizing } = useSynthesizeJob()
   const { mutate: mix,        isPending: mixing }        = useMixFinalAudio()
@@ -213,6 +220,7 @@ export default function EditorPage() {
                 speakers={spks}
                 projectId={projectId!}
                 className="h-full"
+                segments={displaySegs}
               />
             </motion.div>
           )}
@@ -243,7 +251,7 @@ export default function EditorPage() {
             ) : (
               <VideoPlayer
                 videoUrl={videoUrl}
-                segments={segs}
+                segments={displaySegs}
                 speakers={spks}
                 className="max-h-full max-w-full aspect-video w-full"
               />
@@ -252,9 +260,9 @@ export default function EditorPage() {
 
           {/* Timeline */}
           <TimelineEditor
-            segments={segs}
+            segments={displaySegs}
             speakers={spks}
-            duration={duration || (segs.length > 0 ? Math.max(...segs.map((s) => s.end_time)) + 5 : 60)}
+            duration={duration || (displaySegs.length > 0 ? Math.max(...displaySegs.map((s) => s.end_time)) + 5 : 60)}
             className="shrink-0 h-48"
           />
         </div>
@@ -270,7 +278,7 @@ export default function EditorPage() {
               transition={{ type: 'spring', stiffness: 400, damping: 40 }}
             >
               <TranscriptPanel
-                segments={segs}
+                segments={displaySegs}
                 speakers={spks}
                 jobId={jobId!}
                 isLoading={loadingSegs}

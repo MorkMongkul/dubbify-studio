@@ -95,6 +95,9 @@ export interface Segment {
 }
 
 export interface SegmentUpdate {
+  speaker_id?: string | null
+  start_time?: number
+  end_time?: number
   source_text?: string
   english_text?: string
   khmer_text?: string

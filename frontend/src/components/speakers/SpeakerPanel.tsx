@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { Users, Edit2, Check, X } from 'lucide-react'
-import type { Speaker } from '@/types'
+import type { Speaker, Segment } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { useUpdateSpeaker } from '@/hooks/useApi'
 import { getSpeakerColor, cn } from '@/lib/utils'
@@ -12,6 +12,7 @@ interface SpeakerPanelProps {
   speakers: Speaker[]
   projectId?: string
   className?: string
+  segments?: Segment[]
 }
 
 const PRESET_COLORS = [
@@ -19,7 +20,7 @@ const PRESET_COLORS = [
   '#DC2626', '#DB2777', '#0891B2', '#65A30D',
 ]
 
-export function SpeakerPanel({ speakers, className }: SpeakerPanelProps) {
+export function SpeakerPanel({ speakers, className, segments }: SpeakerPanelProps) {
   const { selectedSpeakerId, setSelectedSpeaker } = useEditorStore()
   const { mutate: updateSpeaker } = useUpdateSpeaker()
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -73,6 +74,9 @@ export function SpeakerPanel({ speakers, className }: SpeakerPanelProps) {
           const color = sp.color ?? getSpeakerColor(idx)
           const isSelected = selectedSpeakerId === sp.id
           const isEditing = editingId === sp.id
+          const segmentCount = segments
+            ? segments.filter((s) => s.speaker_id === sp.id).length
+            : (sp.segment_count ?? 0)
 
           return (
             <motion.div
@@ -118,7 +122,7 @@ export function SpeakerPanel({ speakers, className }: SpeakerPanelProps) {
                       <p className="text-xs font-medium text-text-primary truncate">
                         {sp.name ?? sp.label ?? `Speaker ${idx + 1}`}
                       </p>
-                      <p className="text-[10px] text-text-disabled">{sp.segment_count ?? 0} segments</p>
+                      <p className="text-[10px] text-text-disabled">{segmentCount} segment{segmentCount !== 1 ? 's' : ''}</p>
                     </div>
                   )}
                 </div>
