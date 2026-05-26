@@ -61,6 +61,11 @@ app.include_router(jobs.router,      prefix="/api/v1")
 app.include_router(segments.router,  prefix="/api/v1")
 app.include_router(tts.router,       prefix="/api/v1")
 
+# ── Static Files ──────────────────────────────────────────────
+from fastapi.staticfiles import StaticFiles
+app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
+
+
 # ── Root ──────────────────────────────────────────────────────
 @app.get("/", include_in_schema=False)
 async def root():

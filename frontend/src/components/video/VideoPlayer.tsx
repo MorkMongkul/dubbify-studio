@@ -4,7 +4,6 @@ import { Maximize2, Minimize2, VolumeX } from 'lucide-react'
 import type { Segment, Speaker } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { getSpeakerColor, cn } from '@/lib/utils'
-import { PlaybackControls } from './PlaybackControls'
 import { SubtitleOverlay } from './SubtitleOverlay'
 
 interface VideoPlayerProps {
@@ -22,9 +21,14 @@ export function VideoPlayer({ videoUrl, segments, speakers, className }: VideoPl
   const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   const {
-    currentTime, isPlaying, volume, playbackRate, duration,
+    currentTime, isPlaying, volume, playbackRate,
     setCurrentTime, setDuration, setPlaying, setActiveSegment,
   } = useEditorStore()
+
+  const segmentsRef = useRef(segments)
+  useEffect(() => {
+    segmentsRef.current = segments
+  }, [segments])
 
   // Sync video → store
   useEffect(() => {
@@ -35,13 +39,18 @@ export function VideoPlayer({ videoUrl, segments, speakers, className }: VideoPl
       const t = video.currentTime
       setCurrentTime(t)
       // Find active segment
-      const active = segments.find((s) => t >= s.start_time && t < s.end_time)
+      const active = segmentsRef.current.find((s) => t >= s.start_time && t < s.end_time)
       setActiveSegment(active?.id ?? null)
     }
     const onLoadedMetadata = () => setDuration(video.duration)
     const onPlay  = () => setPlaying(true)
     const onPause = () => setPlaying(false)
     const onEnded = () => { setPlaying(false); setCurrentTime(0) }
+
+    // Set duration immediately if video is already loaded
+    if (video.duration) {
+      setDuration(video.duration)
+    }
 
     video.addEventListener('timeupdate', onTimeUpdate)
     video.addEventListener('loadedmetadata', onLoadedMetadata)
@@ -55,7 +64,7 @@ export function VideoPlayer({ videoUrl, segments, speakers, className }: VideoPl
       video.removeEventListener('pause', onPause)
       video.removeEventListener('ended', onEnded)
     }
-  }, [segments, setCurrentTime, setDuration, setPlaying, setActiveSegment])
+  }, [videoUrl, setCurrentTime, setDuration, setPlaying, setActiveSegment])
 
   // Store → video (play/pause)
   useEffect(() => {
@@ -66,7 +75,7 @@ export function VideoPlayer({ videoUrl, segments, speakers, className }: VideoPl
     } else {
       video.pause()
     }
-  }, [isPlaying])
+  }, [isPlaying, videoUrl])
 
   // Store → video (seek)
   const lastSyncedTime = useRef<number>(0)
@@ -77,17 +86,17 @@ export function VideoPlayer({ videoUrl, segments, speakers, className }: VideoPl
       video.currentTime = currentTime
       lastSyncedTime.current = currentTime
     }
-  }, [currentTime])
+  }, [currentTime, videoUrl])
 
   // Volume
   useEffect(() => {
     if (videoRef.current) videoRef.current.volume = volume
-  }, [volume])
+  }, [volume, videoUrl])
 
   // Playback rate
   useEffect(() => {
     if (videoRef.current) videoRef.current.playbackRate = playbackRate
-  }, [playbackRate])
+  }, [playbackRate, videoUrl])
 
   // Auto-hide controls
   const resetControlsTimer = useCallback(() => {
@@ -99,7 +108,13 @@ export function VideoPlayer({ videoUrl, segments, speakers, className }: VideoPl
   }, [isPlaying])
 
   useEffect(() => {
-    if (!isPlaying) setShowControls(true)
+    if (!isPlaying) {
+      const handle = requestAnimationFrame(() => setShowControls(true))
+      return () => {
+        cancelAnimationFrame(handle)
+        clearTimeout(controlsTimerRef.current)
+      }
+    }
     return () => clearTimeout(controlsTimerRef.current)
   }, [isPlaying])
 
@@ -183,17 +198,15 @@ export function VideoPlayer({ videoUrl, segments, speakers, className }: VideoPl
             {/* Gradient scrim */}
             <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent pointer-events-none" />
 
-            {/* Fullscreen btn */}
-            <button
-              className="absolute top-3 right-3 h-8 w-8 rounded-lg bg-black/40 backdrop-blur-sm border border-white/10 flex items-center justify-center text-white/70 hover:text-white hover:bg-black/60 transition-all"
-              onClick={toggleFullscreen}
-            >
-              {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-            </button>
-
-            {/* Playback controls */}
-            <div className="relative pb-3 px-3">
-              <PlaybackControls videoRef={videoRef} duration={duration} currentTime={currentTime} />
+            {/* Simplified bottom control bar */}
+            <div className="relative pb-3 px-3 flex items-center justify-end gap-2.5 z-10">
+              {/* Fullscreen Button */}
+              <button
+                className="h-8 w-8 rounded-lg bg-black/45 backdrop-blur-sm border border-white/10 flex items-center justify-center text-white/70 hover:text-white hover:bg-black/60 transition-all"
+                onClick={toggleFullscreen}
+              >
+                {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              </button>
             </div>
           </motion.div>
         )}
@@ -203,7 +216,7 @@ export function VideoPlayer({ videoUrl, segments, speakers, className }: VideoPl
       {videoUrl && (
         <div
           className="absolute inset-0 cursor-pointer"
-          style={{ bottom: showControls ? 72 : 0 }}
+          style={{ bottom: showControls ? 48 : 0 }}
           onClick={() => setPlaying(!isPlaying)}
         />
       )}

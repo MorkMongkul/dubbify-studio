@@ -33,7 +33,8 @@ export function SegmentCard({ segment, speaker, speakerIndex, isActive, onSeek }
   useEffect(() => {
     if (isEditing && textareaRef.current) {
       textareaRef.current.focus()
-      textareaRef.current.setSelectionRange(draft.length, draft.length)
+      const len = textareaRef.current.value.length
+      textareaRef.current.setSelectionRange(len, len)
     }
   }, [isEditing])
 
