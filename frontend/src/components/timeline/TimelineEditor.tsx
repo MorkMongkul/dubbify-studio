@@ -1,6 +1,6 @@
 // src/components/timeline/TimelineEditor.tsx
 import { useRef, useCallback, useEffect, useState } from 'react'
-import { ZoomIn, ZoomOut, AlertTriangle, Play, Pause, SkipBack, SkipForward } from 'lucide-react'
+import { ZoomIn, ZoomOut, AlertTriangle } from 'lucide-react'
 import type { Segment, Speaker } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { useUpdateSegment } from '@/hooks/useApi'
@@ -36,10 +36,11 @@ export function TimelineEditor({ segments, speakers, duration, className }: Time
   const {
     currentTime, zoom, activeSegmentId, volume,
     mutedTrackIds, soloedTrackIds, simulatingSegmentIds,
-    timelineHeight, speakerPanelWidth, isPlaying, playbackRate,
+    timelineHeight, speakerPanelWidth,
     setCurrentTime, setActiveSegment, zoomIn, zoomOut,
     updateSegmentPosition, toggleMuteTrack, toggleSoloTrack, setSegmentSimulating,
-    setTimelineHeight, setSpeakerPanelWidth, togglePlaying, setPlaybackRate, setZoom
+    setSpeakerPanelWidth, setZoom,
+    setInspectorMode, setFocusedTimelineItemId
   } = useEditorStore()
 
   const { mutate: updateSegment } = useUpdateSegment()
@@ -124,34 +125,6 @@ export function TimelineEditor({ segments, speakers, duration, className }: Time
     window.addEventListener('mouseup', onUp)
   }, [seekFromTrackEvent, speakerPanelWidth])
 
-  const handleVerticalResizeDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    const container = containerRef.current
-    if (!container) return
-
-    container.setPointerCapture(e.pointerId)
-    const startY = e.clientY
-    const startHeight = container.getBoundingClientRect().height
-
-    const handlePointerMove = (moveEvent: PointerEvent) => {
-      const deltaY = moveEvent.clientY - startY
-      const newHeight = Math.max(200, Math.min(500, startHeight - deltaY))
-      container.style.height = `${newHeight}px`
-    }
-
-    const handlePointerUp = (upEvent: PointerEvent) => {
-      container.releasePointerCapture(upEvent.pointerId)
-      window.removeEventListener('pointermove', handlePointerMove)
-      window.removeEventListener('pointerup', handlePointerUp)
-
-      const finalHeight = container.getBoundingClientRect().height
-      setTimelineHeight(finalHeight)
-    }
-
-    window.addEventListener('pointermove', handlePointerMove)
-    window.addEventListener('pointerup', handlePointerUp)
-  }, [setTimelineHeight])
-
   const handleHorizontalResizeDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault()
     const container = containerRef.current
@@ -180,27 +153,6 @@ export function TimelineEditor({ segments, speakers, duration, className }: Time
     window.addEventListener('pointerup', handlePointerUp)
   }, [speakerPanelWidth, setSpeakerPanelWidth])
 
-  const goToSegmentStart = useCallback(() => {
-    if (activeSegmentId) {
-      const activeSeg = segments.find(s => s.id === activeSegmentId)
-      if (activeSeg) {
-        setCurrentTime(activeSeg.start_time)
-        return
-      }
-    }
-    setCurrentTime(0)
-  }, [activeSegmentId, segments, setCurrentTime])
-
-  const goToSegmentEnd = useCallback(() => {
-    if (activeSegmentId) {
-      const activeSeg = segments.find(s => s.id === activeSegmentId)
-      if (activeSeg) {
-        setCurrentTime(activeSeg.end_time)
-        return
-      }
-    }
-    setCurrentTime(duration || 0)
-  }, [activeSegmentId, segments, duration, setCurrentTime])
 
   // Time ruler ticks
   const renderRulerTicks = () => {
@@ -225,67 +177,23 @@ export function TimelineEditor({ segments, speakers, duration, className }: Time
   return (
     <div
       ref={containerRef}
-      className={cn('flex flex-col bg-timeline-bg border-t border-border relative select-none shrink-0', className)}
+      className={cn('flex flex-col relative select-none shrink-0', className)}
       style={{
         height: `${timelineHeight}px`,
         '--speaker-width': `${speakerPanelWidth}px`,
       } as React.CSSProperties}
     >
-      {/* Top resize splitter handle for timeline height */}
-      <div
-        className="absolute -top-1 inset-x-0 h-2 cursor-ns-resize z-50 hover:bg-brand/50 active:bg-brand transition-colors"
-        onPointerDown={handleVerticalResizeDown}
-      />
-
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border shrink-0 bg-surface-1 select-none w-full relative h-9">
-        {/* Left Spacer (Timeline text removed) */}
-        <div className="flex items-center justify-start w-20" />
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-white/[0.04] shrink-0 bg-zinc-900 select-none w-full relative h-9">
+        {/* Left: Spacer to maintain layout balance */}
+        <div className="w-20" />
 
-        {/* Center: Perfectly Centered Playback Controls */}
-        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-2 z-10">
-          <Tooltip content="Go to segment start">
-            <button
-              onClick={goToSegmentStart}
-              className="h-6 w-6 rounded flex items-center justify-center text-text-muted hover:text-text-primary hover:bg-white/8 transition-colors"
-            >
-              <SkipBack size={12} />
-            </button>
-          </Tooltip>
-
-          <button
-            onClick={togglePlaying}
-            className="h-7 w-7 rounded-lg bg-white flex items-center justify-center text-neutral-900 hover:bg-white/90 active:scale-95 transition-all shadow-sm"
-            title={isPlaying ? "Pause" : "Play"}
-          >
-            {isPlaying ? <Pause size={12} fill="currentColor" /> : <Play size={12} fill="currentColor" className="ml-0.5" />}
-          </button>
-
-          <Tooltip content="Go to segment end">
-            <button
-              onClick={goToSegmentEnd}
-              className="h-6 w-6 rounded flex items-center justify-center text-text-muted hover:text-text-primary hover:bg-white/8 transition-colors"
-            >
-              <SkipForward size={12} />
-            </button>
-          </Tooltip>
-
-          {/* Playback speed dropdown */}
-          <select
-            value={playbackRate}
-            onChange={(e) => setPlaybackRate(parseFloat(e.target.value))}
-            className="h-6 px-1.5 rounded bg-surface-2 text-[10px] font-mono font-bold text-text-muted hover:text-text-primary hover:bg-white/5 border border-border focus:outline-none cursor-pointer transition-all ml-1"
-            title="Playback Speed"
-          >
-            {[0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => (
-              <option key={r} value={r}>
-                {r}×
-              </option>
-            ))}
-          </select>
+        {/* Center: Empty label area */}
+        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-1 z-10">
+          <span className="text-[9px] font-semibold uppercase tracking-widest text-zinc-600 select-none">Timeline</span>
         </div>
 
-        {/* Right: Thinner Zoom Slider Controls */}
+        {/* Right: Zoom Controls */}
         <div className="flex items-center justify-end gap-1.5 z-10">
           <Tooltip content="Zoom out">
             <button
@@ -351,10 +259,10 @@ export function TimelineEditor({ segments, speakers, duration, className }: Time
       {/* Main Timeline Area (Ruler + Tracks + Splitters) */}
       <div className="flex-1 min-h-0 flex flex-col relative">
         {/* Ruler Row */}
-        <div className="flex h-7 bg-timeline-ruler border-b border-border shrink-0 select-none relative">
+        <div className="flex h-7 bg-zinc-950/30 border-b border-white/[0.04] shrink-0 select-none relative">
           {/* Ruler Speaker Header Spacer */}
           <div
-            className="h-full border-r border-border shrink-0 bg-timeline-bg/95 z-20"
+            className="h-full border-r border-white/[0.04] shrink-0 bg-zinc-900/95 z-20"
             style={{ width: 'var(--speaker-width)' }}
           />
           {/* Ruler Scroll Viewport */}
@@ -425,7 +333,7 @@ export function TimelineEditor({ segments, speakers, duration, className }: Time
                 >
                   {/* Track label (sticky left) */}
                   <div
-                    className="sticky left-0 z-10 h-full flex items-center px-2 gap-1.5 shrink-0 bg-timeline-bg/95 backdrop-blur-sm border-r border-border"
+                    className="sticky left-0 z-10 h-full flex items-center px-2 gap-1.5 shrink-0 bg-zinc-900/95 backdrop-blur-sm border-r border-white/[0.04]"
                     style={{ float: 'left', width: 'var(--speaker-width)' }}
                   >
                     <div
@@ -500,6 +408,8 @@ export function TimelineEditor({ segments, speakers, duration, className }: Time
                           onSelect={() => {
                             setCurrentTime(seg.start_time)
                             setActiveSegment(seg.id)
+                            setInspectorMode('audio_clip_settings')
+                            setFocusedTimelineItemId(seg.id)
                           }}
                           mutedTrackIds={mutedTrackIds}
                           soloedTrackIds={soloedTrackIds}
@@ -736,7 +646,7 @@ function InteractiveSegment({
       ref={elementRef}
       className={cn(
         'timeline-segment absolute top-[5px] bottom-[5px] cursor-grab select-none overflow-hidden transition-all',
-        isActive && 'active border-white outline-2 outline-white ring-2 ring-white/20',
+        isActive && 'active border-purple-500 outline-2 outline-purple-500 ring-2 ring-purple-500/20',
         isSimulating && 'animate-pulse opacity-70 cursor-wait'
       )}
       style={{
@@ -752,9 +662,9 @@ function InteractiveSegment({
         borderRadius: '6px',
         boxShadow: isTooFast
           ? '0 0 14px rgba(239, 68, 68, 0.45)'
-          : (isActive ? `0 0 12px ${hexToRgba(color, 0.6)}` : 'none'),
-        outline: isActive ? '1.5px solid #FFFFFF' : 'none',
-        outlineOffset: '-1.5px',
+          : (isActive ? `0 0 12px ${hexToRgba('#7C3AED', 0.6)}` : 'none'),
+        outline: isActive ? '2px solid #7C3AED' : 'none',
+        outlineOffset: '-2px',
       }}
       onPointerDown={(e) => {
         if (e.button === 0) {

@@ -64,9 +64,13 @@ export function useJob(jobId: string | null) {
     queryFn: () => jobs.get(jobId!),
     enabled: !!jobId,
     refetchInterval: (query) => {
-      const status = query.state.data?.status
+      const data = query.state.data
+      const status = data?.status
       const running = ['pending', 'uploading', 'extracting', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing']
-      return status && running.includes(status) ? 2000 : false
+      if (status && running.includes(status)) return 2000
+      // Keep polling after completion until video_url is available
+      if (status === 'completed' && !data?.video_url) return 3000
+      return false
     },
   })
 }
