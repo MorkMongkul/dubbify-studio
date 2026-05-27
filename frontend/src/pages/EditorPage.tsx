@@ -66,7 +66,7 @@ export default function EditorPage() {
 
   const handleMix = () => {
     if (!jobId) return
-    mix(jobId, {
+    mix({ jobId }, {
       onSuccess: () => toast.success('Audio mix started!'),
       onError:   () => toast.error('Failed to start mix'),
     })

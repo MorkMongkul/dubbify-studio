@@ -195,8 +195,9 @@ export function useSynthesizeJob() {
 export function useMixFinalAudio() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (jobId: string) => tts.mixFinalAudio(jobId),
-    onSuccess: (_, jobId) => {
+    mutationFn: ({ jobId, muteOriginal }: { jobId: string; muteOriginal?: boolean }) => 
+      tts.mixFinalAudio(jobId, muteOriginal),
+    onSuccess: (_, { jobId }) => {
       qc.invalidateQueries({ queryKey: ['job', jobId] })
     },
   })

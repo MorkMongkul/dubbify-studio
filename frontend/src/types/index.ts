@@ -70,6 +70,9 @@ export interface Speaker {
   name?: string
   color?: string
   voice_id?: string
+  voice_design_prompt?: string
+  gender?: string
+  age_group?: string
   segment_count?: number
 }
 
@@ -77,6 +80,9 @@ export interface SpeakerUpdate {
   name?: string
   color?: string
   voice_id?: string
+  voice_design_prompt?: string
+  gender?: string
+  age_group?: string
 }
 
 export interface Segment {

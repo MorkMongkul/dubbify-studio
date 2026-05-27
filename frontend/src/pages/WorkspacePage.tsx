@@ -6,20 +6,22 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useDropzone } from 'react-dropzone'
 import {
-  ChevronLeft, ChevronRight, Mic2, Download,
+  ChevronLeft, ChevronRight, Download,
   Loader2, AlertCircle, Zap,
-  Music, UploadCloud, Film, FileText, X,
+  UploadCloud, Film, FileText, X,
   Activity, VideoIcon, AlignLeft,
   FolderOpen, CheckCircle2, Trash2
 } from 'lucide-react'
 import { toast } from 'sonner'
 
 import {
-  useJob, useSegments, useSpeakers, useSynthesizeJob, useMixFinalAudio,
+  useJob, useSegments, useSpeakers, useMixFinalAudio,
   useProjects, useCreateProject, useUploadVideo, useUploadWithSubtitle,
   useProjectJobs, useDeleteJob
 } from '@/hooks/useApi'
 import { useEditorStore } from '@/store/editorStore'
+import { useQueryClient } from '@tanstack/react-query'
+import { jobs as jobsApi } from '@/api/client'
 
 import { VideoPlayer } from '@/components/video/VideoPlayer'
 import { TimelineEditor } from '@/components/timeline/TimelineEditor'
@@ -68,6 +70,8 @@ function TranscriptPanelPlaceholder({ onCollapse }: { onCollapse?: () => void })
 export default function WorkspacePage() {
   const { projectId, jobId } = useParams<{ projectId: string; jobId: string }>()
   const navigate = useNavigate()
+  const qc = useQueryClient()
+  const [exporting, setExporting] = useState(false)
 
   const {
     duration, rightPanelCollapsed,
@@ -193,7 +197,6 @@ export default function WorkspacePage() {
     }
   }, [segs])
 
-  const { mutate: synthesize, isPending: synthesizing } = useSynthesizeJob()
   const { mutate: mix, isPending: mixing } = useMixFinalAudio()
 
   const isRunning = job ? isJobRunning(job.status) : false
@@ -234,36 +237,40 @@ export default function WorkspacePage() {
       }
     )
   }, [projectId, jobId, deleteJob, navigate])
-  const handleSynthesize = () => {
-    if (!jobId) return
-    synthesize(jobId, {
-      onSuccess: () => toast.success('TTS synthesis started!'),
-      onError: () => toast.error('Failed to start synthesis'),
-    })
-  }
-
-  const handleMix = () => {
-    if (!jobId) return
-    mix(jobId, {
-      onSuccess: () => toast.success('Audio mix started!'),
-      onError: () => toast.error('Failed to start mix'),
-    })
-  }
-
   const handleExport = () => {
-    if (!job?.output_url) {
-      toast.error('No dubbed video available yet. Run Mix first.')
-      return
-    }
-    window.open(job.output_url, '_blank')
+    if (!jobId) return
+    setExporting(true)
+    const toastId = toast.loading('Compiling dubbed video... Please wait.')
+    mix({ jobId, muteOriginal: false }, { // Keep BGM by default
+      onSuccess: async () => {
+        // Invalidate queries to get updated data
+        await qc.invalidateQueries({ queryKey: ['job', jobId] })
+        await qc.invalidateQueries({ queryKey: ['job'] })
+        
+        try {
+          const freshJob = await jobsApi.get(jobId)
+          if (freshJob.output_url) {
+            toast.success('Video compiled successfully! Opening...', { id: toastId })
+            window.open(freshJob.output_url, '_blank')
+          } else {
+            toast.error('Video compiled, but output URL is missing', { id: toastId })
+          }
+        } catch (err) {
+          toast.error('Failed to retrieve the compiled video link', { id: toastId })
+        } finally {
+          setExporting(false)
+        }
+      },
+      onError: (err: any) => {
+        toast.error(`Compilation failed: ${err.message}`, { id: toastId })
+        setExporting(false)
+      }
+    })
   }
 
   // Active session status flags
-  const hasApprovedSegs = segs.some((s) => s.is_approved)
   const hasTtsAudio = segs.some((s) => s.tts_audio_path !== '')
-  const jobReady = job?.status === 'completed' && segs.length > 0
-  const canMix = hasTtsAudio
-  const canExport = !!job?.output_url
+  const canExport = hasTtsAudio && !exporting && !mixing
   const videoUrl = job?.video_url ?? undefined
 
   // --- Dropzone Settings ---
@@ -675,43 +682,12 @@ export default function WorkspacePage() {
 
           {/* Right Side: Panel Controls + Actions + Export */}
           <div className="flex items-center gap-1.5">
-            {jobId && (
-              <>
-                {/* Synthesize */}
-                <Button
-                  variant="accent"
-                  size="sm"
-                  onClick={handleSynthesize}
-                  loading={synthesizing}
-                  disabled={!jobReady || !hasApprovedSegs || synthesizing}
-                  icon={<Mic2 size={11} />}
-                  title={!hasApprovedSegs ? 'Approve segments first' : undefined}
-                >
-                  Synthesize
-                </Button>
-
-                {/* Mix */}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleMix}
-                  loading={mixing}
-                  disabled={!canMix || mixing}
-                  icon={<Music size={11} />}
-                  title={!canMix ? 'Run Synthesize first' : undefined}
-                >
-                  Mix
-                </Button>
-              </>
-            )}
-
-            <div className="w-px h-4 mx-0.5" style={{ background: 'var(--color-border)' }} />
-
             {/* Export Button (Header Top Right) */}
             <Button
               variant={canExport ? 'default' : 'ghost'}
               size="sm"
               onClick={handleExport}
+              loading={exporting || mixing}
               disabled={!canExport}
               icon={<Download size={11} />}
               className={cn("shadow-glow transition-all", canExport ? "bg-brand text-white hover:bg-brand-hover" : "")}

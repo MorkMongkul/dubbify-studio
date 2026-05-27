@@ -319,6 +319,54 @@ export function TimelineEditor({ segments, speakers, duration, className }: Time
               }}
             />
 
+            {/* Background Music (BGM) Track */}
+            <div
+              className="relative border-b border-timeline-grid bg-zinc-900/30"
+              style={{ height: 48 }}
+            >
+              {/* Track label (sticky left) */}
+              <div
+                className="sticky left-0 z-10 h-full flex items-center px-2 gap-1.5 shrink-0 bg-zinc-900/95 backdrop-blur-sm border-r border-white/[0.04]"
+                style={{ float: 'left', width: 'var(--speaker-width)' }}
+              >
+                <div
+                  className="h-2 w-2 rounded-full shrink-0 bg-sky-500"
+                />
+                <span className="text-xs text-text-muted truncate grow min-w-0 pr-1 font-semibold">
+                  Background Music
+                </span>
+
+                {/* Mute Track Control */}
+                <div className="flex items-center gap-0.5 ml-auto shrink-0">
+                  <button
+                    onClick={() => toggleMuteTrack('__bgm__')}
+                    className={cn(
+                      "h-5 w-5 rounded text-[10px] font-bold flex items-center justify-center border transition-all select-none",
+                      mutedTrackIds['__bgm__']
+                        ? "bg-amber-500/20 text-amber-500 border-amber-500/30 hover:bg-amber-500/30"
+                        : "bg-transparent text-text-disabled border-transparent hover:bg-white/5 hover:text-text-muted"
+                    )}
+                    title="Mute Background Music"
+                  >
+                    M
+                  </button>
+                </div>
+              </div>
+
+              {/* BGM audio block representing the entire length of the video */}
+              <div
+                className="absolute top-1 bottom-1 rounded bg-sky-500/10 border border-sky-500/25 flex items-center px-3"
+                style={{
+                  left: 'calc(var(--speaker-width) + 4px)',
+                  width: `${timeToPixels(duration || 60, zoom, PX_PER_SEC)}px`,
+                }}
+              >
+                <span className="text-[10px] text-sky-400/80 font-medium select-none truncate">
+                  Original Background Music & Sound Effects (No Vocals)
+                </span>
+              </div>
+            </div>
+
             {/* Speaker tracks */}
             {speakerIds.map((speakerId, trackIdx) => {
               const speaker = speakers.find((s) => s.id === speakerId)

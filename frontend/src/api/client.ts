@@ -119,6 +119,9 @@ export const segments = {
 export const tts = {
   synthesizeSegment: (segmentId: string) =>
     api.post<TTSResponse>(`/tts/synthesize/segment/${segmentId}`).then((r) => r.data),
+ 
+  synthesizeBatch: (segmentIds: string[]) =>
+    api.post<{ results: any[] }>('/tts/synthesize/batch', { segment_ids: segmentIds }).then((r) => r.data),
 
   synthesizeJob: (jobId: string) =>
     api.post(`/tts/synthesize/job/${jobId}`).then((r) => r.data),

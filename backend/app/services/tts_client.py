@@ -66,8 +66,7 @@ class VoxCPM2Client:
             dict with keys: success, audio_path, duration_secs, error
         """
         if not self.base_url:
-            logger.warning("VOXCPM2_API_URL not set — using mock TTS.")
-            return await self._mock_synthesize(text, output_path)
+            return await self._gemini_synthesize(text, output_path, voice_design=voice_design)
 
         # VoxCPM2 voice design: prepend in parentheses if provided
         full_text = f"({voice_design}){text}" if voice_design else text
@@ -153,6 +152,124 @@ class VoxCPM2Client:
 
         tasks = [synth_one(seg) for seg in segments]
         return await asyncio.gather(*tasks)
+
+    async def _gemini_synthesize(self, text: str, output_path: str, voice_design: str = "") -> dict:
+        """
+        Generate real WAV audio using Gemini API (audio modality).
+        """
+        if not settings.GEMINI_API_KEY:
+            logger.warning("GEMINI_API_KEY not set — using mock TTS.")
+            return await self._mock_synthesize(text, output_path)
+
+        model = settings.GEMINI_MODEL
+        if "-lite" in model or "flash" not in model or model == "gemini-2.0-flash":
+            # gemini-3.1-flash-tts-preview is the dedicated TTS model
+            model = "gemini-3.1-flash-tts-preview"
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": settings.GEMINI_API_KEY,
+        }
+
+        # Select a prebuilt voice config based on voice_design properties
+        # Supported voices include Puck, Kore, Charon, Aoede, Fenrir, Schedar, Zephyr, etc.
+        voice_name = "Puck"
+        vd_lower = voice_design.lower() if voice_design else ""
+        if "female" in vd_lower or "woman" in vd_lower or "girl" in vd_lower:
+            if "child" in vd_lower or "young" in vd_lower:
+                voice_name = "Aoede"
+            elif "old" in vd_lower or "senior" in vd_lower:
+                voice_name = "Laomedeia"
+            else:
+                voice_name = "Kore"
+        elif "male" in vd_lower or "man" in vd_lower or "boy" in vd_lower:
+            if "child" in vd_lower or "young" in vd_lower:
+                voice_name = "Puck"
+            elif "old" in vd_lower or "senior" in vd_lower:
+                voice_name = "Charon"
+            else:
+                voice_name = "Fenrir"
+        elif "child" in vd_lower:
+            voice_name = "Aoede"
+
+        # Prompt instructs Gemini to read the text
+        prompt = (
+            "Read the following Khmer text out loud in a natural, clear voice. "
+            "Speak the text directly, without saying anything else. "
+            "No introductions, no explanations, no translations. Just read it:\n\n"
+            f"{text}"
+        )
+
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {
+                        "prebuiltVoiceConfig": {
+                            "voiceName": voice_name
+                        }
+                    }
+                }
+            }
+        }
+
+        try:
+            logger.info(f"Gemini TTS request ({model}, voice={voice_name}): {text[:50]}...")
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+                
+            if resp.status_code == 429:
+                return {
+                    "success": False,
+                    "audio_path": "",
+                    "duration_secs": 0,
+                    "error": "Gemini API rate limit (429)",
+                }
+                
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Extract base64 audio bytes
+            audio_bytes = None
+            for candidate in data.get("candidates", []):
+                for part in candidate.get("content", {}).get("parts", []):
+                    if "inlineData" in part:
+                        inline = part["inlineData"]
+                        if inline.get("mimeType", "").startswith("audio/"):
+                            import base64
+                            audio_bytes = base64.b64decode(inline["data"])
+                            break
+                if audio_bytes:
+                    break
+
+            if not audio_bytes:
+                logger.warning(f"Gemini returned no audio data. Response: {data}")
+                return await self._mock_synthesize(text, output_path)
+
+            out_path = Path(output_path)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(audio_bytes)
+
+            # Get duration of saved wav
+            duration = _get_wav_duration(str(out_path))
+            return {
+                "success": True,
+                "audio_path": str(out_path),
+                "duration_secs": duration,
+                "error": "",
+            }
+
+        except Exception as e:
+            logger.error(f"Gemini TTS failed: {e}")
+            return {
+                "success": False,
+                "audio_path": "",
+                "duration_secs": 0,
+                "error": str(e),
+            }
 
     async def _mock_synthesize(self, text: str, output_path: str) -> dict:
         """

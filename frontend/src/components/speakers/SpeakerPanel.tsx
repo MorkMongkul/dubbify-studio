@@ -25,6 +25,20 @@ export function SpeakerPanel({ speakers, className, segments }: SpeakerPanelProp
   const { mutate: updateSpeaker } = useUpdateSpeaker()
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
+  const [voicePrompt, setVoicePrompt] = useState('')
+  const [voicePromptSpId, setVoicePromptSpId] = useState<string | null>(null)
+
+  const handleSelectSpeaker = (spId: string | null) => {
+    setSelectedSpeaker(spId)
+    if (spId) {
+      const sp = speakers.find(s => s.id === spId)
+      setVoicePrompt(sp?.voice_design_prompt ?? '')
+      setVoicePromptSpId(spId)
+    } else {
+      setVoicePrompt('')
+      setVoicePromptSpId(null)
+    }
+  }
 
   const startEdit = (sp: Speaker) => {
     setEditingId(sp.id)
@@ -48,6 +62,18 @@ export function SpeakerPanel({ speakers, className, segments }: SpeakerPanelProp
       { speakerId: sp.id, data: { color } },
       { onSuccess: () => toast.success('Color updated') }
     )
+  }
+
+  const handleVoicePromptBlur = (sp: Speaker) => {
+    if (voicePrompt.trim() !== (sp.voice_design_prompt ?? '')) {
+      updateSpeaker(
+        { speakerId: sp.id, data: { voice_design_prompt: voicePrompt.trim() } },
+        {
+          onSuccess: () => toast.success('Voice design updated ✓'),
+          onError: () => toast.error('Failed to update voice design')
+        }
+      )
+    }
   }
 
   return (
@@ -93,7 +119,7 @@ export function SpeakerPanel({ speakers, className, segments }: SpeakerPanelProp
             >
               <div
                 className="flex items-center gap-2.5 px-3 py-2.5 cursor-pointer"
-                onClick={() => setSelectedSpeaker(isSelected ? null : sp.id)}
+                onClick={() => handleSelectSpeaker(isSelected ? null : sp.id)}
               >
                 {/* Color dot */}
                 <div
@@ -161,28 +187,48 @@ export function SpeakerPanel({ speakers, className, segments }: SpeakerPanelProp
                   initial={{ height: 0, opacity: 0 }}
                   animate={{ height: 'auto', opacity: 1 }}
                   exit={{ height: 0, opacity: 0 }}
-                  className="px-3 pb-2.5"
+                  className="px-3 pb-2.5 space-y-3"
                 >
-                  <p className="text-[10px] text-text-disabled mb-1.5">Track color</p>
-                  <div className="flex gap-1.5">
-                    {PRESET_COLORS.map((c) => (
-                      <button
-                        key={c}
-                        className={cn(
-                          'h-5 w-5 rounded-full border-2 transition-transform hover:scale-110',
-                          color === c ? 'border-white' : 'border-transparent'
-                        )}
-                        style={{ background: c }}
-                        onClick={(e) => { e.stopPropagation(); handleColorChange(sp, c) }}
-                      />
-                    ))}
+                  <div>
+                    <p className="text-[10px] text-text-disabled mb-1.5">Track color</p>
+                    <div className="flex gap-1.5">
+                      {PRESET_COLORS.map((c) => (
+                        <button
+                          key={c}
+                          className={cn(
+                            'h-5 w-5 rounded-full border-2 transition-transform hover:scale-110',
+                            color === c ? 'border-white' : 'border-transparent'
+                          )}
+                          style={{ background: c }}
+                          onClick={(e) => { e.stopPropagation(); handleColorChange(sp, c) }}
+                        />
+                      ))}
+                    </div>
                   </div>
-                  <button
-                    className="mt-2 text-[10px] text-text-muted hover:text-brand-400 transition-colors"
-                    onClick={(e) => { e.stopPropagation(); startEdit(sp) }}
-                  >
-                    ✎ Edit name
-                  </button>
+
+                  <div>
+                    <p className="text-[10px] text-text-disabled mb-1.5">Voice Prompt / Description</p>
+                    <textarea
+                      placeholder="e.g. A young female, energetic voice"
+                      value={voicePromptSpId === sp.id ? voicePrompt : (sp.voice_design_prompt ?? '')}
+                      onChange={(e) => {
+                        setVoicePrompt(e.target.value)
+                        setVoicePromptSpId(sp.id)
+                      }}
+                      onBlur={() => handleVoicePromptBlur(sp)}
+                      onClick={(e) => e.stopPropagation()}
+                      className="w-full bg-zinc-950/80 border border-zinc-800 text-[10px] rounded-lg p-2 text-zinc-200 focus:outline-none focus:border-purple-500/50 resize-none h-14"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between border-t border-border pt-2">
+                    <button
+                      className="text-[10px] text-text-muted hover:text-brand-400 transition-colors"
+                      onClick={(e) => { e.stopPropagation(); startEdit(sp) }}
+                    >
+                      ✎ Edit name
+                    </button>
+                  </div>
                 </motion.div>
               )}
             </motion.div>

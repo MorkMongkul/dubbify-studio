@@ -8,34 +8,27 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List
-
+from pydantic import BaseModel
+ 
 from app.core.database import get_db
 from app.core.config import settings
 from app.models.models import Segment, Speaker, Job, JobStatus
 from app.schemas.schemas import TTSResponse
 from app.services.tts_client import tts_client
 from app.services.audio_extractor import mix_dubbed_audio
-
+ 
 router = APIRouter(prefix="/tts", tags=["TTS Synthesis"])
-
-
-@router.post("/synthesize/segment/{segment_id}", response_model=TTSResponse)
-async def synthesize_segment(
-    segment_id: str,
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Synthesize a single segment using VoxCPM2.
-    Uses the speaker's voice_design_prompt automatically.
-    """
+ 
+ 
+async def _synthesize_segment_db(segment_id: str, db: AsyncSession) -> Segment:
     result = await db.execute(select(Segment).where(Segment.id == segment_id))
     seg = result.scalar_one_or_none()
     if not seg:
         raise HTTPException(status_code=404, detail="Segment not found")
-
-    if not seg.khmer_text.strip():
+ 
+    if not seg.khmer_text or not seg.khmer_text.strip():
         raise HTTPException(status_code=400, detail="Segment has no Khmer text to synthesize")
-
+ 
     # Get speaker's voice design prompt
     voice_design = ""
     if seg.speaker_id:
@@ -43,32 +36,95 @@ async def synthesize_segment(
         speaker = sp_result.scalar_one_or_none()
         if speaker:
             voice_design = speaker.voice_design_prompt
-
+ 
     # Build output path
     job_dir = Path(settings.UPLOAD_DIR) / seg.job_id
     tts_dir = job_dir / "tts"
     tts_dir.mkdir(parents=True, exist_ok=True)
     output_path = tts_dir / f"seg_{segment_id}.wav"
-
-    # Call VoxCPM2
+ 
+    # Call VoxCPM2 or Gemini TTS
     result_data = await tts_client.synthesize(
         text=seg.khmer_text,
         voice_design=voice_design,
         output_path=str(output_path),
     )
-
+ 
     if result_data["success"]:
         seg.tts_audio_path    = result_data["audio_path"]
         seg.tts_duration_secs = result_data["duration_secs"]
         await db.flush()
-
+        return seg
+    else:
+        raise HTTPException(status_code=500, detail=result_data.get("error", "TTS synthesis failed"))
+ 
+ 
+@router.post("/synthesize/segment/{segment_id}", response_model=TTSResponse)
+async def synthesize_segment(
+    segment_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Synthesize a single segment.
+    """
+    seg = await _synthesize_segment_db(segment_id, db)
+    await db.commit()
     return TTSResponse(
         segment_id=segment_id,
-        audio_path=result_data["audio_path"],
-        duration_secs=result_data["duration_secs"],
-        success=result_data["success"],
-        error=result_data.get("error", ""),
+        audio_path=seg.tts_audio_path,
+        duration_secs=seg.tts_duration_secs,
+        success=True,
+        error="",
     )
+ 
+ 
+class BatchSynthesizeRequest(BaseModel):
+    segment_ids: List[str]
+ 
+ 
+@router.post("/synthesize/batch")
+async def synthesize_batch(
+    payload: BatchSynthesizeRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Synthesize multiple segments sequentially with a pacing delay
+    to prevent Gemini API rate limit errors (429).
+    """
+    results = []
+    for i, segment_id in enumerate(payload.segment_ids):
+        try:
+            seg = await _synthesize_segment_db(segment_id, db)
+            results.append({
+                "segment_id": segment_id,
+                "audio_path": seg.tts_audio_path,
+                "duration_secs": seg.tts_duration_secs,
+                "success": True,
+                "error": ""
+            })
+        except HTTPException as e:
+            results.append({
+                "segment_id": segment_id,
+                "audio_path": "",
+                "duration_secs": 0,
+                "success": False,
+                "error": e.detail
+            })
+        except Exception as e:
+            results.append({
+                "segment_id": segment_id,
+                "audio_path": "",
+                "duration_secs": 0,
+                "success": False,
+                "error": str(e)
+            })
+        
+        # Add 1.5 seconds delay between generations for batch requests (except the last one)
+        if i < len(payload.segment_ids) - 1:
+            await asyncio.sleep(1.5)
+ 
+    await db.commit()
+    return {"results": results}
 
 
 @router.post("/synthesize/job/{job_id}")

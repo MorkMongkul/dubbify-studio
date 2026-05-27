@@ -1,15 +1,14 @@
 // src/components/transcript/TranscriptPanel.tsx
 import { useRef, useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { AlignLeft, CheckCheck, Loader2, ChevronRight, Sliders, Volume2, Type, RefreshCw, Mic } from 'lucide-react'
+import { AlignLeft, Loader2, ChevronRight, Sliders, Volume2, Type, RefreshCw, Mic } from 'lucide-react'
 import type { Segment, Speaker } from '@/types'
 import { useEditorStore, useActiveSegmentId } from '@/store/editorStore'
-import { useApproveAll } from '@/hooks/useApi'
 import { SegmentCardSkeleton } from '@/components/ui/Skeleton'
 import { toast } from 'sonner'
 import { cn, formatTime, getSpeakerColor } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
-import { tts, segments as segmentsApi } from '@/api/client'
+import { tts } from '@/api/client'
  
 interface TranscriptPanelProps {
   segments: Segment[]
@@ -39,7 +38,6 @@ export function TranscriptPanel({
   const inspectorMode = useEditorStore((s) => s.inspectorMode)
   const focusedTimelineItemId = useEditorStore((s) => s.focusedTimelineItemId)
  
-  const { mutate: approveAll, isPending: approvingAll } = useApproveAll()
   const qc = useQueryClient()
   const [singleSynthesizing, setSingleSynthesizing] = useState<string | null>(null)
   const [batchSynthesizing, setBatchSynthesizing] = useState(false)
@@ -68,15 +66,6 @@ export function TranscriptPanel({
     }
   }, [activeSegmentId, focusedTimelineItemId])
 
-  const approvedCount = segments.filter((s) => s.is_approved).length
-  const totalCount = segments.length
-
-  const handleApproveAll = () => {
-    approveAll(jobId, {
-      onSuccess: () => toast.success(`All ${totalCount} segments approved`),
-      onError: () => toast.error('Failed to approve all'),
-    })
-  }
 
   const getSpeaker = (seg: Segment) => speakers.find((sp) => sp.id === seg.speaker_id)
   const getSpeakerIndex = (seg: Segment) => speakers.findIndex((sp) => sp.id === seg.speaker_id)
@@ -89,10 +78,6 @@ export function TranscriptPanel({
   const handleSingleSynthesize = async (segmentId: string) => {
     setSingleSynthesizing(segmentId)
     try {
-      const seg = segments.find(s => s.id === segmentId)
-      if (seg && !seg.is_approved) {
-        await segmentsApi.approve(segmentId)
-      }
       await tts.synthesizeSegment(segmentId)
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
       toast.success('Voice generated successfully ✓')
@@ -104,31 +89,14 @@ export function TranscriptPanel({
     }
   }
  
-  const handleBatchApprove = async () => {
-    try {
-      await Promise.all(selectedSegmentIds.map(id => segmentsApi.approve(id)))
-      qc.invalidateQueries({ queryKey: ['segments', jobId] })
-      toast.success(`Approved ${selectedSegmentIds.length} segments ✓`)
-      useEditorStore.setState({ selectedSegmentIds: [] })
-    } catch (err) {
-      toast.error('Failed to approve selected segments')
-      console.error(err)
-    }
-  }
- 
   const handleBatchSynthesize = async () => {
     setBatchSynthesizing(true)
     try {
-      // Approve any unapproved segments in the batch first
-      const unapprovedIds = selectedSegmentIds.filter(id => {
-        const seg = segments.find(s => s.id === id)
-        return seg && !seg.is_approved
-      })
-      if (unapprovedIds.length > 0) {
-        await Promise.all(unapprovedIds.map(id => segmentsApi.approve(id)))
+      if (selectedSegmentIds.length === 1) {
+        await tts.synthesizeSegment(selectedSegmentIds[0])
+      } else {
+        await tts.synthesizeBatch(selectedSegmentIds)
       }
- 
-      await Promise.all(selectedSegmentIds.map(id => tts.synthesizeSegment(id)))
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
       toast.success(`Generated voice for ${selectedSegmentIds.length} segments ✓`)
       useEditorStore.setState({ selectedSegmentIds: [] })
@@ -160,11 +128,6 @@ export function TranscriptPanel({
               <span className="text-[11px] font-bold text-purple-400/90 uppercase tracking-wider">
                 Transcript Inspector
               </span>
-              {totalCount > 0 && (
-                <span className="text-[10px] font-mono text-zinc-500 font-bold">
-                  {approvedCount}/{totalCount}
-                </span>
-              )}
             </>
           ) : (
             <>
@@ -190,21 +153,7 @@ export function TranscriptPanel({
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          {inspectorMode === 'global_synthesis' ? (
-            totalCount > 0 && approvedCount < totalCount && (
-              <button
-                className="flex items-center gap-1 text-[11px] text-emerald-400 hover:text-emerald-300 px-1.5 py-0.5 rounded hover:bg-emerald-500/10 transition-colors"
-                onClick={handleApproveAll}
-                disabled={approvingAll}
-              >
-                {approvingAll
-                  ? <Loader2 size={10} className="animate-spin" />
-                  : <CheckCheck size={11} />
-                }
-                Approve all
-              </button>
-            )
-          ) : (
+          {inspectorMode !== 'global_synthesis' ? (
             <button
               onClick={handleResetInspector}
               className="p-1 rounded hover:bg-white/10 text-text-muted hover:text-white transition-colors"
@@ -212,7 +161,7 @@ export function TranscriptPanel({
             >
               <ChevronRight size={14} className="rotate-90" />
             </button>
-          )}
+          ) : null}
 
           {inspectorMode === 'global_synthesis' && (
             <button
@@ -226,22 +175,7 @@ export function TranscriptPanel({
         </div>
       </div>
 
-      {/* Progress bar */}
-      {totalCount > 0 && inspectorMode === 'global_synthesis' && (
-        <div className="px-3 py-1.5 border-b border-zinc-800/50 shrink-0 bg-zinc-900">
-          <div className="flex justify-between text-[10px] text-zinc-400 font-semibold mb-1">
-            <span>Approval</span>
-            <span className="font-mono">{Math.round((approvedCount / totalCount) * 100)}%</span>
-          </div>
-          <div className="h-0.5 rounded-full overflow-hidden" style={{ background: 'var(--color-surface-4)' }}>
-            <motion.div
-              className="h-full bg-emerald-500 rounded-full"
-              animate={{ width: `${(approvedCount / totalCount) * 100}%` }}
-              transition={{ duration: 0.35 }}
-            />
-          </div>
-        </div>
-      )}
+
  
       {/* Selection Actions Toolbar */}
       <AnimatePresence>
@@ -256,13 +190,6 @@ export function TranscriptPanel({
               <span>{selectedSegmentIds.length} Selected</span>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                onClick={handleBatchApprove}
-                className="text-[10px] bg-emerald-600 hover:bg-emerald-500 text-white px-2.5 py-1 rounded font-semibold transition-all flex items-center gap-1 cursor-pointer"
-              >
-                <CheckCheck size={10} />
-                <span>Approve</span>
-              </button>
               <button
                 onClick={handleBatchSynthesize}
                 disabled={batchSynthesizing}

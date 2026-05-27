@@ -23,7 +23,7 @@ export function VideoPlayer({ videoUrl, segments, speakers, className }: VideoPl
   const {
     currentTime, isPlaying, volume, playbackRate, activeSegmentId,
     setCurrentTime, setDuration, setPlaying, setActiveSegment,
-    togglePlaying, setPlaybackRate,
+    togglePlaying, setPlaybackRate, mutedTrackIds,
   } = useEditorStore()
 
   const segmentsRef = useRef(segments)
@@ -106,10 +106,13 @@ export function VideoPlayer({ videoUrl, segments, speakers, className }: VideoPl
     }
   }, [currentTime, videoUrl])
 
-  // Volume
+  // Volume & Mute BGM
   useEffect(() => {
-    if (videoRef.current) videoRef.current.volume = volume
-  }, [volume, videoUrl])
+    if (videoRef.current) {
+      const isBgmMuted = mutedTrackIds['__bgm__']
+      videoRef.current.volume = isBgmMuted ? 0 : volume
+    }
+  }, [volume, mutedTrackIds, videoUrl])
 
   // Playback rate
   useEffect(() => {
