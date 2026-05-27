@@ -4,6 +4,13 @@
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 
+export interface VoicePreset {
+  id: string
+  name: string // e.g., "Main Character (Male)", "Narrator (Female)"
+  gender: 'male' | 'female'
+  reference_audio_path?: string // Path to voice clone reference file
+}
+
 interface EditorStore {
   // Playback
   currentTime: number
@@ -21,6 +28,10 @@ interface EditorStore {
   activeSegmentId: string | null
   editingSegmentId: string | null
   selectedSpeakerId: string | null
+  selectedSegmentIds: string[]
+  availableVoices: VoicePreset[]
+  inspectorMode: 'global_synthesis' | 'audio_clip_settings' | 'subtitle_settings'
+  focusedTimelineItemId: string | null
 
   // Optimistic positions
   segmentPositions: Record<string, {
@@ -29,6 +40,7 @@ interface EditorStore {
     speaker_id: string | null
     tts_duration_secs?: number
     tts_audio_path?: string
+    khmer_text?: string
   }>
   updateSegmentPosition: (
     id: string,
@@ -38,6 +50,7 @@ interface EditorStore {
     tts_duration_secs?: number,
     tts_audio_path?: string
   ) => void
+  updateSegmentText: (id: string, text: string) => void
   clearSegmentPositions: () => void
 
   // Mute & Solo States
@@ -75,6 +88,10 @@ interface EditorStore {
   setActiveSegment: (id: string | null) => void
   setEditingSegment: (id: string | null) => void
   setSelectedSpeaker: (id: string | null) => void
+  toggleSelectSegment: (id: string) => void
+  toggleSelectAllSegments: (ids: string[]) => void
+  setInspectorMode: (mode: 'global_synthesis' | 'audio_clip_settings' | 'subtitle_settings') => void
+  setFocusedTimelineItemId: (id: string | null) => void
 
   // Actions — panels
   toggleLeftPanel: () => void
@@ -105,6 +122,14 @@ const DEFAULT_STATE = {
   mutedTrackIds: {},
   soloedTrackIds: {},
   simulatingSegmentIds: {},
+  selectedSegmentIds: [] as string[],
+  availableVoices: [
+    { id: 'male_actor_1', name: 'Male Actor 1', gender: 'male' },
+    { id: 'female_actor_1', name: 'Female Actor 1', gender: 'female' },
+    { id: 'child_voice_1', name: 'Child Voice', gender: 'female' },
+  ] as VoicePreset[],
+  inspectorMode: 'global_synthesis' as const,
+  focusedTimelineItemId: null as string | null,
 }
 
 export const useEditorStore = create<EditorStore>()(
@@ -146,6 +171,21 @@ export const useEditorStore = create<EditorStore>()(
     },
     setEditingSegment: (id) => set({ editingSegmentId: id }),
     setSelectedSpeaker: (id) => set({ selectedSpeakerId: id }),
+    toggleSelectSegment: (id) => set((s) => ({
+      selectedSegmentIds: s.selectedSegmentIds.includes(id)
+        ? s.selectedSegmentIds.filter((x) => x !== id)
+        : [...s.selectedSegmentIds, id]
+    })),
+    toggleSelectAllSegments: (ids) => set((s) => {
+      const allSelected = ids.every((id) => s.selectedSegmentIds.includes(id))
+      return {
+        selectedSegmentIds: allSelected
+          ? s.selectedSegmentIds.filter((id) => !ids.includes(id))
+          : Array.from(new Set([...s.selectedSegmentIds, ...ids]))
+      }
+    }),
+    setInspectorMode: (mode) => set({ inspectorMode: mode }),
+    setFocusedTimelineItemId: (id) => set({ focusedTimelineItemId: id }),
 
     updateSegmentPosition: (id, start_time, end_time, speaker_id, tts_duration_secs, tts_audio_path) =>
       set((s) => ({
@@ -161,6 +201,20 @@ export const useEditorStore = create<EditorStore>()(
           },
         },
       })),
+    updateSegmentText: (id, text) =>
+      set((s) => {
+        const existing = s.segmentPositions[id] || {}
+        return {
+          segmentPositions: {
+            ...s.segmentPositions,
+            [id]: {
+              ...existing,
+              khmer_text: text,
+              tts_audio_path: "", // Revert status to Pending on text change
+            },
+          },
+        }
+      }),
     clearSegmentPositions: () => set({ segmentPositions: {} }),
 
     toggleMuteTrack: (speakerId) => {
@@ -207,3 +261,7 @@ export const useDuration = () => useEditorStore((s) => s.duration)
 export const useZoom = () => useEditorStore((s) => s.zoom)
 export const useActiveSegmentId = () => useEditorStore((s) => s.activeSegmentId)
 export const useEditingSegmentId = () => useEditorStore((s) => s.editingSegmentId)
+export const useSelectedSegmentIds = () => useEditorStore((s) => s.selectedSegmentIds)
+export const useAvailableVoices = () => useEditorStore((s) => s.availableVoices)
+export const useInspectorMode = () => useEditorStore((s) => s.inspectorMode)
+export const useFocusedTimelineItemId = () => useEditorStore((s) => s.focusedTimelineItemId)
