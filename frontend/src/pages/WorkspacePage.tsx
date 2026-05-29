@@ -6,20 +6,22 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useDropzone } from 'react-dropzone'
 import {
-  ChevronLeft, ChevronRight, Mic2, Download,
-  Loader2, AlertCircle, Zap,
-  Music, UploadCloud, Film, FileText, X,
+  ChevronLeft, ChevronRight, Download,
+  Loader2, AlertCircle, Zap, Scissors,
+  UploadCloud, Film, FileText, X,
   Activity, VideoIcon, AlignLeft,
   FolderOpen, CheckCircle2, Trash2
 } from 'lucide-react'
 import { toast } from 'sonner'
 
 import {
-  useJob, useSegments, useSpeakers, useSynthesizeJob, useMixFinalAudio,
+  useJob, useSegments, useSpeakers, useMixFinalAudio,
   useProjects, useCreateProject, useUploadVideo, useUploadWithSubtitle,
-  useProjectJobs, useDeleteJob
+  useProjectJobs, useDeleteJob, useAnalyzeJob
 } from '@/hooks/useApi'
 import { useEditorStore } from '@/store/editorStore'
+import { useQueryClient } from '@tanstack/react-query'
+import { jobs as jobsApi } from '@/api/client'
 
 import { VideoPlayer } from '@/components/video/VideoPlayer'
 import { TimelineEditor } from '@/components/timeline/TimelineEditor'
@@ -68,6 +70,8 @@ function TranscriptPanelPlaceholder({ onCollapse }: { onCollapse?: () => void })
 export default function WorkspacePage() {
   const { projectId, jobId } = useParams<{ projectId: string; jobId: string }>()
   const navigate = useNavigate()
+  const qc = useQueryClient()
+  const [exporting, setExporting] = useState(false)
 
   const {
     duration, rightPanelCollapsed,
@@ -164,10 +168,15 @@ export default function WorkspacePage() {
   const { segmentPositions } = useEditorStore()
   const displaySegs = segs.map(s => {
     const pos = segmentPositions[s.id]
-    return pos ? { ...s, ...pos } : s
+    if (!pos) return s
+    return {
+      ...s,
+      ...pos,
+      tts_audio_path: s.tts_audio_path || pos.tts_audio_path || '',
+      tts_duration_secs: s.tts_audio_path ? s.tts_duration_secs : (pos.tts_duration_secs ?? s.tts_duration_secs),
+    }
   })
 
-  // Pre-populate segmentPositions on load to ensure status is initially 'Pending' (tts_audio_path: "")
   useEffect(() => {
     if (segs.length > 0) {
       const currentPositions = useEditorStore.getState().segmentPositions
@@ -175,14 +184,18 @@ export default function WorkspacePage() {
       const nextPositions = { ...currentPositions }
 
       segs.forEach(s => {
-        if (!currentPositions[s.id]) {
+        const existing = currentPositions[s.id]
+        if (!existing) {
           nextPositions[s.id] = {
             start_time: s.start_time,
             end_time: s.end_time,
             speaker_id: s.speaker_id ?? null,
             tts_duration_secs: s.tts_duration_secs,
-            tts_audio_path: "",
+            tts_audio_path: s.tts_audio_path,
           }
+          updated = true
+        } else if (s.tts_audio_path && existing.tts_audio_path !== s.tts_audio_path) {
+          nextPositions[s.id] = { ...existing, tts_audio_path: s.tts_audio_path, tts_duration_secs: s.tts_duration_secs }
           updated = true
         }
       })
@@ -193,11 +206,24 @@ export default function WorkspacePage() {
     }
   }, [segs])
 
-  const { mutate: synthesize, isPending: synthesizing } = useSynthesizeJob()
   const { mutate: mix, isPending: mixing } = useMixFinalAudio()
+  const { mutate: analyze, isPending: analyzing } = useAnalyzeJob()
 
-  const isRunning = job ? isJobRunning(job.status) : false
+  const isRunning    = job ? isJobRunning(job.status) : false
   const statusConfig = job ? getJobStatusConfig(job.status) : null
+
+  // Stage classification — drives which UI state to show
+  const isStage1     = job?.status === 'pending' || job?.status === 'extracting' || job?.status === 'separating'
+  const isStemsReady = job?.status === 'stems_ready'
+  const isStage2     = job?.status === 'diarizing' || job?.status === 'transcribing' || job?.status === 'translating'
+
+  const handleAnalyze = () => {
+    if (!jobId) return
+    analyze(jobId, {
+      onSuccess: () => toast.success('Analysis started — detecting speakers…'),
+      onError:   () => toast.error('Failed to start analysis'),
+    })
+  }
 
   // --- Upload / Setup States ---
   const [videoFile, setVideoFile] = useState<File | null>(null)
@@ -234,36 +260,40 @@ export default function WorkspacePage() {
       }
     )
   }, [projectId, jobId, deleteJob, navigate])
-  const handleSynthesize = () => {
-    if (!jobId) return
-    synthesize(jobId, {
-      onSuccess: () => toast.success('TTS synthesis started!'),
-      onError: () => toast.error('Failed to start synthesis'),
-    })
-  }
-
-  const handleMix = () => {
-    if (!jobId) return
-    mix(jobId, {
-      onSuccess: () => toast.success('Audio mix started!'),
-      onError: () => toast.error('Failed to start mix'),
-    })
-  }
-
   const handleExport = () => {
-    if (!job?.output_url) {
-      toast.error('No dubbed video available yet. Run Mix first.')
-      return
-    }
-    window.open(job.output_url, '_blank')
+    if (!jobId) return
+    setExporting(true)
+    const toastId = toast.loading('Compiling dubbed video... Please wait.')
+    mix({ jobId, muteOriginal: false }, { // Keep BGM by default
+      onSuccess: async () => {
+        // Invalidate queries to get updated data
+        await qc.invalidateQueries({ queryKey: ['job', jobId] })
+        await qc.invalidateQueries({ queryKey: ['job'] })
+        
+        try {
+          const freshJob = await jobsApi.get(jobId)
+          if (freshJob.output_url) {
+            toast.success('Video compiled successfully! Opening...', { id: toastId })
+            window.open(freshJob.output_url, '_blank')
+          } else {
+            toast.error('Video compiled, but output URL is missing', { id: toastId })
+          }
+        } catch (err) {
+          toast.error('Failed to retrieve the compiled video link', { id: toastId })
+        } finally {
+          setExporting(false)
+        }
+      },
+      onError: (err: any) => {
+        toast.error(`Compilation failed: ${err.message}`, { id: toastId })
+        setExporting(false)
+      }
+    })
   }
 
   // Active session status flags
-  const hasApprovedSegs = segs.some((s) => s.is_approved)
   const hasTtsAudio = segs.some((s) => s.tts_audio_path !== '')
-  const jobReady = job?.status === 'completed' && segs.length > 0
-  const canMix = hasTtsAudio
-  const canExport = !!job?.output_url
+  const canExport = hasTtsAudio && !exporting && !mixing
   const videoUrl = job?.video_url ?? undefined
 
   // --- Dropzone Settings ---
@@ -664,54 +694,29 @@ export default function WorkspacePage() {
           </div>
 
           {/* Center Side: Active processing status indicator */}
-          <div className="flex-1 flex items-center justify-center">
-            {isRunning && (
+          <div className="flex-1 flex items-center justify-center gap-2">
+            {(isStage1 || isStage2) && (
               <div className="flex items-center gap-1.5 text-[11px] text-brand-300">
                 <Loader2 size={11} className="animate-spin" />
-                <span>{statusConfig?.description ?? 'Processing...'}</span>
+                <span>{statusConfig?.description ?? 'Processing…'}</span>
+              </div>
+            )}
+            {isStemsReady && (
+              <div className="flex items-center gap-1.5 text-[11px] text-emerald-400">
+                <Scissors size={11} />
+                <span>Audio split complete — click <strong>Analyze Speech</strong> on the Vocals track</span>
               </div>
             )}
           </div>
 
           {/* Right Side: Panel Controls + Actions + Export */}
           <div className="flex items-center gap-1.5">
-            {jobId && (
-              <>
-                {/* Synthesize */}
-                <Button
-                  variant="accent"
-                  size="sm"
-                  onClick={handleSynthesize}
-                  loading={synthesizing}
-                  disabled={!jobReady || !hasApprovedSegs || synthesizing}
-                  icon={<Mic2 size={11} />}
-                  title={!hasApprovedSegs ? 'Approve segments first' : undefined}
-                >
-                  Synthesize
-                </Button>
-
-                {/* Mix */}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleMix}
-                  loading={mixing}
-                  disabled={!canMix || mixing}
-                  icon={<Music size={11} />}
-                  title={!canMix ? 'Run Synthesize first' : undefined}
-                >
-                  Mix
-                </Button>
-              </>
-            )}
-
-            <div className="w-px h-4 mx-0.5" style={{ background: 'var(--color-border)' }} />
-
             {/* Export Button (Header Top Right) */}
             <Button
               variant={canExport ? 'default' : 'ghost'}
               size="sm"
               onClick={handleExport}
+              loading={exporting || mixing}
               disabled={!canExport}
               icon={<Download size={11} />}
               className={cn("shadow-glow transition-all", canExport ? "bg-brand text-white hover:bg-brand-hover" : "")}

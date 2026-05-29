@@ -54,6 +54,7 @@ export function Badge({ children, variant = 'default', dot, pulse, className }: 
 const statusVariantMap: Record<JobStatus, BadgeVariant> = {
   pending:      'gray',
   extracting:   'violet',
+  separating:   'violet',
   diarizing:    'violet',
   transcribing: 'violet',
   translating:  'blue',
@@ -70,7 +71,7 @@ interface StatusBadgeProps {
 }
 
 export function StatusBadge({ status, label, className }: StatusBadgeProps) {
-  const isRunning = ['uploading','extracting','diarizing','transcribing','translating','synthesizing','mixing'].includes(status)
+  const isRunning = ['uploading','extracting','separating','diarizing','transcribing','translating','synthesizing','mixing'].includes(status)
   return (
     <Badge
       variant={statusVariantMap[status]}

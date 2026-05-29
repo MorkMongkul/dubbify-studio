@@ -18,8 +18,8 @@ from app.core.database import get_db
 from app.core.config import settings
 from app.models.models import Job, Project, JobStatus
 from app.schemas.schemas import JobResponse, PipelineStartResponse
-from app.services.pipeline import run_pipeline
-from app.services.subtitle_pipeline import run_subtitle_pipeline
+from app.services.pipeline import run_pipeline, run_analysis_pipeline
+from app.services.subtitle_pipeline import run_subtitle_pipeline, run_subtitle_analysis_pipeline
 from app.services.audio_extractor import extract_subtitle, list_subtitle_tracks
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
@@ -95,7 +95,7 @@ async def upload_and_start(
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
 
     job.video_path = str(video_path)
-    await db.flush()
+    await db.commit()
 
     # Auto-detect embedded subtitles
     subtitle_path = await extract_subtitle(
@@ -108,13 +108,13 @@ async def upload_and_start(
         # Found embedded subtitles — use faster subtitle pipeline
         logger.info(f"Job {job.id[:8]} — embedded subtitles found, using subtitle pipeline")
         background_tasks.add_task(
-            run_subtitle_pipeline, job.id, subtitle_path, db
+            run_subtitle_pipeline, job.id, subtitle_path
         )
         message = "Embedded subtitles detected. Subtitle pipeline started (faster + more accurate)."
     else:
         # No subtitles — fall back to ASR pipeline
         logger.info(f"Job {job.id[:8]} — no subtitles found, using ASR pipeline")
-        background_tasks.add_task(run_pipeline, job.id, db)
+        background_tasks.add_task(run_pipeline, job.id)
         message = "No embedded subtitles found. ASR pipeline started."
 
     return PipelineStartResponse(
@@ -190,11 +190,11 @@ async def upload_with_subtitle(
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
 
     job.video_path = str(video_path)
-    await db.flush()
+    await db.commit()
 
     # Launch subtitle pipeline in background
     background_tasks.add_task(
-        run_subtitle_pipeline, job.id, str(subtitle_path), db
+        run_subtitle_pipeline, job.id, str(subtitle_path)
     )
 
     return PipelineStartResponse(
@@ -248,6 +248,37 @@ async def list_project_jobs(project_id: str, db: AsyncSession = Depends(get_db))
         .order_by(Job.created_at.desc())
     )
     return result.scalars().all()
+
+
+@router.post("/{job_id}/analyze", status_code=status.HTTP_202_ACCEPTED)
+async def analyze_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Trigger Stage 2: diarization + transcription + translation.
+    Job must be in stems_ready state (Stage 1 complete).
+    """
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status != JobStatus.STEMS_READY:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job must be in stems_ready state to analyze. Current state: {job.status.value}",
+        )
+
+    # Detect which pipeline to use — subtitle jobs have a subtitle_path stored
+    subtitle_path = getattr(job, 'subtitle_path', None)
+    if subtitle_path and Path(subtitle_path).exists():
+        background_tasks.add_task(run_subtitle_analysis_pipeline, job_id)
+    else:
+        background_tasks.add_task(run_analysis_pipeline, job_id)
+
+    return {"message": "Analysis started", "job_id": job_id, "status": "diarizing"}
 
 
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)

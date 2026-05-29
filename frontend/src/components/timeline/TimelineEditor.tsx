@@ -1,10 +1,11 @@
 // src/components/timeline/TimelineEditor.tsx
 import { useRef, useCallback, useEffect, useState } from 'react'
-import { ZoomIn, ZoomOut, AlertTriangle } from 'lucide-react'
-import type { Segment, Speaker } from '@/types'
+import WaveSurfer from 'wavesurfer.js'
+import { ZoomIn, ZoomOut, AlertTriangle, Loader2, Scissors, X } from 'lucide-react'
+import type { Segment, Speaker, Job } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
-import { useUpdateSegment } from '@/hooks/useApi'
-import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, hexToRgba, cn } from '@/lib/utils'
+import { useUpdateSegment, useDeleteSegment } from '@/hooks/useApi'
+import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, hexToRgba, cn, isJobRunning, getJobStatusConfig } from '@/lib/utils'
 import { Tooltip } from '@/components/ui/Tooltip'
 
 const PX_PER_SEC = 100 // base pixels per second at zoom=1
@@ -23,9 +24,19 @@ interface TimelineEditorProps {
   speakers: Speaker[]
   duration: number
   className?: string
+  jobId?: string
+  projectId?: string
+  job?: Job
+  onAnalyze?: () => void
+  analyzing?: boolean
 }
 
-export function TimelineEditor({ segments, speakers, duration, className }: TimelineEditorProps) {
+export function TimelineEditor({ segments, speakers, duration, className, jobId, projectId, job, onAnalyze, analyzing }: TimelineEditorProps) {
+  const isStage1Processing = job?.status === 'extracting' || job?.status === 'separating' || job?.status === 'pending'
+  const isStemsReady       = job?.status === 'stems_ready'
+  // Once analysis has been triggered the original vocals are replaced by TTS — auto-mute them
+  const vocalsReplaced = !!job && !isStemsReady && !isStage1Processing
+
   const containerRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const rulerRef  = useRef<HTMLDivElement>(null)
@@ -44,8 +55,29 @@ export function TimelineEditor({ segments, speakers, duration, className }: Time
   } = useEditorStore()
 
   const { mutate: updateSegment } = useUpdateSegment()
+  const { mutate: deleteSegment } = useDeleteSegment()
+
+  // Delete / Backspace key removes the active segment (skip when typing in an input)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return
+      const tag = (e.target as HTMLElement).tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement).isContentEditable) return
+      if (!activeSegmentId || !jobId) return
+      e.preventDefault()
+      deleteSegment({ segmentId: activeSegmentId, jobId })
+      setActiveSegment(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [activeSegmentId, jobId, deleteSegment, setActiveSegment])
 
   const totalWidth = Math.max(timeToPixels(duration || 60, zoom, PX_PER_SEC), 800)
+
+  // Stem waveform paths — use tiny 8kHz mono preview files so Web Audio decodes instantly.
+  // Full stems (~19MB) are kept for playback; preview files (~1.7MB) are for visualization only.
+  const noVocalsPreviewPath = jobId && projectId ? `uploads/${projectId}/${jobId}/no_vocals.preview.wav` : null
+  const vocalsPreviewPath   = jobId && projectId ? `uploads/${projectId}/${jobId}/vocals.preview.wav`    : null
 
   // Group segments by speaker
   const speakerIds = [...new Set(segments.map((s) => s.speaker_id ?? '__none__'))]
@@ -319,6 +351,156 @@ export function TimelineEditor({ segments, speakers, duration, className }: Time
               }}
             />
 
+            {/* Background Music (BGM) Track */}
+            <div
+              className="relative border-b border-timeline-grid bg-zinc-900/30"
+              style={{ height: 48 }}
+            >
+              {/* Track label (sticky left) */}
+              <div
+                className="sticky left-0 z-10 h-full flex items-center px-2 gap-1.5 shrink-0 bg-zinc-900/95 backdrop-blur-sm border-r border-white/[0.04]"
+                style={{ float: 'left', width: 'var(--speaker-width)' }}
+              >
+                <div
+                  className="h-2 w-2 rounded-full shrink-0 bg-sky-500"
+                />
+                <span className="text-xs text-text-muted truncate grow min-w-0 pr-1 font-semibold">
+                  Background Music
+                </span>
+
+                {/* Mute Track Control */}
+                <div className="flex items-center gap-0.5 ml-auto shrink-0">
+                  <button
+                    onClick={() => toggleMuteTrack('__bgm__')}
+                    className={cn(
+                      "h-5 w-5 rounded text-[10px] font-bold flex items-center justify-center border transition-all select-none",
+                      mutedTrackIds['__bgm__']
+                        ? "bg-amber-500/20 text-amber-500 border-amber-500/30 hover:bg-amber-500/30"
+                        : "bg-transparent text-text-disabled border-transparent hover:bg-white/5 hover:text-text-muted"
+                    )}
+                    title="Mute Background Music"
+                  >
+                    M
+                  </button>
+                </div>
+              </div>
+
+              {/* BGM audio block */}
+              <div
+                className="absolute top-1 bottom-1 rounded overflow-hidden"
+                style={{
+                  left: 'calc(var(--speaker-width) + 4px)',
+                  width: `${timeToPixels(duration || 60, zoom, PX_PER_SEC)}px`,
+                }}
+              >
+                {isStage1Processing ? (
+                  <div className="absolute inset-0 rounded bg-sky-500/5 border border-sky-500/15">
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-sky-500/10 to-transparent animate-pulse" />
+                    <span className="absolute top-1 left-3 text-[10px] text-sky-400/40 font-medium select-none">Separating…</span>
+                  </div>
+                ) : (
+                  <div className="absolute inset-0 rounded bg-sky-500/10 border border-sky-500/25">
+                    {noVocalsPreviewPath && (
+                      <StemWaveform
+                        audioUrl={noVocalsPreviewPath}
+                        color="#38bdf8"
+                        pxPerSec={PX_PER_SEC * zoom}
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Vocals (Isolated) Track */}
+            <div
+              className="relative border-b border-timeline-grid bg-zinc-900/30"
+              style={{ height: 48 }}
+            >
+              {/* Track label — Analyze button lives here (sticky, always visible) */}
+              <div
+                className="sticky left-0 z-10 h-full flex items-center px-2 gap-1.5 shrink-0 bg-zinc-900/95 backdrop-blur-sm border-r border-white/[0.04]"
+                style={{ float: 'left', width: 'var(--speaker-width)' }}
+              >
+                <div className={cn(
+                  "h-2 w-2 rounded-full shrink-0",
+                  isStage1Processing ? "bg-emerald-500/30 animate-pulse"
+                    : vocalsReplaced   ? "bg-zinc-600"
+                    : "bg-emerald-500"
+                )} />
+                <div className="flex flex-col min-w-0 grow pr-1">
+                  <span className="text-xs text-text-muted truncate font-semibold leading-tight">
+                    {vocalsReplaced ? 'Orig. Vocals' : 'Vocals'}
+                  </span>
+                  {vocalsReplaced && (
+                    <span className="text-[8px] text-zinc-600 truncate leading-tight">replaced by TTS</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1 ml-auto shrink-0">
+                  {/* M button — always visible when stems exist so user can toggle at any time */}
+                  {!isStage1Processing && (
+                    <button
+                      onClick={() => toggleMuteTrack('__vocals__')}
+                      className={cn(
+                        "h-5 w-5 rounded text-[10px] font-bold flex items-center justify-center border transition-all select-none",
+                        mutedTrackIds['__vocals__']
+                          ? "bg-amber-500/20 text-amber-500 border-amber-500/30 hover:bg-amber-500/30"
+                          : "bg-transparent text-text-disabled border-transparent hover:bg-white/5 hover:text-text-muted"
+                      )}
+                      title={mutedTrackIds['__vocals__'] ? "Unmute Vocals" : "Mute Vocals"}
+                    >
+                      M
+                    </button>
+                  )}
+                  {/* Analyze button — shown at stems_ready */}
+                  {isStemsReady && onAnalyze && (
+                    <button
+                      onClick={onAnalyze}
+                      disabled={analyzing}
+                      className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-60 text-white text-[9px] font-bold shadow transition-all select-none"
+                      title="Detect speakers and transcribe"
+                    >
+                      {analyzing
+                        ? <><Loader2 size={9} className="animate-spin" />…</>
+                        : <><Scissors size={9} />Analyze</>
+                      }
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Vocals audio block */}
+              <div
+                className="absolute top-1 bottom-1 rounded overflow-hidden"
+                style={{
+                  left: 'calc(var(--speaker-width) + 4px)',
+                  width: `${timeToPixels(duration || 60, zoom, PX_PER_SEC)}px`,
+                }}
+              >
+                {isStage1Processing ? (
+                  <div className="absolute inset-0 rounded bg-emerald-500/5 border border-emerald-500/15">
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-emerald-500/10 to-transparent animate-pulse" />
+                    <span className="absolute top-1 left-3 text-[10px] text-emerald-400/40 font-medium select-none">Separating vocals…</span>
+                  </div>
+                ) : (
+                  <div className={cn(
+                    "absolute inset-0 rounded border transition-all",
+                    vocalsReplaced
+                      ? "bg-zinc-800/40 border-zinc-700/30 opacity-40"
+                      : "bg-emerald-500/10 border-emerald-500/25"
+                  )}>
+                    {vocalsPreviewPath && (
+                      <StemWaveform
+                        audioUrl={vocalsPreviewPath}
+                        color={vocalsReplaced ? "#71717a" : "#34d399"}
+                        pxPerSec={PX_PER_SEC * zoom}
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
             {/* Speaker tracks */}
             {speakerIds.map((speakerId, trackIdx) => {
               const speaker = speakers.find((s) => s.id === speakerId)
@@ -411,6 +593,10 @@ export function TimelineEditor({ segments, speakers, duration, className }: Time
                             setInspectorMode('audio_clip_settings')
                             setFocusedTimelineItemId(seg.id)
                           }}
+                          onDelete={(id) => {
+                            deleteSegment({ segmentId: id, jobId: jobId! })
+                            setActiveSegment(null)
+                          }}
                           mutedTrackIds={mutedTrackIds}
                           soloedTrackIds={soloedTrackIds}
                           simulatingSegmentIds={simulatingSegmentIds}
@@ -426,8 +612,35 @@ export function TimelineEditor({ segments, speakers, duration, className }: Time
 
             {/* Empty state */}
             {segments.length === 0 && (
-              <div className="flex items-center justify-center h-24 text-text-disabled text-xs">
-                No segments yet — process a video to populate the timeline
+              <div className="flex flex-col items-center justify-center h-24 text-text-disabled text-xs gap-3 w-full">
+                {job && isJobRunning(job.status) ? (
+                  <>
+                    <div className="flex items-center gap-2 text-brand-300 font-medium">
+                      <Loader2 size={14} className="animate-spin" />
+                      <span>{getJobStatusConfig(job.status).description}</span>
+                    </div>
+                    {/* Progress bar */}
+                    <div className="w-64 h-1.5 rounded-full overflow-hidden bg-zinc-800 border border-zinc-700/50">
+                      <div
+                        className="h-full bg-gradient-to-r from-brand to-accent transition-all duration-300"
+                        style={{
+                          width: `${
+                            job.status === 'extracting' ? 10
+                            : job.status === 'separating' ? 20
+                            : job.status === 'diarizing' ? 35
+                            : job.status === 'transcribing' ? 55
+                            : job.status === 'translating' ? 75
+                            : job.status === 'synthesizing' ? 85
+                            : job.status === 'mixing' ? 95
+                            : 0
+                          }%`
+                        }}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <span>No segments yet — process a video to populate the timeline</span>
+                )}
               </div>
             )}
           </div>
@@ -465,6 +678,7 @@ interface InteractiveSegmentProps {
   ) => void
   onUpdateBackend: (id: string, startTime: number, endTime: number, speakerId: string | null) => void
   onSelect: () => void
+  onDelete: (id: string) => void
   mutedTrackIds: Record<string, boolean>
   soloedTrackIds: Record<string, boolean>
   simulatingSegmentIds: Record<string, boolean>
@@ -474,7 +688,7 @@ interface InteractiveSegmentProps {
 
 function InteractiveSegment({
   seg, color, isActive, isApproved, zoom, duration, speakerIds, PX_PER_SEC, scrollRef,
-  updateSegmentPosition, onUpdateBackend, onSelect,
+  updateSegmentPosition, onUpdateBackend, onSelect, onDelete,
   mutedTrackIds, soloedTrackIds, simulatingSegmentIds, setSegmentSimulating, volume
 }: InteractiveSegmentProps) {
   const elementRef = useRef<HTMLDivElement>(null)
@@ -736,11 +950,23 @@ function InteractiveSegment({
         )
       )}
 
-      {/* Approved Indicator */}
-      {isApproved && (
+      {/* Approved Indicator (hidden when segment is active — delete button takes that spot) */}
+      {isApproved && !isActive && (
         <div
           className="absolute top-1 right-2.5 h-1.5 w-1.5 rounded-full bg-emerald-400 border border-black/20 shadow-sm pointer-events-none"
         />
+      )}
+
+      {/* Delete button — visible on active segment, press × or Delete key */}
+      {isActive && !isSimulating && (
+        <button
+          className="absolute top-0.5 right-2.5 z-30 h-4 w-4 rounded-full bg-red-500 hover:bg-red-400 flex items-center justify-center shadow transition-colors"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onDelete(seg.id) }}
+          title="Delete segment (Delete key)"
+        >
+          <X size={8} className="text-white" strokeWidth={3} />
+        </button>
       )}
 
       {/* Right Trim Handle */}
@@ -801,13 +1027,16 @@ function extractPeaks(buffer: AudioBuffer, numPeaks = 60): number[] {
 interface SegmentWaveformProps {
   audioPath?: string
   width: number
+  color?: string   // hex or CSS color — defaults to white (matches segment block)
+  loading?: boolean // external loading hint (e.g. stem is being generated)
 }
 
-function SegmentWaveform({ audioPath, width }: SegmentWaveformProps) {
+function SegmentWaveform({ audioPath, width, color = 'white', loading: externalLoading }: SegmentWaveformProps) {
   const [peaks, setPeaks] = useState<number[] | null>(() => {
     return (audioPath && peaksCache[audioPath]) || null
   })
-  const [error, setError] = useState(false)
+  const [error,    setError]   = useState(false)
+  const [fetching, setFetching] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -830,52 +1059,66 @@ function SegmentWaveform({ audioPath, width }: SegmentWaveformProps) {
     }
 
     const fetchAndDecode = async () => {
+      if (active) setFetching(true)
       try {
         const url = audioPath.startsWith('/') ? audioPath : `/${audioPath}`
         const res = await fetch(url)
-        if (!res.ok) throw new Error('Fetch failed')
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const arrayBuffer = await res.arrayBuffer()
         const ctx = getSharedAudioContext()
         if (!ctx) return
-        
+
+        // decodeAudioData can throw on corrupt/unsupported files
         const audioBuffer = await ctx.decodeAudioData(arrayBuffer)
-        const numPeaks = Math.max(10, Math.floor(width / 3.5)) // 1 bar per 3.5px of width
+        const numPeaks = Math.max(20, Math.floor(width / 3.5))
         const extracted = extractPeaks(audioBuffer, numPeaks)
-        
+
         peaksCache[audioPath] = extracted
-        if (active) {
-          setPeaks(extracted)
-        }
+        if (active) { setPeaks(extracted); setFetching(false) }
       } catch (err) {
-        console.warn('Failed to load waveform for', audioPath, err)
-        if (active) {
-          setError(true)
-        }
+        console.warn('Waveform load failed for', audioPath, err)
+        if (active) { setError(true); setFetching(false) }
       }
     }
 
     fetchAndDecode()
-    return () => {
-      active = false
-    }
+    return () => { active = false }
   }, [audioPath, width])
 
+  const isLoading = externalLoading || (fetching && !peaks && !error)
+
+  // Loading state — pulsing bars so users know it's working
+  if (isLoading) {
+    return (
+      <div className="absolute inset-x-3 bottom-1 h-4 flex items-end gap-[2px] pointer-events-none">
+        {[0.4, 0.7, 0.5, 0.9, 0.6, 0.8, 0.45, 0.75, 0.55, 0.85, 0.5, 0.7].map((h, i) => (
+          <div
+            key={i}
+            className="flex-1 rounded-sm animate-pulse"
+            style={{ height: `${h * 100}%`, background: color, opacity: 0.25, animationDelay: `${i * 0.08}s` }}
+          />
+        ))}
+      </div>
+    )
+  }
+
+  // Error or still null — faint dashed line
   if (error || !peaks) {
     return (
-      <div className="absolute inset-x-2 bottom-1.5 top-3.5 flex items-center justify-center opacity-[0.06] pointer-events-none">
-        <div className="w-full border-t border-dashed border-white" />
+      <div className="absolute inset-x-2 bottom-1.5 top-3.5 flex items-center justify-center opacity-[0.08] pointer-events-none">
+        <div className="w-full border-t border-dashed" style={{ borderColor: color }} />
       </div>
     )
   }
 
   return (
     <svg
-      className="absolute inset-x-2.5 bottom-1 h-4.5 w-[calc(100%-20px)] pointer-events-none opacity-[0.38]"
+      className="absolute inset-x-2.5 bottom-1 h-4.5 w-[calc(100%-20px)] pointer-events-none opacity-50"
       preserveAspectRatio="none"
       viewBox={`0 0 ${peaks.length} 1`}
     >
       {peaks.map((peak, i) => {
-        const barHeight = Math.max(0.12, peak * 0.8)
+        const barHeight = Math.max(0.1, peak * 0.85)
         const y = (1 - barHeight) / 2
         return (
           <rect
@@ -884,11 +1127,85 @@ function SegmentWaveform({ audioPath, width }: SegmentWaveformProps) {
             y={y}
             width={0.65}
             height={barHeight}
-            fill="white"
+            fill={color}
             rx={0.15}
           />
         )
       })}
     </svg>
+  )
+}
+
+// ── WaveSurfer Stem Waveform ──────────────────────────────────────────
+
+interface StemWaveformProps {
+  audioUrl: string
+  color: string
+  pxPerSec: number
+}
+
+function StemWaveform({ audioUrl, color, pxPerSec }: StemWaveformProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const wsRef = useRef<WaveSurfer | null>(null)
+  const [ready, setReady] = useState(false)
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    setReady(false)
+    setError(false)
+
+    const url = audioUrl.startsWith('/') ? audioUrl : `/${audioUrl}`
+
+    const ws = WaveSurfer.create({
+      container,
+      url,
+      waveColor: color,
+      progressColor: color,
+      height: 30,
+      barWidth: 2,
+      barGap: 1,
+      barRadius: 2,
+      interact: false,
+      normalize: true,
+      hideScrollbar: true,
+      minPxPerSec: pxPerSec,
+    })
+
+    ws.on('ready', () => setReady(true))
+    ws.on('error', () => setError(true))
+    wsRef.current = ws
+
+    return () => { ws.destroy(); wsRef.current = null }
+  }, [audioUrl, color])
+
+  // Sync zoom level without recreating the instance
+  useEffect(() => {
+    if (wsRef.current && ready) wsRef.current.zoom(pxPerSec)
+  }, [pxPerSec, ready])
+
+  if (error) {
+    return (
+      <div className="absolute inset-x-2 inset-y-1 flex items-center opacity-10 pointer-events-none">
+        <div className="w-full border-t border-dashed" style={{ borderColor: color }} />
+      </div>
+    )
+  }
+
+  return (
+    <>
+      {!ready && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <Loader2 size={11} className="animate-spin" style={{ color, opacity: 0.4 }} />
+        </div>
+      )}
+      <div
+        ref={containerRef}
+        className="absolute inset-0 overflow-hidden"
+        style={{ opacity: ready ? 0.8 : 0 }}
+      />
+    </>
   )
 }

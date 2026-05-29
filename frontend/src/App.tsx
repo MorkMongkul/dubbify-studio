@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AnimatePresence } from 'framer-motion'
 import { AppShell } from '@/components/layout/AppShell'
 import ProjectsPage from '@/pages/ProjectsPage'
-import WorkspacePage from '@/pages/WorkspacePage'
+import EditorPage from '@/pages/EditorPage'
 import SettingsPage from '@/pages/SettingsPage'
 import { initTheme } from '@/store/themeStore'
 
@@ -28,8 +28,8 @@ function AnimatedRoutes() {
       <Routes location={location} key={location.pathname}>
         <Route path="/"                                  element={<Navigate to="/projects" replace />} />
         <Route path="/projects"                          element={<ProjectsPage />} />
-        <Route path="/projects/:projectId"               element={<WorkspacePage />} />
-        <Route path="/projects/:projectId/jobs/:jobId"   element={<WorkspacePage />} />
+        <Route path="/projects/:projectId"               element={<EditorPage />} />
+        <Route path="/projects/:projectId/jobs/:jobId"   element={<EditorPage />} />
         <Route path="/settings"                          element={<SettingsPage />} />
         <Route path="*"                                  element={<Navigate to="/projects" replace />} />
       </Routes>

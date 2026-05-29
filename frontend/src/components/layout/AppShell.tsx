@@ -9,8 +9,8 @@ interface AppShellProps {
   children: React.ReactNode
 }
 
-// Editor has its own full-screen layout — no sidebar
-const EDITOR_PATTERN = /^\/($|projects\/[^/]+\/jobs\/)/
+// Editor has its own full-screen layout — no sidebar for any project route
+const EDITOR_PATTERN = /^\/($|projects\/[^/]+)/
 
 export function AppShell({ children }: AppShellProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)

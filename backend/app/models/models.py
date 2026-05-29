@@ -19,12 +19,14 @@ def generate_uuid():
 
 # ── Enums ─────────────────────────────────────────────────────
 class JobStatus(str, enum.Enum):
-    PENDING    = "pending"
-    EXTRACTING = "extracting"    # ffmpeg audio extraction
-    DIARIZING  = "diarizing"     # speaker diarization
-    TRANSCRIBING = "transcribing"  # Whisper ASR
-    TRANSLATING  = "translating"   # NLLB-200
-    SYNTHESIZING = "synthesizing"  # VoxCPM2 TTS
+    PENDING      = "pending"
+    EXTRACTING   = "extracting"    # ffmpeg audio extraction
+    SEPARATING   = "separating"    # demucs vocal / BGM split
+    STEMS_READY  = "stems_ready"   # paused — waiting for user to click Analyze
+    DIARIZING    = "diarizing"     # speaker diarization
+    TRANSCRIBING = "transcribing"  # ASR
+    TRANSLATING  = "translating"   # translation
+    SYNTHESIZING = "synthesizing"  # TTS
     MIXING       = "mixing"        # final audio mix
     COMPLETED    = "completed"
     FAILED       = "failed"

@@ -79,13 +79,13 @@ export function debounce<T extends (...args: Parameters<T>) => void>(
 
 /** Map job status to pipeline step index */
 export function getJobStepIndex(status: string): number {
-  const steps = ['pending', 'extracting', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing', 'completed', 'failed']
+  const steps = ['pending', 'extracting', 'separating', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing', 'completed', 'failed']
   return steps.indexOf(status)
 }
 
 /** Check if job is still processing */
 export function isJobRunning(status: string): boolean {
-  const running = ['pending', 'extracting', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing']
+  const running = ['pending', 'extracting', 'separating', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing']
   return running.includes(status)
 }
 
