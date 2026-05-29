@@ -8,6 +8,8 @@ export type ProjectStatus = 'active' | 'archived' | 'draft'
 export type JobStatus =
   | 'pending'
   | 'extracting'
+  | 'separating'
+  | 'stems_ready'
   | 'diarizing'
   | 'transcribing'
   | 'translating'
@@ -158,7 +160,9 @@ export const JOB_STATUS_CONFIG: Record<JobStatus, {
   description: string
 }> = {
   pending:      { label: 'Pending',      color: 'gray',   description: 'Waiting to start' },
-  extracting:   { label: 'Extracting',   color: 'violet', description: 'Extracting audio and subtitles' },
+  extracting:   { label: 'Extracting',   color: 'violet', description: 'Extracting audio' },
+  separating:   { label: 'Separating',   color: 'violet', description: 'Splitting vocals from background music' },
+  stems_ready:  { label: 'Stems Ready',  color: 'green',  description: 'Audio split — click Analyze to detect speakers' },
   diarizing:    { label: 'Diarizing',    color: 'violet', description: 'Detecting speakers' },
   transcribing: { label: 'Transcribing', color: 'violet', description: 'AI speech recognition' },
   translating:  { label: 'Translating',  color: 'blue',   description: 'Translating dialogue' },
@@ -178,12 +182,13 @@ export function getJobStatusConfig(status: string) {
 }
 
 export const PIPELINE_STEPS: { key: JobStatus; label: string; icon: string }[] = [
-  { key: 'extracting',   label: 'Extract',    icon: 'audio-waveform' },
-  { key: 'diarizing',    label: 'Speakers',   icon: 'users' },
+  { key: 'extracting',   label: 'Extract',   icon: 'audio-waveform' },
+  { key: 'separating',   label: 'Separate',  icon: 'scissors' },
+  { key: 'diarizing',    label: 'Speakers',  icon: 'users' },
   { key: 'transcribing', label: 'Transcribe', icon: 'file-text' },
-  { key: 'translating',  label: 'Translate',  icon: 'globe' },
+  { key: 'translating',  label: 'Translate', icon: 'globe' },
   { key: 'synthesizing', label: 'Synthesize', icon: 'mic' },
-  { key: 'mixing',       label: 'Mix',        icon: 'music' },
+  { key: 'mixing',       label: 'Mix',       icon: 'music' },
 ]
 
 export const SPEAKER_COLORS = [
@@ -199,5 +204,5 @@ export const SPEAKER_COLORS = [
 
 export const LANGUAGE_OPTIONS = [
   { value: 'zh', label: 'Chinese' },
-  { value: 'kh', label: 'Khmer'   },
+  { value: 'km', label: 'Khmer'   },
 ]

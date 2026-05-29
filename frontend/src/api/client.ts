@@ -89,6 +89,9 @@ export const jobs = {
 
   getSubtitleTracks: (jobId: string) =>
     api.get(`/jobs/${jobId}/subtitle-tracks`).then((r) => r.data),
+
+  analyze: (jobId: string) =>
+    api.post(`/jobs/${jobId}/analyze`).then((r) => r.data),
 }
 
 // ── Speakers ──────────────────────────────────────────────────
@@ -107,6 +110,9 @@ export const segments = {
 
   update: (segmentId: string, data: SegmentUpdate) =>
     api.patch<Segment>(`/segments/${segmentId}`, data).then((r) => r.data),
+
+  delete: (segmentId: string) =>
+    api.delete(`/segments/${segmentId}`),
 
   approve: (segmentId: string) =>
     api.post<Segment>(`/segments/${segmentId}/approve`).then((r) => r.data),

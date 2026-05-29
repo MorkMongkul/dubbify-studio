@@ -66,8 +66,11 @@ export function useJob(jobId: string | null) {
     refetchInterval: (query) => {
       const data = query.state.data
       const status = data?.status
-      const running = ['pending', 'uploading', 'extracting', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing']
+      // Active pipeline stages — poll every 2s
+      const running = ['pending', 'uploading', 'extracting', 'separating', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing']
       if (status && running.includes(status)) return 2000
+      // stems_ready: paused, waiting for user — poll slowly to pick up any changes
+      if (status === 'stems_ready') return 5000
       // Keep polling after completion until video_url is available
       if (status === 'completed' && !data?.video_url) return 3000
       return false
@@ -161,6 +164,17 @@ export function useUpdateSegment() {
   })
 }
 
+export function useDeleteSegment() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ segmentId }: { segmentId: string; jobId: string }) =>
+      segments.delete(segmentId),
+    onSuccess: (_, { jobId }) => {
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    },
+  })
+}
+
 export function useApproveSegment() {
   const qc = useQueryClient()
   return useMutation({
@@ -177,6 +191,17 @@ export function useApproveAll() {
     mutationFn: (jobId: string) => segments.approveAll(jobId),
     onSuccess: (_, jobId) => {
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    },
+  })
+}
+
+// ── Analyze (Stage 2 trigger) ─────────────────────────────────
+export function useAnalyzeJob() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (jobId: string) => jobs.analyze(jobId),
+    onSuccess: (_, jobId) => {
+      qc.invalidateQueries({ queryKey: ['job', jobId] })
     },
   })
 }
