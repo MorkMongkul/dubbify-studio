@@ -11,14 +11,23 @@ interface VideoPlayerProps {
   segments: Segment[]
   speakers: Speaker[]
   className?: string
+  jobId?: string
+  projectId?: string
+  jobStatus?: string
 }
 
-export function VideoPlayer({ videoUrl, segments, speakers, className }: VideoPlayerProps) {
+export function VideoPlayer({ videoUrl, segments, speakers, className, jobId, projectId, jobStatus }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const bgmAudioRef = useRef<HTMLAudioElement>(null)
+  const vocalsAudioRef = useRef<HTMLAudioElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [showControls, setShowControls] = useState(true)
   const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  // TTS segment playback — one dubbed clip plays at a time in sync with the video
+  const ttsAudioRef      = useRef<HTMLAudioElement | null>(null)
+  const ttsActiveSegId   = useRef<string | null>(null)
 
   const {
     currentTime, isPlaying, volume, playbackRate, activeSegmentId,
@@ -26,10 +35,62 @@ export function VideoPlayer({ videoUrl, segments, speakers, className }: VideoPl
     togglePlaying, setPlaybackRate, mutedTrackIds,
   } = useEditorStore()
 
+  // Stable refs so event callbacks always see the latest values
+  const isPlayingRef    = useRef(isPlaying)
+  const volumeRef       = useRef(volume)
+  const mutedRef        = useRef(mutedTrackIds)
+  useEffect(() => { isPlayingRef.current    = isPlaying },    [isPlaying])
+  useEffect(() => { volumeRef.current       = volume },       [volume])
+  useEffect(() => { mutedRef.current        = mutedTrackIds }, [mutedTrackIds])
+
   const segmentsRef = useRef(segments)
   useEffect(() => {
     segmentsRef.current = segments
   }, [segments])
+
+  // ── TTS helpers ───────────────────────────────────────────────────────
+  const stopTTS = useCallback(() => {
+    if (ttsAudioRef.current) {
+      ttsAudioRef.current.pause()
+      ttsAudioRef.current.src = ''
+      ttsAudioRef.current = null
+    }
+    ttsActiveSegId.current = null
+  }, [])
+
+  const startTTS = useCallback((seg: Segment, videoTime: number) => {
+    stopTTS()
+    const path = seg.tts_audio_path
+    if (!path) return
+    const url  = path.startsWith('/') ? path : `/${path}`
+    const audio = new Audio(url)
+    const offset = Math.max(0, videoTime - seg.start_time)
+    if (offset > 0.05) audio.currentTime = offset
+
+    // Auto-fit: speed up the clip so it finishes within the segment window.
+    // This keeps dubbed voices in sync with lip movements regardless of how
+    // long Gemini took to say the line.
+    const segDuration = Math.max(0.1, seg.end_time - seg.start_time)
+    const ttsDuration = seg.tts_duration_secs ?? 0
+    const videoRate   = videoRef.current?.playbackRate ?? 1
+    let rate = videoRate
+    if (ttsDuration > 0) {
+      // fitRate > 1  → clip is longer than the slot, speed it up
+      // fitRate < 1  → clip is shorter, let it play naturally (don't slow down)
+      const fitRate = ttsDuration / segDuration
+      if (fitRate > 1.05) {
+        rate = Math.min(3.5, fitRate * videoRate)
+      }
+    }
+    audio.playbackRate = rate
+
+    const key   = seg.speaker_id ?? '__none__'
+    const muted = mutedRef.current[key]
+    audio.volume = muted ? 0 : volumeRef.current
+    if (isPlayingRef.current) audio.play().catch(() => {})
+    ttsAudioRef.current    = audio
+    ttsActiveSegId.current = seg.id
+  }, [stopTTS])
 
   // Navigate to active segment start
   const goToSegmentStart = useCallback(() => {
@@ -48,7 +109,7 @@ export function VideoPlayer({ videoUrl, segments, speakers, className }: VideoPl
     }
   }, [activeSegmentId, setCurrentTime])
 
-  // Sync video → store
+  // Sync video → store + drive TTS playback
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
@@ -56,33 +117,60 @@ export function VideoPlayer({ videoUrl, segments, speakers, className }: VideoPl
     const onTimeUpdate = () => {
       const t = video.currentTime
       setCurrentTime(t)
-      // Find active segment
       const active = segmentsRef.current.find((s) => t >= s.start_time && t < s.end_time)
       setActiveSegment(active?.id ?? null)
+
+      if (active?.tts_audio_path) {
+        if (active.id !== ttsActiveSegId.current) {
+          // Entered a new dubbed segment — start its TTS audio
+          startTTS(active, t)
+        }
+        // Keep TTS mute/volume in sync with the current store state
+        if (ttsAudioRef.current) {
+          const key   = active.speaker_id ?? '__none__'
+          const muted = mutedRef.current[key]
+          ttsAudioRef.current.volume = muted ? 0 : volumeRef.current
+        }
+      } else {
+        // Left a dubbed segment (or gap between segments)
+        if (ttsActiveSegId.current) stopTTS()
+      }
     }
+
     const onLoadedMetadata = () => setDuration(video.duration)
-    const onPlay  = () => setPlaying(true)
-    const onPause = () => setPlaying(false)
-    const onEnded = () => { setPlaying(false); setCurrentTime(0) }
-
-    // Set duration immediately if video is already loaded
-    if (video.duration) {
-      setDuration(video.duration)
+    const onPlay  = () => { setPlaying(true);  ttsAudioRef.current?.play().catch(() => {}) }
+    const onPause = () => { setPlaying(false); ttsAudioRef.current?.pause() }
+    const onEnded = () => { setPlaying(false); setCurrentTime(0); stopTTS() }
+    const onSeeked = () => {
+      // After seeking, resync TTS to the new position
+      const t      = video.currentTime
+      const active = segmentsRef.current.find((s) => t >= s.start_time && t < s.end_time)
+      if (active?.tts_audio_path) {
+        startTTS(active, t)
+        if (!isPlayingRef.current) ttsAudioRef.current?.pause()
+      } else {
+        stopTTS()
+      }
     }
 
-    video.addEventListener('timeupdate', onTimeUpdate)
-    video.addEventListener('loadedmetadata', onLoadedMetadata)
-    video.addEventListener('play', onPlay)
-    video.addEventListener('pause', onPause)
-    video.addEventListener('ended', onEnded)
+    if (video.duration) setDuration(video.duration)
+
+    video.addEventListener('timeupdate',    onTimeUpdate)
+    video.addEventListener('loadedmetadata',onLoadedMetadata)
+    video.addEventListener('play',          onPlay)
+    video.addEventListener('pause',         onPause)
+    video.addEventListener('ended',         onEnded)
+    video.addEventListener('seeked',        onSeeked)
     return () => {
-      video.removeEventListener('timeupdate', onTimeUpdate)
-      video.removeEventListener('loadedmetadata', onLoadedMetadata)
-      video.removeEventListener('play', onPlay)
-      video.removeEventListener('pause', onPause)
-      video.removeEventListener('ended', onEnded)
+      video.removeEventListener('timeupdate',    onTimeUpdate)
+      video.removeEventListener('loadedmetadata',onLoadedMetadata)
+      video.removeEventListener('play',          onPlay)
+      video.removeEventListener('pause',         onPause)
+      video.removeEventListener('ended',         onEnded)
+      video.removeEventListener('seeked',        onSeeked)
+      stopTTS()
     }
-  }, [videoUrl, setCurrentTime, setDuration, setPlaying, setActiveSegment])
+  }, [videoUrl, setCurrentTime, setDuration, setPlaying, setActiveSegment, startTTS, stopTTS])
 
   // Store → video (play/pause)
   useEffect(() => {
@@ -106,18 +194,102 @@ export function VideoPlayer({ videoUrl, segments, speakers, className }: VideoPl
     }
   }, [currentTime, videoUrl])
 
-  // Volume & Mute BGM
+  const noVocalsUrl = jobId && projectId ? `/uploads/${projectId}/${jobId}/no_vocals.wav` : null
+  const vocalsUrl   = jobId && projectId ? `/uploads/${projectId}/${jobId}/vocals.wav`    : null
+
+  // Separated stems exist from stems_ready onwards (demucs ran in Stage 1)
+  const hasStemAudio = !!jobStatus && [
+    'stems_ready', 'diarizing', 'transcribing', 'translating',
+    'synthesizing', 'mixing', 'completed',
+  ].includes(jobStatus)
+
+  // Volume & Mute — BGM, Vocals, and active TTS clip
   useEffect(() => {
-    if (videoRef.current) {
-      const isBgmMuted = mutedTrackIds['__bgm__']
-      videoRef.current.volume = isBgmMuted ? 0 : volume
+    const video = videoRef.current
+    const bgm = bgmAudioRef.current
+    const vocals = vocalsAudioRef.current
+
+    if (hasStemAudio) {
+      if (video) video.volume = 0
+      if (bgm) bgm.volume = mutedTrackIds['__bgm__'] ? 0 : volume
+      if (vocals) vocals.volume = mutedTrackIds['__vocals__'] ? 0 : volume
+    } else {
+      if (video) video.volume = volume
+      if (bgm) bgm.volume = 0
+      if (vocals) vocals.volume = 0
     }
-  }, [volume, mutedTrackIds, videoUrl])
+    // Keep active TTS clip in sync with volume/mute changes
+    if (ttsAudioRef.current && ttsActiveSegId.current) {
+      const seg = segmentsRef.current.find(s => s.id === ttsActiveSegId.current)
+      const key = seg?.speaker_id ?? '__none__'
+      ttsAudioRef.current.volume = mutedTrackIds[key] ? 0 : volume
+    }
+  }, [volume, mutedTrackIds, jobStatus, hasStemAudio])
 
   // Playback rate
   useEffect(() => {
     if (videoRef.current) videoRef.current.playbackRate = playbackRate
-  }, [playbackRate, videoUrl])
+    if (bgmAudioRef.current) bgmAudioRef.current.playbackRate = playbackRate
+    if (vocalsAudioRef.current) vocalsAudioRef.current.playbackRate = playbackRate
+    if (ttsAudioRef.current) ttsAudioRef.current.playbackRate = playbackRate
+  }, [playbackRate, jobStatus])
+
+  // Synchronize separate audio tracks (BGM & Vocals) with the main video tag
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video || !hasStemAudio) return
+
+    const bgm = bgmAudioRef.current
+    const vocals = vocalsAudioRef.current
+
+    const syncTimes = () => {
+      const t = video.currentTime
+      if (bgm && Math.abs(bgm.currentTime - t) > 0.15) {
+        bgm.currentTime = t
+      }
+      if (vocals && Math.abs(vocals.currentTime - t) > 0.15) {
+        vocals.currentTime = t
+      }
+    }
+
+    const playAudios = () => {
+      if (bgm) bgm.play().catch(() => {})
+      if (vocals) vocals.play().catch(() => {})
+    }
+
+    const pauseAudios = () => {
+      if (bgm) bgm.pause()
+      if (vocals) vocals.pause()
+    }
+
+    // Set initial rates
+    if (bgm) bgm.playbackRate = playbackRate
+    if (vocals) vocals.playbackRate = playbackRate
+
+    video.addEventListener('play', playAudios)
+    video.addEventListener('pause', pauseAudios)
+    video.addEventListener('seeking', syncTimes)
+    video.addEventListener('seeked', syncTimes)
+    video.addEventListener('timeupdate', syncTimes)
+
+    // Initial sync
+    syncTimes()
+    if (isPlaying) {
+      playAudios()
+    } else {
+      pauseAudios()
+    }
+
+    return () => {
+      video.removeEventListener('play', playAudios)
+      video.removeEventListener('pause', pauseAudios)
+      video.removeEventListener('seeking', syncTimes)
+      video.removeEventListener('seeked', syncTimes)
+      video.removeEventListener('timeupdate', syncTimes)
+      if (bgm) bgm.pause()
+      if (vocals) vocals.pause()
+    }
+  }, [jobStatus, hasStemAudio, isPlaying, playbackRate])
 
   // Auto-hide controls
   const resetControlsTimer = useCallback(() => {
@@ -180,13 +352,21 @@ export function VideoPlayer({ videoUrl, segments, speakers, className }: VideoPl
     >
       {/* Video element */}
       {videoUrl ? (
-        <video
-          ref={videoRef}
-          src={videoUrl}
-          className="w-full h-full object-contain"
-          preload="metadata"
-          playsInline
-        />
+        <>
+          <video
+            ref={videoRef}
+            src={videoUrl}
+            className="w-full h-full object-contain"
+            preload="metadata"
+            playsInline
+          />
+          {hasStemAudio && noVocalsUrl && (
+            <audio ref={bgmAudioRef} src={noVocalsUrl} preload="auto" />
+          )}
+          {hasStemAudio && vocalsUrl && (
+            <audio ref={vocalsAudioRef} src={vocalsUrl} preload="auto" />
+          )}
+        </>
       ) : (
         <div className="flex flex-col items-center justify-center w-full h-full text-center p-8">
           <div className="h-16 w-16 rounded-2xl bg-surface-4 border border-border flex items-center justify-center mb-4">

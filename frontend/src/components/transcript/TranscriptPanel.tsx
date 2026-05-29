@@ -2,11 +2,11 @@
 import { useRef, useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { AlignLeft, Loader2, ChevronRight, Sliders, Volume2, Type, RefreshCw, Mic } from 'lucide-react'
-import type { Segment, Speaker } from '@/types'
+import type { Segment, Speaker, Job } from '@/types'
 import { useEditorStore, useActiveSegmentId } from '@/store/editorStore'
 import { SegmentCardSkeleton } from '@/components/ui/Skeleton'
 import { toast } from 'sonner'
-import { cn, formatTime, getSpeakerColor } from '@/lib/utils'
+import { cn, formatTime, getSpeakerColor, isJobRunning, getJobStatusConfig } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import { tts } from '@/api/client'
  
@@ -16,10 +16,11 @@ interface TranscriptPanelProps {
   jobId: string
   isLoading?: boolean
   className?: string
+  job?: Job
 }
  
 export function TranscriptPanel({
-  segments, speakers, jobId, isLoading, className
+  segments, speakers, jobId, isLoading, className, job
 }: TranscriptPanelProps) {
   const activeSegmentId = useActiveSegmentId()
   const {
@@ -216,10 +217,60 @@ export function TranscriptPanel({
             {[...Array(7)].map((_, i) => <SegmentCardSkeleton key={i} />)}
           </div>
         ) : segments.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-center p-8">
-            <AlignLeft size={22} className="text-white/15 mb-3" />
-            <p className="text-[12px] text-white/35">No segments yet</p>
-            <p className="text-[11px] text-white/20 mt-1">Process a video to generate transcript</p>
+          <div className="flex flex-col items-center justify-center h-full text-center p-8 gap-3">
+            {/* Stage 1 running — extracting / separating */}
+            {job && (job.status === 'extracting' || job.status === 'separating' || job.status === 'pending') ? (
+              <>
+                <Loader2 size={24} className="text-brand-400 animate-spin mb-1" />
+                <p className="text-[12px] font-semibold text-brand-300">
+                  {job.status === 'separating' ? 'Splitting vocals from BGM…' : 'Extracting audio…'}
+                </p>
+                <p className="text-[11px] text-white/40 max-w-[200px] leading-normal">
+                  Stems will appear on the timeline when ready
+                </p>
+                <div className="w-48 h-1 bg-zinc-800 rounded-full overflow-hidden mt-1">
+                  <div className="h-full bg-brand-400 rounded-full transition-all duration-500"
+                    style={{ width: `${job.progress ?? 0}%` }} />
+                </div>
+              </>
+            ) : job?.status === 'stems_ready' ? (
+              /* Stage 1 done — waiting for user to click Analyze */
+              <>
+                <div className="h-10 w-10 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mb-1">
+                  <RefreshCw size={18} className="text-emerald-400" />
+                </div>
+                <p className="text-[12px] font-semibold text-emerald-400">Audio split complete</p>
+                <p className="text-[11px] text-white/40 max-w-[200px] leading-normal">
+                  Click the <span className="text-emerald-400 font-semibold">Analyze Speech</span> button on the Vocals track to detect speakers and transcribe.
+                </p>
+              </>
+            ) : job && (job.status === 'diarizing' || job.status === 'transcribing' || job.status === 'translating') ? (
+              /* Stage 2 running */
+              <>
+                <Loader2 size={24} className="text-brand-400 animate-spin mb-1" />
+                <p className="text-[12px] font-semibold text-brand-300">
+                  {job.status === 'diarizing'    ? 'Detecting speakers…'
+                  : job.status === 'transcribing' ? 'Transcribing speech…'
+                  : 'Translating dialogue…'}
+                </p>
+                <p className="text-[11px] text-white/40 max-w-[200px] leading-normal">
+                  {job.status === 'diarizing'    ? 'pyannoteAI is identifying who speaks when'
+                  : job.status === 'transcribing' ? 'Converting speech to text'
+                  : 'Gemini is translating to Khmer'}
+                </p>
+                <div className="w-48 h-1.5 bg-zinc-800 rounded-full overflow-hidden mt-1">
+                  <div className="h-full bg-brand-400 rounded-full transition-all duration-500"
+                    style={{ width: `${job.progress ?? 0}%` }} />
+                </div>
+                <span className="text-[10px] text-white/25 font-mono">{job.progress ?? 0}%</span>
+              </>
+            ) : (
+              <>
+                <AlignLeft size={22} className="text-white/15 mb-1" />
+                <p className="text-[12px] text-white/35 font-medium">No segments yet</p>
+                <p className="text-[11px] text-white/20 mt-0.5">Upload a video to get started</p>
+              </>
+            )}
           </div>
         ) : inspectorMode === 'global_synthesis' ? (
           <table className="w-full text-left border-collapse text-[11px]">
