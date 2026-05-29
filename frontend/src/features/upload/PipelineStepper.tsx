@@ -2,7 +2,7 @@
 import { motion } from 'framer-motion'
 import {
   AudioWaveform, UsersRound, FileText, Languages,
-  CheckCircle2, Loader2, AlertCircle, Mic2, Music2, Hourglass
+  CheckCircle2, Loader2, AlertCircle, Mic2, Music2, Hourglass, Scissors
 } from 'lucide-react'
 import type { Job } from '@/types'
 import { cn } from '@/lib/utils'
@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils'
 // Steps matching backend JobStatus enum order exactly
 const STEPS = [
   { key: 'extracting',   label: 'Extract',    icon: AudioWaveform },
+  { key: 'separating',   label: 'Separate',   icon: Scissors     },
   { key: 'diarizing',    label: 'Speakers',   icon: UsersRound   },
   { key: 'transcribing', label: 'Transcribe', icon: FileText     },
   { key: 'translating',  label: 'Translate',  icon: Languages    },
@@ -21,6 +22,7 @@ const STEPS = [
 const STATUS_ORDER = [
   'pending',
   'extracting',
+  'separating',
   'diarizing',
   'transcribing',
   'translating',

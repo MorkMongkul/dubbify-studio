@@ -7,7 +7,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { useDropzone } from 'react-dropzone'
 import {
   ChevronLeft, ChevronRight, Download,
-  Loader2, AlertCircle, Zap,
+  Loader2, AlertCircle, Zap, Scissors,
   UploadCloud, Film, FileText, X,
   Activity, VideoIcon, AlignLeft,
   FolderOpen, CheckCircle2, Trash2
@@ -17,7 +17,7 @@ import { toast } from 'sonner'
 import {
   useJob, useSegments, useSpeakers, useMixFinalAudio,
   useProjects, useCreateProject, useUploadVideo, useUploadWithSubtitle,
-  useProjectJobs, useDeleteJob
+  useProjectJobs, useDeleteJob, useAnalyzeJob
 } from '@/hooks/useApi'
 import { useEditorStore } from '@/store/editorStore'
 import { useQueryClient } from '@tanstack/react-query'
@@ -168,10 +168,15 @@ export default function WorkspacePage() {
   const { segmentPositions } = useEditorStore()
   const displaySegs = segs.map(s => {
     const pos = segmentPositions[s.id]
-    return pos ? { ...s, ...pos } : s
+    if (!pos) return s
+    return {
+      ...s,
+      ...pos,
+      tts_audio_path: s.tts_audio_path || pos.tts_audio_path || '',
+      tts_duration_secs: s.tts_audio_path ? s.tts_duration_secs : (pos.tts_duration_secs ?? s.tts_duration_secs),
+    }
   })
 
-  // Pre-populate segmentPositions on load to ensure status is initially 'Pending' (tts_audio_path: "")
   useEffect(() => {
     if (segs.length > 0) {
       const currentPositions = useEditorStore.getState().segmentPositions
@@ -179,14 +184,18 @@ export default function WorkspacePage() {
       const nextPositions = { ...currentPositions }
 
       segs.forEach(s => {
-        if (!currentPositions[s.id]) {
+        const existing = currentPositions[s.id]
+        if (!existing) {
           nextPositions[s.id] = {
             start_time: s.start_time,
             end_time: s.end_time,
             speaker_id: s.speaker_id ?? null,
             tts_duration_secs: s.tts_duration_secs,
-            tts_audio_path: "",
+            tts_audio_path: s.tts_audio_path,
           }
+          updated = true
+        } else if (s.tts_audio_path && existing.tts_audio_path !== s.tts_audio_path) {
+          nextPositions[s.id] = { ...existing, tts_audio_path: s.tts_audio_path, tts_duration_secs: s.tts_duration_secs }
           updated = true
         }
       })
@@ -198,9 +207,23 @@ export default function WorkspacePage() {
   }, [segs])
 
   const { mutate: mix, isPending: mixing } = useMixFinalAudio()
+  const { mutate: analyze, isPending: analyzing } = useAnalyzeJob()
 
-  const isRunning = job ? isJobRunning(job.status) : false
+  const isRunning    = job ? isJobRunning(job.status) : false
   const statusConfig = job ? getJobStatusConfig(job.status) : null
+
+  // Stage classification — drives which UI state to show
+  const isStage1     = job?.status === 'pending' || job?.status === 'extracting' || job?.status === 'separating'
+  const isStemsReady = job?.status === 'stems_ready'
+  const isStage2     = job?.status === 'diarizing' || job?.status === 'transcribing' || job?.status === 'translating'
+
+  const handleAnalyze = () => {
+    if (!jobId) return
+    analyze(jobId, {
+      onSuccess: () => toast.success('Analysis started — detecting speakers…'),
+      onError:   () => toast.error('Failed to start analysis'),
+    })
+  }
 
   // --- Upload / Setup States ---
   const [videoFile, setVideoFile] = useState<File | null>(null)
@@ -671,11 +694,17 @@ export default function WorkspacePage() {
           </div>
 
           {/* Center Side: Active processing status indicator */}
-          <div className="flex-1 flex items-center justify-center">
-            {isRunning && (
+          <div className="flex-1 flex items-center justify-center gap-2">
+            {(isStage1 || isStage2) && (
               <div className="flex items-center gap-1.5 text-[11px] text-brand-300">
                 <Loader2 size={11} className="animate-spin" />
-                <span>{statusConfig?.description ?? 'Processing...'}</span>
+                <span>{statusConfig?.description ?? 'Processing…'}</span>
+              </div>
+            )}
+            {isStemsReady && (
+              <div className="flex items-center gap-1.5 text-[11px] text-emerald-400">
+                <Scissors size={11} />
+                <span>Audio split complete — click <strong>Analyze Speech</strong> on the Vocals track</span>
               </div>
             )}
           </div>
