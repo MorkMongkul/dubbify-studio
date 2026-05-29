@@ -55,6 +55,17 @@ async def update_segment(
     return seg
 
 
+@router.delete("/segments/{segment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_segment(segment_id: str, db: AsyncSession = Depends(get_db)):
+    """Delete a single segment (clip) from the timeline."""
+    result = await db.execute(select(Segment).where(Segment.id == segment_id))
+    seg = result.scalar_one_or_none()
+    if not seg:
+        raise HTTPException(status_code=404, detail="Segment not found")
+    await db.delete(seg)
+    await db.commit()
+
+
 @router.post("/segments/{segment_id}/approve", response_model=SegmentResponse)
 async def approve_segment(segment_id: str, db: AsyncSession = Depends(get_db)):
     """Mark a segment as approved for TTS synthesis."""

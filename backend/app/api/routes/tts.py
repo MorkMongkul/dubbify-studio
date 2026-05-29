@@ -36,9 +36,14 @@ async def _synthesize_segment_db(segment_id: str, db: AsyncSession) -> Segment:
         speaker = sp_result.scalar_one_or_none()
         if speaker:
             voice_design = speaker.voice_design_prompt
- 
-    # Build output path
-    job_dir = Path(settings.UPLOAD_DIR) / seg.job_id
+
+    # Resolve project_id for correct upload path
+    j_result = await db.execute(select(Job).where(Job.id == seg.job_id))
+    job = j_result.scalar_one_or_none()
+    project_id = job.project_id if job else seg.job_id
+
+    # Build output path: uploads/{project_id}/{job_id}/tts/seg_{id}.wav
+    job_dir = Path(settings.UPLOAD_DIR) / project_id / seg.job_id
     tts_dir = job_dir / "tts"
     tts_dir.mkdir(parents=True, exist_ok=True)
     output_path = tts_dir / f"seg_{segment_id}.wav"
@@ -150,7 +155,8 @@ async def synthesize_job(
             detail="No approved segments found. Approve segments first.",
         )
 
-    background_tasks.add_task(_synthesize_all_segments, job_id, segments, db)
+    background_tasks.add_task(_synthesize_all_segments, job_id)
+    await db.commit()
 
     return {
         "message": f"TTS synthesis started for {len(segments)} approved segments.",
@@ -195,7 +201,11 @@ async def mix_final_audio(
         for seg in segments
     ]
 
-    output_path = str(Path(settings.UPLOAD_DIR) / job.project_id / job_id / "dubbed_output.mp4")
+    job_dir = Path(settings.UPLOAD_DIR) / job.project_id / job_id
+    output_path = str(job_dir / "dubbed_output.mp4")
+
+    # Use separated BGM track when available — gives clean BGM + TTS with no voice bleed-through
+    bgm_wav = job_dir / "no_vocals.wav"
 
     try:
         final_path = await mix_dubbed_audio(
@@ -203,6 +213,7 @@ async def mix_final_audio(
             tts_segments=tts_seg_list,
             output_path=output_path,
             mute_original=mute_original,
+            bgm_path=str(bgm_wav) if bgm_wav.exists() else None,
         )
         job.output_path = final_path
         job.status = JobStatus.COMPLETED
@@ -217,34 +228,53 @@ async def mix_final_audio(
         raise HTTPException(status_code=500, detail=f"Audio mixing failed: {e}")
 
 
-async def _synthesize_all_segments(job_id: str, segments: list, db: AsyncSession):
+async def _synthesize_all_segments(job_id: str):
     """Background task: synthesize all segments with speaker voice profiles."""
-    job_dir = Path(settings.UPLOAD_DIR) / job_id
-    tts_dir = job_dir / "tts"
-    tts_dir.mkdir(parents=True, exist_ok=True)
+    from app.core.database import AsyncSessionLocal
 
-    # Build speaker cache to avoid repeated DB lookups
-    speaker_cache: dict[str, str] = {}
-
-    for seg in segments:
-        voice_design = ""
-        if seg.speaker_id:
-            if seg.speaker_id not in speaker_cache:
-                sp_result = await db.execute(
-                    select(Speaker).where(Speaker.id == seg.speaker_id)
-                )
-                speaker = sp_result.scalar_one_or_none()
-                speaker_cache[seg.speaker_id] = speaker.voice_design_prompt if speaker else ""
-            voice_design = speaker_cache[seg.speaker_id]
-
-        out_path = tts_dir / f"seg_{seg.id}.wav"
-        result_data = await tts_client.synthesize(
-            text=seg.khmer_text,
-            voice_design=voice_design,
-            output_path=str(out_path),
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Segment)
+            .where(Segment.job_id == job_id, Segment.is_approved == True)
+            .order_by(Segment.start_time)
         )
+        segments = result.scalars().all()
 
-        if result_data["success"]:
-            seg.tts_audio_path    = result_data["audio_path"]
-            seg.tts_duration_secs = result_data["duration_secs"]
-            await db.flush()
+        if not segments:
+            logger.warning(f"No approved segments found for background synthesis of job {job_id}.")
+            return
+
+        # Resolve project_id for correct upload path
+        j_result = await db.execute(select(Job).where(Job.id == job_id))
+        job_obj = j_result.scalar_one_or_none()
+        project_id = job_obj.project_id if job_obj else job_id
+
+        job_dir = Path(settings.UPLOAD_DIR) / project_id / job_id
+        tts_dir = job_dir / "tts"
+        tts_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build speaker cache to avoid repeated DB lookups
+        speaker_cache: dict[str, str] = {}
+
+        for seg in segments:
+            voice_design = ""
+            if seg.speaker_id:
+                if seg.speaker_id not in speaker_cache:
+                    sp_result = await db.execute(
+                        select(Speaker).where(Speaker.id == seg.speaker_id)
+                    )
+                    speaker = sp_result.scalar_one_or_none()
+                    speaker_cache[seg.speaker_id] = speaker.voice_design_prompt if speaker else ""
+                voice_design = speaker_cache[seg.speaker_id]
+
+            out_path = tts_dir / f"seg_{seg.id}.wav"
+            result_data = await tts_client.synthesize(
+                text=seg.khmer_text,
+                voice_design=voice_design,
+                output_path=str(out_path),
+            )
+
+            if result_data["success"]:
+                seg.tts_audio_path    = result_data["audio_path"]
+                seg.tts_duration_secs = result_data["duration_secs"]
+                await db.commit()
