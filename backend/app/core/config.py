@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     VOXCPM2_API_URL: str = ""
     VOXCPM2_API_KEY: str = ""
 
+    # Gemini TTS speaking rate: 1.0 = normal, 1.25 = 25% faster, max 4.0
+    GEMINI_TTS_SPEED: float = 1.25
+
     # ── Optional services ─────────────────────────────────────
     HF_TOKEN: str = ""
     GROQ_API_KEY: str = ""
