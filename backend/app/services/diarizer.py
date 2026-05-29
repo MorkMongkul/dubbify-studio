@@ -199,20 +199,20 @@ async def _upload_audio(audio_path: str, object_key: str) -> str:
     if not presigned_url:
         raise RuntimeError(f"No presigned URL in response: {resp.text}")
 
-    # Step 2 — stream upload (avoids loading whole file into memory)
-    file_size = Path(audio_path).stat().st_size
+    # Step 2 — read file bytes then upload (AsyncClient requires bytes, not a file handle)
+    audio_bytes = Path(audio_path).read_bytes()
+    file_size = len(audio_bytes)
     logger.info(f"Uploading {file_size / 1e6:.1f}MB to pyannoteAI S3...")
 
-    with open(audio_path, "rb") as f:
-        async with httpx.AsyncClient(timeout=600.0) as client:
-            put_resp = await client.put(
-                presigned_url,
-                content=f,
-                headers={
-                    "Content-Type": "audio/wav",
-                    "Content-Length": str(file_size),
-                },
-            )
+    async with httpx.AsyncClient(timeout=600.0) as client:
+        put_resp = await client.put(
+            presigned_url,
+            content=audio_bytes,
+            headers={
+                "Content-Type": "audio/wav",
+                "Content-Length": str(file_size),
+            },
+        )
 
     if put_resp.status_code not in (200, 201, 204):
         raise RuntimeError(f"Upload failed {put_resp.status_code}: {put_resp.text}")

@@ -1,18 +1,12 @@
 """
 app/services/subtitle_pipeline.py
-Pipeline for jobs that have a subtitle file.
+Subtitle-based pipeline — two user-controlled stages.
 
-Much faster and more accurate than ASR pipeline:
-  1. Extract audio     (ffmpeg — for speaker diarization only)
-  2. Parse subtitles   (SRT or ASS — exact text, exact timing)
-  3. Diarize audio     (pyannoteAI — speaker identification only, no transcription)
-  4. Match speakers    (assign speakers to subtitle lines by timestamp overlap)
-  5. Translate         (Gemini — ZH→EN + ZH→KM with full context)
-  6. Save to DB
+Stage 1  run_subtitle_pipeline()          → parse subtitles + extract + separate → STEMS_READY
+Stage 2  run_subtitle_analysis_pipeline() → diarize + match speakers + translate → COMPLETED
 
-Skips: Whisper ASR entirely — subtitles are always more accurate.
+Skips Whisper ASR entirely — subtitles are always more accurate than ASR.
 """
-import asyncio
 import logging
 from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +15,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.models.models import Job, Project, Speaker, Segment, JobStatus, Gender, AgeGroup
 from app.services.audio_extractor import extract_audio, get_video_duration
+from app.services.source_separator import separate_vocals_bgm
 from app.services.subtitle_parser import parse_subtitle_file, assign_speakers_by_timing
 from app.services.diarizer import diarize_audio, build_voice_design_prompt
 from app.services.translator import translate_batch
@@ -32,165 +27,171 @@ async def _update_job(db, job, status, progress, error_msg=""):
     job.status    = status
     job.progress  = progress
     job.error_msg = error_msg
-    await db.flush()
+    await db.commit()
     logger.info(f"Job {job.id[:8]} | {status.value} | {progress}%")
 
 
-async def run_subtitle_pipeline(
-    job_id: str,
-    subtitle_path: str,
-    db: AsyncSession,
-) -> None:
+# ── STAGE 1: Parse subtitles + extract audio + separate ──────────────────────
+
+async def run_subtitle_pipeline(job_id: str, subtitle_path: str) -> None:
     """
-    Execute subtitle-based pipeline for a job.
-
-    Args:
-        job_id:        UUID of the Job record
-        subtitle_path: Path to .srt or .ass file on disk
-        db:            Async SQLAlchemy session
+    Stage 1 for subtitle jobs: parse SRT/ASS, extract audio, run Demucs.
+    Stores parsed subtitle text as Segments (no speakers yet) and stops at STEMS_READY.
     """
-    # ── Load job + project ────────────────────────────────────
-    result = await db.execute(select(Job).where(Job.id == job_id))
-    job = result.scalar_one_or_none()
-    if not job:
-        logger.error(f"Job {job_id} not found")
-        return
+    from app.core.database import AsyncSessionLocal
 
-    result = await db.execute(select(Project).where(Project.id == job.project_id))
-    project = result.scalar_one_or_none()
-    if not project:
-        await _update_job(db, job, JobStatus.FAILED, 0, "Project not found")
-        return
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(Job).where(Job.id == job_id))
+        job = result.scalar_one_or_none()
+        if not job:
+            logger.error(f"Job {job_id} not found")
+            return
 
-    job_dir = Path(settings.UPLOAD_DIR) / job.project_id / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
+        result = await db.execute(select(Project).where(Project.id == job.project_id))
+        project = result.scalar_one_or_none()
+        if not project:
+            await _update_job(db, job, JobStatus.FAILED, 0, "Project not found")
+            return
 
-    try:
-        # ── STAGE 1: Parse subtitle file ──────────────────────
-        await _update_job(db, job, JobStatus.EXTRACTING, 10)
+        job_dir = Path(settings.UPLOAD_DIR) / job.project_id / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"Parsing subtitle file: {subtitle_path}")
-        subtitle_segments = parse_subtitle_file(subtitle_path)
-        logger.info(f"Found {len(subtitle_segments)} subtitle lines")
-
-        # ── STAGE 2: Extract audio for diarization ────────────
-        await _update_job(db, job, JobStatus.EXTRACTING, 20)
-
-        # Get video duration
         try:
-            duration = await get_video_duration(job.video_path)
-            job.duration_secs = duration
+            await _update_job(db, job, JobStatus.EXTRACTING, 5)
+
+            logger.info(f"Parsing subtitle file: {subtitle_path}")
+            subtitle_segments = parse_subtitle_file(subtitle_path)
+            logger.info(f"Found {len(subtitle_segments)} subtitle lines")
+
+            try:
+                job.duration_secs = await get_video_duration(job.video_path)
+            except Exception as e:
+                logger.warning(f"Could not get video duration: {e}")
+
+            audio_path = await extract_audio(job.video_path, output_dir=str(job_dir))
+            job.audio_path = audio_path
+            await db.commit()
+
+            await _update_job(db, job, JobStatus.SEPARATING, 20)
+            vocals_path, _bgm = await separate_vocals_bgm(audio_path, str(job_dir))
+            logger.info(f"Separation complete — vocals: {vocals_path}")
+
+            # Store subtitle text as Segments without speakers so the
+            # user can see the script while the stems play on the timeline.
+            # Speakers are assigned in Stage 2 after diarization.
+            await _update_job(db, job, JobStatus.STEMS_READY, 30)
+            for sub in subtitle_segments:
+                db.add(Segment(
+                    job_id=job.id,
+                    speaker_id=None,
+                    start_time=sub.start_time,
+                    end_time=sub.end_time,
+                    source_text=sub.text,
+                    english_text="",
+                    khmer_text="",
+                ))
+            await db.commit()
+
+            logger.info(f"Job {job_id[:8]} STEMS_READY — {len(subtitle_segments)} subtitle lines saved, waiting for Analyze")
+
         except Exception as e:
-            logger.warning(f"Could not get video duration: {e}")
+            logger.exception(f"Subtitle Stage 1 failed for job {job_id[:8]}: {e}")
+            await _update_job(db, job, JobStatus.FAILED, 0, str(e))
 
-        audio_path = await extract_audio(
-            video_path=job.video_path,
-            output_dir=str(job_dir),
-        )
-        job.audio_path = audio_path
-        await db.flush()
 
-        # ── STAGE 3: Speaker diarization (no transcription) ───
-        await _update_job(db, job, JobStatus.DIARIZING, 35)
+# ── STAGE 2: Diarize + match speakers + translate ─────────────────────────────
 
-        # Run diarization-only (transcription=False saves credits)
-        # We already have the text from subtitles
-        diarized = await diarize_audio(audio_path)
+async def run_subtitle_analysis_pipeline(job_id: str) -> None:
+    """
+    Stage 2 for subtitle jobs: diarize vocals.wav, assign speakers to existing
+    Segments, then translate. Triggered by user clicking Analyze.
+    """
+    from app.core.database import AsyncSessionLocal
 
-        # ── STAGE 4: Match speakers to subtitle lines ─────────
-        await _update_job(db, job, JobStatus.TRANSCRIBING, 50)
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(Job).where(Job.id == job_id))
+        job = result.scalar_one_or_none()
+        if not job:
+            logger.error(f"Job {job_id} not found")
+            return
 
-        # Assign speaker labels by timestamp overlap
-        subtitle_segments = assign_speakers_by_timing(subtitle_segments, diarized)
+        result = await db.execute(select(Project).where(Project.id == job.project_id))
+        project = result.scalar_one_or_none()
+        if not project:
+            await _update_job(db, job, JobStatus.FAILED, 0, "Project not found")
+            return
 
-        # Build Speaker records — one per unique speaker
-        speaker_map: dict[str, Speaker] = {}
-        for seg in diarized:
-            label = seg.speaker_label
-            if label not in speaker_map:
-                voice_prompt = build_voice_design_prompt(
-                    label, seg.gender, seg.age_group
-                )
-                speaker = Speaker(
-                    project_id=project.id,
-                    label=label,
-                    display_name=label,
-                    gender=Gender(seg.gender),
-                    age_group=AgeGroup(seg.age_group),
-                    voice_design_prompt=voice_prompt,
-                )
-                db.add(speaker)
-                await db.flush()
-                speaker_map[label] = speaker
+        job_dir = Path(settings.UPLOAD_DIR) / job.project_id / job_id
+        vocals_path = str(job_dir / "vocals.wav")
+        if not Path(vocals_path).exists():
+            vocals_path = job.audio_path
 
-        # Log speaker assignment results
-        speaker_counts = {}
-        for sub in subtitle_segments:
-            speaker_counts[sub.speaker_label] = speaker_counts.get(sub.speaker_label, 0) + 1
-        logger.info(f"Speaker assignment: {speaker_counts}")
+        try:
+            await _update_job(db, job, JobStatus.DIARIZING, 35)
+            diarized = await diarize_audio(vocals_path)
 
-        # ── STAGE 5: Translate ────────────────────────────────
-        await _update_job(db, job, JobStatus.TRANSLATING, 60)
+            # Build Speaker records
+            speaker_map: dict[str, Speaker] = {}
+            for seg in diarized:
+                label = seg.speaker_label
+                if label not in speaker_map:
+                    speaker = Speaker(
+                        project_id=project.id,
+                        label=label,
+                        display_name=label,
+                        gender=Gender(seg.gender),
+                        age_group=AgeGroup(seg.age_group),
+                        voice_design_prompt=build_voice_design_prompt(label, seg.gender, seg.age_group),
+                    )
+                    db.add(speaker)
+                    await db.commit()
+                    speaker_map[label] = speaker
 
-        source_texts = [seg.text for seg in subtitle_segments]
+            await _update_job(db, job, JobStatus.TRANSCRIBING, 50)
 
-        # Build context for Gemini — subtitle text is cleaner than ASR
-        segments_context = [
-            {
-                "speaker_label": seg.speaker_label or "SPEAKER_00",
-                "source_text": seg.text,
-            }
-            for seg in subtitle_segments
-        ]
-
-        logger.info(f"Translating {len(source_texts)} subtitle lines...")
-
-        # Translate sequentially — EN first, then KM
-        # Running both simultaneously doubles the API pressure and causes 429s
-        # Source is already English for this video — skip EN translation
-        if project.source_lang == "en":
-            # Source IS English — use source text as english_text directly
-            en_texts = source_texts
-            logger.info("Source is English — skipping EN translation")
-        else:
-            logger.info(f"Translating {len(source_texts)} lines to English...")
-            en_texts = await translate_batch(
-                source_texts, project.source_lang, "en",
-                segments_context=segments_context,
+            # Load existing subtitle segments from DB and assign speakers by timing
+            seg_result = await db.execute(
+                select(Segment).where(Segment.job_id == job_id).order_by(Segment.start_time)
             )
+            existing_segments = seg_result.scalars().all()
 
-        logger.info(f"Translating {len(source_texts)} lines to Khmer...")
-        km_texts = await translate_batch(
-            source_texts, project.source_lang, project.target_lang,
-            segments_context=segments_context,
-        )
+            # Re-create SubtitleSegment-like objects for the timing matcher
+            class _Sub:
+                def __init__(self, seg): self.start_time = seg.start_time; self.end_time = seg.end_time; self.text = seg.source_text; self.speaker_label = None
 
-        # ── STAGE 6: Save segments to DB ──────────────────────
-        await _update_job(db, job, JobStatus.TRANSLATING, 85)
+            sub_objs = [_Sub(s) for s in existing_segments]
+            sub_objs = assign_speakers_by_timing(sub_objs, diarized)
 
-        for i, sub in enumerate(subtitle_segments):
-            speaker = speaker_map.get(sub.speaker_label)
-            segment = Segment(
-                job_id=job.id,
-                speaker_id=speaker.id if speaker else None,
-                start_time=sub.start_time,
-                end_time=sub.end_time,
-                source_text=sub.text,
-                english_text=en_texts[i] if i < len(en_texts) else "",
-                khmer_text=km_texts[i] if i < len(km_texts) else "",
-            )
-            db.add(segment)
+            # Update segments with assigned speakers
+            for sub, db_seg in zip(sub_objs, existing_segments):
+                speaker = speaker_map.get(sub.speaker_label)
+                db_seg.speaker_id = speaker.id if speaker else None
+            await db.commit()
 
-        await db.flush()
+            # Translate
+            await _update_job(db, job, JobStatus.TRANSLATING, 65)
+            source_texts = [s.source_text for s in existing_segments]
+            segments_context = [
+                {"speaker_label": sub.speaker_label or "SPEAKER_00", "source_text": sub.text}
+                for sub in sub_objs
+            ]
 
-        # ── DONE ─────────────────────────────────────────────
-        await _update_job(db, job, JobStatus.COMPLETED, 100)
-        logger.info(
-            f"Subtitle pipeline complete for job {job_id[:8]} — "
-            f"{len(subtitle_segments)} lines processed."
-        )
+            if project.source_lang == "en":
+                en_texts = source_texts
+            else:
+                en_texts = await translate_batch(source_texts, project.source_lang, "en", segments_context=segments_context)
 
-    except Exception as e:
-        logger.exception(f"Subtitle pipeline failed for job {job_id[:8]}: {e}")
-        await _update_job(db, job, JobStatus.FAILED, 0, str(e))
-        raise
+            km_texts = await translate_batch(source_texts, project.source_lang, project.target_lang, segments_context=segments_context)
+
+            await _update_job(db, job, JobStatus.TRANSLATING, 85)
+            for i, db_seg in enumerate(existing_segments):
+                db_seg.english_text = en_texts[i] if i < len(en_texts) else ""
+                db_seg.khmer_text   = km_texts[i] if i < len(km_texts) else ""
+            await db.commit()
+
+            await _update_job(db, job, JobStatus.COMPLETED, 100)
+            logger.info(f"Subtitle analysis complete for job {job_id[:8]} — {len(existing_segments)} segments.")
+
+        except Exception as e:
+            logger.exception(f"Subtitle Stage 2 failed for job {job_id[:8]}: {e}")
+            await _update_job(db, job, JobStatus.FAILED, 0, str(e))

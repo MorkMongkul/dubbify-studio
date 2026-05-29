@@ -232,6 +232,7 @@ async def mix_dubbed_audio(
     tts_segments: list,
     output_path: str,
     mute_original: bool = True,
+    bgm_path: str | None = None,
 ) -> str:
     """
     Mix TTS audio segments back onto the video timeline using ffmpeg.
@@ -241,6 +242,9 @@ async def mix_dubbed_audio(
         tts_segments:  List of dicts: {start_time, audio_path, duration}
         output_path:   Where to save the dubbed video
         mute_original: Whether to silence the original audio track
+        bgm_path:      Optional path to a separated BGM/no_vocals WAV file.
+                       When provided, uses clean BGM instead of the original
+                       mixed audio, eliminating any original voice bleed-through.
 
     Returns:
         Path to output dubbed video file
@@ -254,12 +258,20 @@ async def mix_dubbed_audio(
     filter_parts = []
     mix_labels = []
 
+    # Optional: inject separated BGM as a second input
+    bgm_input_idx: int | None = None
+    if bgm_path and Path(bgm_path).exists():
+        inputs += ["-i", bgm_path]
+        bgm_input_idx = 1  # input index 1 = BGM file
+
+    tts_offset = 2 if bgm_input_idx is not None else 1
+
     for i, seg in enumerate(tts_segments):
         inputs += ["-i", seg["audio_path"]]
         delay_ms = int(seg["start_time"] * 1000)
         label = f"[a{i}]"
         filter_parts.append(
-            f"[{i+1}:a]adelay={delay_ms}|{delay_ms},apad{label}"
+            f"[{tts_offset + i}:a]adelay={delay_ms}|{delay_ms},apad{label}"
         )
         mix_labels.append(label)
 
@@ -268,9 +280,15 @@ async def mix_dubbed_audio(
     n = len(tts_segments)
     filter_parts.append(f"{mix_inputs}amix=inputs={n}:normalize=0[dubbed]")
 
-    # If muting original: just use dubbed track
-    # If keeping original: mix with volume balance
-    if mute_original:
+    # Determine final audio:
+    #   bgm_path provided  → BGM (full volume) + dubbed TTS (full volume)
+    #   mute_original=True → dubbed TTS only (no background)
+    #   mute_original=False → original audio at 15% + dubbed TTS
+    if bgm_input_idx is not None:
+        filter_parts.append(f"[{bgm_input_idx}:a][dubbed]amix=inputs=2:normalize=0[final]")
+        audio_map = "[final]"
+        filter_complex = ";".join(filter_parts)
+    elif mute_original:
         audio_map = "[dubbed]"
         filter_complex = ";".join(filter_parts)
     else:
