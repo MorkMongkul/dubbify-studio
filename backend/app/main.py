@@ -10,7 +10,8 @@ import logging
 
 from app.core.config import settings
 from app.core.database import init_db
-from app.api.routes import health, projects, jobs, segments, tts
+from app.services.pipeline_common import recover_orphaned_jobs
+from app.api.routes import health, projects, jobs, segments, tts, voices
 
 # ── Logging setup ─────────────────────────────────────────────
 logging.basicConfig(
@@ -26,6 +27,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     await init_db()
     logger.info("Database tables initialised.")
+    await recover_orphaned_jobs()
     yield
     logger.info("Shutting down.")
 
@@ -60,6 +62,7 @@ app.include_router(projects.router,  prefix="/api/v1")
 app.include_router(jobs.router,      prefix="/api/v1")
 app.include_router(segments.router,  prefix="/api/v1")
 app.include_router(tts.router,       prefix="/api/v1")
+app.include_router(voices.router,    prefix="/api/v1")
 
 # ── Static Files ──────────────────────────────────────────────
 from fastapi.staticfiles import StaticFiles

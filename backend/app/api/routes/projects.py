@@ -2,13 +2,17 @@
 app/api/routes/projects.py
 CRUD endpoints for Projects.
 """
+import shutil
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from typing import List
 
 from app.core.database import get_db
-from app.models.models import Project
+from app.core.config import settings
+from app.models.models import Project, Job, Segment, Speaker
 from app.schemas.schemas import ProjectCreate, ProjectResponse
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
@@ -43,9 +47,23 @@ async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_project(project_id: str, db: AsyncSession = Depends(get_db)):
-    """Delete a project and all its associated data."""
+    """Delete a project and all its associated data (jobs, segments, speakers, files)."""
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # Delete children explicitly in FK-safe order (segments → jobs → speakers)
+    # rather than relying on async ORM cascade.
+    job_ids = (await db.execute(select(Job.id).where(Job.project_id == project_id))).scalars().all()
+    if job_ids:
+        await db.execute(delete(Segment).where(Segment.job_id.in_(job_ids)))
+        await db.execute(delete(Job).where(Job.project_id == project_id))
+    await db.execute(delete(Speaker).where(Speaker.project_id == project_id))
     await db.delete(project)
+    await db.commit()
+
+    # Remove the project's files from disk
+    project_dir = Path(settings.UPLOAD_DIR) / project_id
+    if project_dir.exists():
+        shutil.rmtree(project_dir, ignore_errors=True)
