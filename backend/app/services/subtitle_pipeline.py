@@ -13,22 +13,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models.models import Job, Project, Speaker, Segment, JobStatus, Gender, AgeGroup
+from app.models.models import Job, Project, Segment, JobStatus
 from app.services.audio_extractor import extract_audio, get_video_duration
 from app.services.source_separator import separate_vocals_bgm
 from app.services.subtitle_parser import parse_subtitle_file, assign_speakers_by_timing
-from app.services.diarizer import diarize_audio, build_voice_design_prompt
+from app.services.diarizer import diarize_audio
 from app.services.translator import translate_batch
+from app.services.pipeline_common import (
+    update_job_status as _update_job,
+    get_or_create_speakers,
+)
 
 logger = logging.getLogger(__name__)
-
-
-async def _update_job(db, job, status, progress, error_msg=""):
-    job.status    = status
-    job.progress  = progress
-    job.error_msg = error_msg
-    await db.commit()
-    logger.info(f"Job {job.id[:8]} | {status.value} | {progress}%")
 
 
 # ── STAGE 1: Parse subtitles + extract audio + separate ──────────────────────
@@ -101,10 +97,12 @@ async def run_subtitle_pipeline(job_id: str, subtitle_path: str) -> None:
 
 # ── STAGE 2: Diarize + match speakers + translate ─────────────────────────────
 
-async def run_subtitle_analysis_pipeline(job_id: str) -> None:
+async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None = None) -> None:
     """
     Stage 2 for subtitle jobs: diarize vocals.wav, assign speakers to existing
     Segments, then translate. Triggered by user clicking Analyze.
+
+    max_speakers: optional cap on diarization speakers (curbs over-clustering).
     """
     from app.core.database import AsyncSessionLocal
 
@@ -128,24 +126,10 @@ async def run_subtitle_analysis_pipeline(job_id: str) -> None:
 
         try:
             await _update_job(db, job, JobStatus.DIARIZING, 35)
-            diarized = await diarize_audio(vocals_path)
+            diarized = await diarize_audio(vocals_path, max_speakers=max_speakers)
 
-            # Build Speaker records
-            speaker_map: dict[str, Speaker] = {}
-            for seg in diarized:
-                label = seg.speaker_label
-                if label not in speaker_map:
-                    speaker = Speaker(
-                        project_id=project.id,
-                        label=label,
-                        display_name=label,
-                        gender=Gender(seg.gender),
-                        age_group=AgeGroup(seg.age_group),
-                        voice_design_prompt=build_voice_design_prompt(label, seg.gender, seg.age_group),
-                    )
-                    db.add(speaker)
-                    await db.commit()
-                    speaker_map[label] = speaker
+            # Build Speaker records (idempotent — reuses existing project speakers)
+            speaker_map = await get_or_create_speakers(db, project.id, diarized)
 
             await _update_job(db, job, JobStatus.TRANSCRIBING, 50)
 
@@ -176,16 +160,12 @@ async def run_subtitle_analysis_pipeline(job_id: str) -> None:
                 for sub in sub_objs
             ]
 
-            if project.source_lang == "en":
-                en_texts = source_texts
-            else:
-                en_texts = await translate_batch(source_texts, project.source_lang, "en", segments_context=segments_context)
-
+            # Translate source → target (Khmer) DIRECTLY — no English pivot.
             km_texts = await translate_batch(source_texts, project.source_lang, project.target_lang, segments_context=segments_context)
 
             await _update_job(db, job, JobStatus.TRANSLATING, 85)
             for i, db_seg in enumerate(existing_segments):
-                db_seg.english_text = en_texts[i] if i < len(en_texts) else ""
+                db_seg.english_text = ""
                 db_seg.khmer_text   = km_texts[i] if i < len(km_texts) else ""
             await db.commit()
 

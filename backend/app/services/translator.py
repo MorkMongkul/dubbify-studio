@@ -51,6 +51,18 @@ GOOGLE_LANG_MAP = {
 }
 
 
+def _is_billing_error(err_str: str) -> bool:
+    """
+    Distinguish a 'depleted credits / billing' 429 from a transient rate-limit 429.
+    Gemini returns 429 for both; billing errors will never succeed on retry, so we
+    skip the 60s backoff and fall back to deep-translator immediately.
+    """
+    s = err_str.lower()
+    return "resource_exhausted" in s and any(
+        k in s for k in ("credit", "billing", "depleted", "prepay")
+    )
+
+
 def _clean_chinese(text: str) -> str:
     """
     Remove spaces between Chinese characters added by pyannoteAI ASR.
@@ -405,22 +417,31 @@ async def translate_batch(
                     await asyncio.sleep(2.0)
 
             except Exception as e:
-                if "429" in str(e):
-                    logger.warning(f"429 on chunk {chunk_idx+1} — waiting 60s then retrying...")
+                err_str = str(e)
+                # A 429 that's actually depleted credits / billing will NEVER
+                # succeed on retry — fall back immediately instead of waiting 60s.
+                if "429" in err_str and not _is_billing_error(err_str):
+                    logger.warning(f"429 (rate limit) on chunk {chunk_idx+1} — waiting 60s then retrying...")
                     await asyncio.sleep(60)
                     try:
                         chunk_results = await _translate_batch_with_gemini(
                             chunk, source_lang, target_lang, ctx
                         )
                         all_results.extend(chunk_results)
-                    except Exception as e2:
+                    except Exception:
                         logger.warning(f"Chunk {chunk_idx+1} failed again — using deep-translator")
                         for text in chunk:
                             all_results.append(
                                 _translate_with_deep(text, source_lang, target_lang)
                             )
                 else:
-                    logger.error(f"Gemini batch failed: {e} — using deep-translator")
+                    if _is_billing_error(err_str):
+                        logger.error(
+                            "Gemini credits depleted — falling back to Google Translate. "
+                            "Top up at https://ai.studio/projects to restore Gemini quality."
+                        )
+                    else:
+                        logger.error(f"Gemini batch failed: {e} — using deep-translator")
                     for text in chunk:
                         all_results.append(
                             _translate_with_deep(text, source_lang, target_lang)
