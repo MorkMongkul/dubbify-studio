@@ -27,11 +27,13 @@ interface TimelineEditorProps {
   jobId?: string
   projectId?: string
   job?: Job
-  onAnalyze?: () => void
+  onAnalyze?: (maxSpeakers?: number) => void
   analyzing?: boolean
 }
 
 export function TimelineEditor({ segments, speakers, duration, className, jobId, projectId, job, onAnalyze, analyzing }: TimelineEditorProps) {
+  // Optional cap on detected speakers (curbs over-clustering). Blank = auto.
+  const [maxSpeakers, setMaxSpeakers] = useState<string>('')
   const isStage1Processing = job?.status === 'extracting' || job?.status === 'separating' || job?.status === 'pending'
   const isStemsReady       = job?.status === 'stems_ready'
   // Once analysis has been triggered the original vocals are replaced by TTS — auto-mute them
@@ -452,19 +454,35 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                       M
                     </button>
                   )}
-                  {/* Analyze button — shown at stems_ready */}
+                  {/* Analyze button + optional max-speakers cap — shown at stems_ready */}
                   {isStemsReady && onAnalyze && (
-                    <button
-                      onClick={onAnalyze}
-                      disabled={analyzing}
-                      className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-60 text-white text-[9px] font-bold shadow transition-all select-none"
-                      title="Detect speakers and transcribe"
-                    >
-                      {analyzing
-                        ? <><Loader2 size={9} className="animate-spin" />…</>
-                        : <><Scissors size={9} />Analyze</>
-                      }
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min={1}
+                        max={20}
+                        value={maxSpeakers}
+                        onChange={(e) => setMaxSpeakers(e.target.value)}
+                        placeholder="max spk"
+                        title="Max speakers (optional) — caps over-detection. Leave blank for auto."
+                        disabled={analyzing}
+                        className="w-14 px-1.5 py-0.5 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-200 text-[9px] focus:outline-none focus:border-emerald-500 disabled:opacity-60"
+                      />
+                      <button
+                        onClick={() => {
+                          const n = parseInt(maxSpeakers, 10)
+                          onAnalyze(Number.isFinite(n) && n > 0 ? n : undefined)
+                        }}
+                        disabled={analyzing}
+                        className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-60 text-white text-[9px] font-bold shadow transition-all select-none"
+                        title="Detect speakers and transcribe"
+                      >
+                        {analyzing
+                          ? <><Loader2 size={9} className="animate-spin" />…</>
+                          : <><Scissors size={9} />Analyze</>
+                        }
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -1181,9 +1199,18 @@ function StemWaveform({ audioUrl, color, pxPerSec }: StemWaveformProps) {
     return () => { ws.destroy(); wsRef.current = null }
   }, [audioUrl, color])
 
-  // Sync zoom level without recreating the instance
+  // Sync zoom level without recreating the instance.
+  // Guarded: WaveSurfer.zoom() throws "No audio loaded" if the buffer isn't
+  // decoded yet (can happen on a remount race when returning to the editor).
+  // A waveform zoom hiccup must never crash the whole editor.
   useEffect(() => {
-    if (wsRef.current && ready) wsRef.current.zoom(pxPerSec)
+    const ws = wsRef.current
+    if (!ws || !ready) return
+    try {
+      if (ws.getDecodedData()) ws.zoom(pxPerSec)
+    } catch {
+      /* audio not decoded yet — the next ready/zoom cycle will apply it */
+    }
   }, [pxPerSec, ready])
 
   if (error) {
