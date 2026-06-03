@@ -13,21 +13,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models.models import Job, Project, Speaker, Segment, JobStatus, Gender, AgeGroup
+from app.models.models import Job, Project, Segment, JobStatus
 from app.services.audio_extractor import extract_audio, get_video_duration
 from app.services.source_separator import separate_vocals_bgm
-from app.services.diarizer import diarize_audio, build_voice_design_prompt
+from app.services.diarizer import diarize_audio
 from app.services.translator import translate_batch
+from app.services.pipeline_common import (
+    update_job_status as _update_job,
+    get_or_create_speakers,
+    clear_job_segments,
+)
 
 logger = logging.getLogger(__name__)
-
-
-async def _update_job(db: AsyncSession, job: Job, status: JobStatus, progress: int, error_msg: str = "") -> None:
-    job.status    = status
-    job.progress  = progress
-    job.error_msg = error_msg
-    await db.commit()
-    logger.info(f"Job {job.id[:8]} | {status.value} | {progress}%")
 
 
 # ── STAGE 1: Extract audio + separate stems ───────────────────────────────────
@@ -77,10 +74,12 @@ async def run_pipeline(job_id: str) -> None:
 
 # ── STAGE 2: Diarize + transcribe + translate ─────────────────────────────────
 
-async def run_analysis_pipeline(job_id: str) -> None:
+async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) -> None:
     """
     Stage 2: diarize vocals.wav, transcribe, translate.
     Triggered by the user clicking Analyze in the editor.
+
+    max_speakers: optional cap on diarization speakers (curbs over-clustering).
     """
     from app.core.database import AsyncSessionLocal
 
@@ -106,24 +105,13 @@ async def run_analysis_pipeline(job_id: str) -> None:
 
         try:
             await _update_job(db, job, JobStatus.DIARIZING, 35)
-            diarized = await diarize_audio(vocals_path)
+            diarized = await diarize_audio(vocals_path, max_speakers=max_speakers)
 
-            # Build Speaker records
-            speaker_map: dict[str, Speaker] = {}
-            for seg in diarized:
-                label = seg.speaker_label
-                if label not in speaker_map:
-                    speaker = Speaker(
-                        project_id=project.id,
-                        label=label,
-                        display_name=label,
-                        gender=Gender(seg.gender),
-                        age_group=AgeGroup(seg.age_group),
-                        voice_design_prompt=build_voice_design_prompt(label, seg.gender, seg.age_group),
-                    )
-                    db.add(speaker)
-                    await db.commit()
-                    speaker_map[label] = speaker
+            # Clear any segments from a previous run so a retry doesn't duplicate.
+            await clear_job_segments(db, job.id)
+
+            # Build Speaker records (idempotent — reuses existing project speakers)
+            speaker_map = await get_or_create_speakers(db, project.id, diarized)
 
             await _update_job(db, job, JobStatus.TRANSCRIBING, 55)
             has_text = sum(1 for s in diarized if s.source_text)
@@ -136,10 +124,8 @@ async def run_analysis_pipeline(job_id: str) -> None:
                 for seg in diarized
             ]
 
-            logger.info(f"Translating {len(source_texts)} segments to English...")
-            en_texts = await translate_batch(source_texts, project.source_lang, "en", segments_context=segments_context)
-
-            logger.info(f"Translating {len(source_texts)} segments to {project.target_lang}...")
+            # Translate Chinese → target (Khmer) DIRECTLY — no English pivot.
+            logger.info(f"Translating {len(source_texts)} segments {project.source_lang} → {project.target_lang}...")
             km_texts = await translate_batch(source_texts, project.source_lang, project.target_lang, segments_context=segments_context)
 
             await _update_job(db, job, JobStatus.TRANSLATING, 85)
@@ -152,7 +138,7 @@ async def run_analysis_pipeline(job_id: str) -> None:
                     start_time=seg.start_time,
                     end_time=seg.end_time,
                     source_text=seg.source_text,
-                    english_text=en_texts[i] if i < len(en_texts) else "",
+                    english_text="",
                     khmer_text=km_texts[i] if i < len(km_texts) else "",
                 ))
             await db.commit()

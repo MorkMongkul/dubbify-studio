@@ -87,10 +87,29 @@ export interface SpeakerUpdate {
   age_group?: string
 }
 
+export type VoiceMode = 'design' | 'clone' | 'ultimate'
+
+export interface Voice {
+  id: string
+  name: string
+  mode: VoiceMode
+  description: string
+  reference_audio_path: string
+  reference_transcript: string
+  cfg_value: number
+  inference_timesteps: number
+  seed: number
+  created_at: string
+  // computed by backend
+  has_reference?: boolean
+  reference_audio_url?: string | null
+}
+
 export interface Segment {
   id: string
   job_id: string
   speaker_id?: string | null
+  voice_id?: string | null
   start_time: number      // seconds
   end_time: number        // seconds
   source_text: string     // original language (e.g. Chinese)
@@ -104,11 +123,13 @@ export interface Segment {
 
 export interface SegmentUpdate {
   speaker_id?: string | null
+  voice_id?: string | null
   start_time?: number
   end_time?: number
   source_text?: string
   english_text?: string
   khmer_text?: string
+  tts_audio_path?: string
   is_approved?: boolean
   notes?: string
 }

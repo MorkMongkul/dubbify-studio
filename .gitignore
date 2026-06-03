@@ -83,3 +83,9 @@ frontend/*.local
 
 # ── Root-level node_modules (if ever added) ───────────────────
 node_modules/
+
+# ── Environment files (contain API keys / secrets) ────────────
+.env
+*.env
+!.env.example
+backend/.env

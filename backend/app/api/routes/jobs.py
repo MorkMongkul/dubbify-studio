@@ -11,12 +11,12 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from typing import List
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.models.models import Job, Project, JobStatus
+from app.models.models import Job, Project, JobStatus, Segment
 from app.schemas.schemas import JobResponse, PipelineStartResponse
 from app.services.pipeline import run_pipeline, run_analysis_pipeline
 from app.services.subtitle_pipeline import run_subtitle_pipeline, run_subtitle_analysis_pipeline
@@ -107,6 +107,8 @@ async def upload_and_start(
     if subtitle_path:
         # Found embedded subtitles — use faster subtitle pipeline
         logger.info(f"Job {job.id[:8]} — embedded subtitles found, using subtitle pipeline")
+        job.subtitle_path = subtitle_path
+        await db.commit()
         background_tasks.add_task(
             run_subtitle_pipeline, job.id, subtitle_path
         )
@@ -190,6 +192,7 @@ async def upload_with_subtitle(
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
 
     job.video_path = str(video_path)
+    job.subtitle_path = str(subtitle_path)
     await db.commit()
 
     # Launch subtitle pipeline in background
@@ -254,11 +257,15 @@ async def list_project_jobs(project_id: str, db: AsyncSession = Depends(get_db))
 async def analyze_job(
     job_id: str,
     background_tasks: BackgroundTasks,
+    max_speakers: int | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """
     Trigger Stage 2: diarization + transcription + translation.
     Job must be in stems_ready state (Stage 1 complete).
+
+    max_speakers: optional cap on diarization speakers to curb over-clustering
+    (e.g. one actor split into 5 speakers). Omit for automatic detection.
     """
     result = await db.execute(select(Job).where(Job.id == job_id))
     job = result.scalar_one_or_none()
@@ -272,11 +279,11 @@ async def analyze_job(
         )
 
     # Detect which pipeline to use — subtitle jobs have a subtitle_path stored
-    subtitle_path = getattr(job, 'subtitle_path', None)
+    subtitle_path = job.subtitle_path
     if subtitle_path and Path(subtitle_path).exists():
-        background_tasks.add_task(run_subtitle_analysis_pipeline, job_id)
+        background_tasks.add_task(run_subtitle_analysis_pipeline, job_id, max_speakers)
     else:
-        background_tasks.add_task(run_analysis_pipeline, job_id)
+        background_tasks.add_task(run_analysis_pipeline, job_id, max_speakers)
 
     return {"message": "Analysis started", "job_id": job_id, "status": "diarizing"}
 
@@ -293,4 +300,8 @@ async def delete_job(job_id: str, db: AsyncSession = Depends(get_db)):
     if job_dir.exists():
         shutil.rmtree(job_dir)
 
+    # Delete child segments explicitly first (avoids relying on async ORM
+    # cascade and any FK ordering issues), then the job.
+    await db.execute(delete(Segment).where(Segment.job_id == job_id))
     await db.delete(job)
+    await db.commit()

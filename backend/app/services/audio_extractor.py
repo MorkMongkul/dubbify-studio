@@ -170,10 +170,12 @@ async def extract_audio(video_path: str, output_dir: str) -> str:
         "-y",                          # overwrite output if exists
         "-i", str(video_path),         # input file
         "-vn",                         # no video
-        "-acodec", "pcm_s16le",        # 16-bit PCM — Whisper-compatible
-        "-ar", "16000",                # 16kHz sample rate
-        "-ac", "1",                    # mono channel
-        str(audio_path),
+        "-acodec", "pcm_s16le",        # 16-bit PCM
+        "-ar", "44100",                # 44.1kHz — separation models (Demucs/RoFormer)
+                                       # are trained on this; 16kHz gave muddy stems.
+        "-ac", "2",                    # stereo — models use stereo cues to separate.
+        str(audio_path),               # diarization/Whisper run in the cloud and
+                                       # resample internally, so they don't need 16k.
     ]
 
     logger.info(f"Extracting audio: {video_path.name} → {audio_path.name}")

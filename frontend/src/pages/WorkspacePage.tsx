@@ -217,9 +217,9 @@ export default function WorkspacePage() {
   const isStemsReady = job?.status === 'stems_ready'
   const isStage2     = job?.status === 'diarizing' || job?.status === 'transcribing' || job?.status === 'translating'
 
-  const handleAnalyze = () => {
+  const handleAnalyze = (maxSpeakers?: number) => {
     if (!jobId) return
-    analyze(jobId, {
+    analyze({ jobId, maxSpeakers }, {
       onSuccess: () => toast.success('Analysis started — detecting speakers…'),
       onError:   () => toast.error('Failed to start analysis'),
     })

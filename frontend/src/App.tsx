@@ -3,9 +3,11 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AnimatePresence } from 'framer-motion'
 import { AppShell } from '@/components/layout/AppShell'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import ProjectsPage from '@/pages/ProjectsPage'
 import EditorPage from '@/pages/EditorPage'
 import SettingsPage from '@/pages/SettingsPage'
+import VoiceCreatorPage from '@/pages/VoiceCreatorPage'
 import { initTheme } from '@/store/themeStore'
 
 // Restore persisted theme before first render
@@ -30,6 +32,7 @@ function AnimatedRoutes() {
         <Route path="/projects"                          element={<ProjectsPage />} />
         <Route path="/projects/:projectId"               element={<EditorPage />} />
         <Route path="/projects/:projectId/jobs/:jobId"   element={<EditorPage />} />
+        <Route path="/voices"                            element={<VoiceCreatorPage />} />
         <Route path="/settings"                          element={<SettingsPage />} />
         <Route path="*"                                  element={<Navigate to="/projects" replace />} />
       </Routes>
@@ -40,11 +43,13 @@ function AnimatedRoutes() {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <AppShell>
-          <AnimatedRoutes />
-        </AppShell>
-      </BrowserRouter>
+      <ErrorBoundary>
+        <BrowserRouter>
+          <AppShell>
+            <AnimatedRoutes />
+          </AppShell>
+        </BrowserRouter>
+      </ErrorBoundary>
     </QueryClientProvider>
   )
 }

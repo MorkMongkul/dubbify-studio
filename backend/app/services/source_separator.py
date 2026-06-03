@@ -21,6 +21,8 @@ import sys
 from pathlib import Path
 from typing import Tuple
 
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
 
 # Output path templates
@@ -47,6 +49,14 @@ async def separate_vocals_bgm(audio_path: str, output_dir: str) -> Tuple[str, st
     if vocals_target.exists() and bgm_target.exists():
         logger.info("Stem files already present — skipping separation")
         return str(vocals_target), str(bgm_target)
+
+    # Cloud (HuggingFace) path — offloads compute off this machine. Tried first
+    # when configured; falls back to local Demucs if it fails (rate limit/down).
+    if (settings.SEPARATION_BACKEND or "local").lower() == "hf":
+        result = await _separate_via_hf(audio_path_obj, output_dir_obj, vocals_target, bgm_target)
+        if result:
+            return result
+        logger.warning("HF separation failed — falling back to local Demucs")
 
     # Use the same venv's executables so we don't need demucs on system PATH
     venv_bin = Path(sys.executable).parent
@@ -96,6 +106,71 @@ async def separate_vocals_bgm(audio_path: str, output_dir: str) -> Tuple[str, st
 
     logger.warning("No source separator succeeded — pipeline will use original mixed audio")
     return audio_path, audio_path
+
+
+# ── HuggingFace Space separation (gradio_client) ──────────────
+
+def _hf_separate_call(audio_path: str) -> Tuple[str, str]:
+    """Blocking gradio_client call to the vocal-separation Space. Run in a thread.
+
+    Returns the raw (vocals, background) file paths the Space produced — these may
+    be MP3/FLAC, so the caller transcodes them to real WAV.
+    """
+    from gradio_client import Client, handle_file
+
+    token = settings.HF_TOKEN or None
+    client = Client(settings.SEPARATION_HF_SPACE, token=token)
+    # /separate → (vocals_filepath, background_filepath)
+    result = client.predict(
+        handle_file(audio_path),
+        settings.SEPARATION_HF_MODEL,
+        api_name="/separate",
+    )
+    return result[0], result[1]
+
+
+async def _to_wav(src: str, dest: Path) -> bool:
+    """Transcode any audio file to 44.1kHz stereo 16-bit WAV (the Space may return MP3)."""
+    cmd = [
+        "ffmpeg", "-y", "-i", str(src),
+        "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le",
+        str(dest),
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        logger.warning(f"WAV transcode failed for {Path(src).name}: {stderr.decode()[:200]}")
+        return False
+    return True
+
+
+async def _separate_via_hf(
+    audio_path: Path,
+    output_dir: Path,
+    vocals_target: Path,
+    bgm_target: Path,
+) -> Tuple[str, str] | None:
+    """Separate via the HF Space (BS-RoFormer etc.) — compute happens in the cloud."""
+    logger.info(
+        f"Separating via HF Space '{settings.SEPARATION_HF_SPACE}' "
+        f"(model={settings.SEPARATION_HF_MODEL}): {audio_path.name}"
+    )
+    try:
+        vocals_src, bgm_src = await asyncio.to_thread(_hf_separate_call, str(audio_path))
+    except Exception as e:
+        logger.warning(f"HF separation failed: {e}")
+        return None
+
+    # The Space returns MP3 — transcode both stems to real WAV for downstream tools
+    if not await _to_wav(vocals_src, vocals_target) or not await _to_wav(bgm_src, bgm_target):
+        return None
+
+    await _create_preview(vocals_target, output_dir / "vocals.preview.wav")
+    await _create_preview(bgm_target,    output_dir / "no_vocals.preview.wav")
+    logger.info(f"HF separation done: {vocals_target.name} + {bgm_target.name}")
+    return str(vocals_target), str(bgm_target)
 
 
 async def _run_demucs(

@@ -296,9 +296,9 @@ export default function EditorPage() {
     }
   }
 
-  const handleAnalyze = () => {
+  const handleAnalyze = (maxSpeakers?: number) => {
     if (!jobId) return
-    analyze(jobId, {
+    analyze({ jobId, maxSpeakers }, {
       onSuccess: () => toast.success('Analysis started — detecting speakers…'),
       onError:   () => toast.error('Failed to start analysis'),
     })

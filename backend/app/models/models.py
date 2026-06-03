@@ -45,6 +45,45 @@ class AgeGroup(str, enum.Enum):
     SENIOR = "senior"
 
 
+class VoiceMode(str, enum.Enum):
+    DESIGN     = "design"      # description only, no reference audio
+    CLONE      = "clone"       # reference audio + optional control/style
+    ULTIMATE   = "ultimate"    # reference audio + transcript (audio continuation)
+
+
+# ── Voice (workspace-global reusable voice library) ───────────
+class Voice(Base):
+    """
+    A named, reusable voice preset created in the Voice Creator.
+    Workspace-global (not tied to a project) so it can be selected across
+    any project's segments/speakers.
+    """
+    __tablename__ = "voices"
+
+    id          = Column(String, primary_key=True, default=generate_uuid)
+    name        = Column(String(120), nullable=False)
+    # Stored as plain string (validated by the VoiceMode enum in the schema
+    # layer) to avoid native-enum/VARCHAR mismatches in Postgres.
+    mode        = Column(String(20), default=VoiceMode.DESIGN.value)
+
+    # Voice Design description / cloning control instruction (the "(...)" prompt)
+    description = Column(Text, default="")
+    # Reference clip for cloning modes (local path under uploads/voices/)
+    reference_audio_path = Column(String, default="")
+    # Transcript of the reference clip (ultimate cloning)
+    reference_transcript = Column(Text, default="")
+
+    # VoxCPM2 generation params
+    cfg_value           = Column(Float, default=2.0)
+    inference_timesteps = Column(Integer, default=10)
+    # Fixed seed so the voice identity is consistent across every line.
+    # -1 means "not frozen" (random each call); a concrete value locks the voice.
+    seed                = Column(Integer, default=-1)
+
+    created_at  = Column(DateTime, server_default=func.now())
+    updated_at  = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 # ── Project ───────────────────────────────────────────────────
 class Project(Base):
     __tablename__ = "projects"
@@ -72,9 +111,10 @@ class Job(Base):
     error_msg   = Column(Text, default="")
 
     # File paths (stored on disk / S3)
-    video_path  = Column(String, default="")
-    audio_path  = Column(String, default="")
-    output_path = Column(String, default="")          # final dubbed video
+    video_path    = Column(String, default="")
+    audio_path    = Column(String, default="")
+    output_path   = Column(String, default="")        # final dubbed video
+    subtitle_path = Column(String, default="")         # set for subtitle-pipeline jobs
 
     # Timing
     created_at    = Column(DateTime, server_default=func.now())
@@ -97,10 +137,15 @@ class Speaker(Base):
     gender      = Column(SAEnum(Gender), default=Gender.UNKNOWN)
     age_group   = Column(SAEnum(AgeGroup), default=AgeGroup.ADULT)
 
-    # VoxCPM2 voice design prompt (auto-generated or manually edited)
+    # VoxCPM2 voice design prompt (auto-generated or manually edited; legacy
+    # fallback used when no Voice is assigned)
     voice_design_prompt = Column(Text, default="")
     # Reference audio clip for voice cloning (path to .wav file)
     reference_audio_path = Column(String, default="")
+
+    # Speaker-level voice assignment — applies to all of this speaker's segments
+    # unless a segment overrides it. FK to the workspace voice library.
+    voice_id = Column(String, ForeignKey("voices.id"), nullable=True)
 
     project  = relationship("Project", back_populates="speakers")
     segments = relationship("Segment", back_populates="speaker")
@@ -126,6 +171,9 @@ class Segment(Base):
     # TTS output
     tts_audio_path    = Column(String, default="")   # synthesised .wav
     tts_duration_secs = Column(Float, default=0.0)
+
+    # Per-segment voice override — takes precedence over the speaker's voice.
+    voice_id = Column(String, ForeignKey("voices.id"), nullable=True)
 
     # Review flags
     is_approved  = Column(Boolean, default=False)
