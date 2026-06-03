@@ -2,8 +2,9 @@
 // React Query hooks — data fetching, caching, polling
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { projects, jobs, speakers, segments, tts, health } from '@/api/client'
-import type { ProjectCreate, SpeakerUpdate, SegmentUpdate } from '@/types'
+import { projects, jobs, speakers, segments, tts, health, voices } from '@/api/client'
+import type { VoiceCreateInput } from '@/api/client'
+import type { ProjectCreate, SpeakerUpdate, SegmentUpdate, Voice } from '@/types'
 
 // ── Health ────────────────────────────────────────────────────
 export function useHealth() {
@@ -63,16 +64,20 @@ export function useJob(jobId: string | null) {
     queryKey: ['job', jobId],
     queryFn: () => jobs.get(jobId!),
     enabled: !!jobId,
+    // Keep polling even when the tab is in the background (e.g. while watching
+    // the backend logs) and refetch on return, so progress never appears frozen.
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
     refetchInterval: (query) => {
       const data = query.state.data
       const status = data?.status
       // Active pipeline stages — poll every 2s
-      const running = ['pending', 'uploading', 'extracting', 'separating', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing']
+      const running = ['pending', 'extracting', 'separating', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing']
       if (status && running.includes(status)) return 2000
       // stems_ready: paused, waiting for user — poll slowly to pick up any changes
       if (status === 'stems_ready') return 5000
-      // Keep polling after completion until video_url is available
-      if (status === 'completed' && !data?.video_url) return 3000
+      // completed / failed are terminal — TTS + mix are user-triggered and their
+      // mutations invalidate this query, so no need to keep polling.
       return false
     },
   })
@@ -199,8 +204,9 @@ export function useApproveAll() {
 export function useAnalyzeJob() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (jobId: string) => jobs.analyze(jobId),
-    onSuccess: (_, jobId) => {
+    mutationFn: ({ jobId, maxSpeakers }: { jobId: string; maxSpeakers?: number | null }) =>
+      jobs.analyze(jobId, maxSpeakers),
+    onSuccess: (_, { jobId }) => {
       qc.invalidateQueries({ queryKey: ['job', jobId] })
     },
   })
@@ -220,10 +226,51 @@ export function useSynthesizeJob() {
 export function useMixFinalAudio() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ jobId, muteOriginal }: { jobId: string; muteOriginal?: boolean }) => 
+    mutationFn: ({ jobId, muteOriginal }: { jobId: string; muteOriginal?: boolean }) =>
       tts.mixFinalAudio(jobId, muteOriginal),
     onSuccess: (_, { jobId }) => {
       qc.invalidateQueries({ queryKey: ['job', jobId] })
     },
+  })
+}
+
+// ── Voices (Voice Creator) ────────────────────────────────────
+export function useVoices() {
+  return useQuery({
+    queryKey: ['voices'],
+    queryFn: voices.list,
+    staleTime: 10000,
+  })
+}
+
+export function useCreateVoice() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (data: VoiceCreateInput) => voices.create(data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['voices'] }),
+  })
+}
+
+export function useUpdateVoice() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Partial<Voice> }) =>
+      voices.update(id, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['voices'] }),
+  })
+}
+
+export function useDeleteVoice() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => voices.delete(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['voices'] }),
+  })
+}
+
+export function usePreviewVoice() {
+  return useMutation({
+    mutationFn: ({ id, text }: { id: string; text: string }) =>
+      voices.preview(id, text),
   })
 }

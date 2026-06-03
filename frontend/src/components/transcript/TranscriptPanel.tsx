@@ -8,7 +8,8 @@ import { SegmentCardSkeleton } from '@/components/ui/Skeleton'
 import { toast } from 'sonner'
 import { cn, formatTime, getSpeakerColor, isJobRunning, getJobStatusConfig } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
-import { tts } from '@/api/client'
+import { tts, segments as segmentsApi } from '@/api/client'
+import { useVoices } from '@/hooks/useApi'
  
 interface TranscriptPanelProps {
   segments: Segment[]
@@ -35,7 +36,7 @@ export function TranscriptPanel({
   } = useEditorStore()
  
   const selectedSegmentIds = useEditorStore((s) => s.selectedSegmentIds)
-  const availableVoices = useEditorStore((s) => s.availableVoices)
+  const { data: availableVoices = [] } = useVoices()
   const inspectorMode = useEditorStore((s) => s.inspectorMode)
   const focusedTimelineItemId = useEditorStore((s) => s.focusedTimelineItemId)
  
@@ -76,6 +77,31 @@ export function TranscriptPanel({
     setFocusedTimelineItemId(null)
   }
  
+  const handleVoiceChange = async (segmentId: string, voiceId: string) => {
+    try {
+      await segmentsApi.update(segmentId, { voice_id: voiceId })
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    } catch (err) {
+      toast.error('Failed to assign voice')
+      console.error(err)
+    }
+  }
+
+  // Persist a text edit to the DB on blur so it survives reload / resume.
+  // Changing the text also clears that segment's stale TTS clip (it was for the
+  // old words) so it shows Pending and can be regenerated — other segments' voices
+  // are untouched.
+  const handleTextBlur = async (segmentId: string, text: string, original: string) => {
+    if (text === original) return   // nothing changed
+    try {
+      await segmentsApi.update(segmentId, { khmer_text: text, tts_audio_path: '' })
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    } catch (err) {
+      toast.error('Failed to save edit')
+      console.error(err)
+    }
+  }
+
   const handleSingleSynthesize = async (segmentId: string) => {
     setSingleSynthesizing(segmentId)
     try {
@@ -360,6 +386,7 @@ export function TranscriptPanel({
                       <textarea
                         value={seg.khmer_text || ''}
                         onChange={(e) => updateSegmentText(seg.id, e.target.value)}
+                        onBlur={(e) => handleTextBlur(seg.id, e.target.value, seg.khmer_text || '')}
                         onClick={(e) => {
                           e.stopPropagation()
                           setActiveSegment(seg.id)
@@ -378,10 +405,8 @@ export function TranscriptPanel({
                     <td className="p-2" onClick={(e) => e.stopPropagation()}>
                       <select
                         className="bg-zinc-900 text-zinc-200 text-[10px] rounded border border-zinc-800 hover:border-zinc-700 hover:bg-zinc-800 py-0.5 px-1 focus:outline-none focus:border-purple-500/50 cursor-pointer w-full max-w-[100px] truncate"
-                        value={seg.speaker_id || ''}
-                        onChange={() => {
-                          // Standard mock select handler
-                        }}
+                        value={seg.voice_id || ''}
+                        onChange={(e) => handleVoiceChange(seg.id, e.target.value)}
                       >
                         <option value="">Default Voice</option>
                         {availableVoices.map((v) => (

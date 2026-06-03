@@ -4,7 +4,7 @@ import { motion } from 'framer-motion'
 import { Users, Edit2, Check, X } from 'lucide-react'
 import type { Speaker, Segment } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
-import { useUpdateSpeaker } from '@/hooks/useApi'
+import { useUpdateSpeaker, useVoices } from '@/hooks/useApi'
 import { getSpeakerColor, cn } from '@/lib/utils'
 import { toast } from 'sonner'
 
@@ -23,6 +23,7 @@ const PRESET_COLORS = [
 export function SpeakerPanel({ speakers, className, segments }: SpeakerPanelProps) {
   const { selectedSpeakerId, setSelectedSpeaker } = useEditorStore()
   const { mutate: updateSpeaker } = useUpdateSpeaker()
+  const { data: voiceLibrary = [] } = useVoices()
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
   const [voicePrompt, setVoicePrompt] = useState('')
@@ -219,6 +220,28 @@ export function SpeakerPanel({ speakers, className, segments }: SpeakerPanelProp
                       onClick={(e) => e.stopPropagation()}
                       className="w-full bg-zinc-950/80 border border-zinc-800 text-[10px] rounded-lg p-2 text-zinc-200 focus:outline-none focus:border-purple-500/50 resize-none h-14"
                     />
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] text-text-disabled mb-1.5">Voice (from Voice Creator)</p>
+                    <select
+                      value={sp.voice_id ?? ''}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => {
+                        e.stopPropagation()
+                        updateSpeaker(
+                          { speakerId: sp.id, data: { voice_id: e.target.value } },
+                          { onSuccess: () => toast.success('Speaker voice updated ✓') }
+                        )
+                      }}
+                      className="w-full bg-zinc-950/80 border border-zinc-800 text-[10px] rounded-lg p-2 text-zinc-200 focus:outline-none focus:border-purple-500/50 cursor-pointer"
+                    >
+                      <option value="">Default (use voice prompt above)</option>
+                      {voiceLibrary.map((v) => (
+                        <option key={v.id} value={v.id}>{v.name} · {v.mode}</option>
+                      ))}
+                    </select>
+                    <p className="text-[9px] text-text-disabled mt-1">Applies to all this speaker's lines unless a segment overrides it.</p>
                   </div>
 
                   <div className="flex items-center justify-between border-t border-border pt-2">

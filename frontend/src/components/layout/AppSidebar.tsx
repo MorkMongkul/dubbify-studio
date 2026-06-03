@@ -1,7 +1,7 @@
 // src/components/layout/AppSidebar.tsx
 import { NavLink } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { LayoutGrid, Settings2, Zap, Sun, Moon, Film } from 'lucide-react'
+import { LayoutGrid, Settings2, Zap, Sun, Moon, Film, Mic } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { useThemeStore } from '@/store/themeStore'
@@ -13,6 +13,7 @@ interface AppSidebarProps {
 
 const navItems = [
   { to: '/projects', icon: LayoutGrid, label: 'Projects' },
+  { to: '/voices',   icon: Mic,        label: 'Voices'   },
   { to: '/settings', icon: Settings2,  label: 'Settings'  },
 ]
 

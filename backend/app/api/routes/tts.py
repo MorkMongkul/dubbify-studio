@@ -12,12 +12,57 @@ from pydantic import BaseModel
  
 from app.core.database import get_db
 from app.core.config import settings
-from app.models.models import Segment, Speaker, Job, JobStatus
+from app.models.models import Segment, Speaker, Job, JobStatus, Voice, VoiceMode
 from app.schemas.schemas import TTSResponse
 from app.services.tts_client import tts_client
 from app.services.audio_extractor import mix_dubbed_audio
- 
+
 router = APIRouter(prefix="/tts", tags=["TTS Synthesis"])
+
+
+async def _resolve_voice(seg: Segment, db: AsyncSession) -> dict:
+    """
+    Resolve the synthesis parameters for a segment, in priority order:
+      1. segment.voice_id        (per-segment override)
+      2. speaker.voice_id        (speaker-level assignment)
+      3. speaker.voice_design_prompt  (legacy fallback, design-only)
+
+    Returns kwargs for tts_client.synthesize().
+    """
+    async def _voice_kwargs(voice: Voice) -> dict:
+        # Reference-driven: if the voice has a reference clip (uploaded for
+        # clone/ultimate, OR auto-baked from a design profile), clone from it so
+        # the timbre is identical across every line. A transcript → ultimate
+        # cloning; otherwise controllable cloning with the description as style.
+        has_ref = bool(voice.reference_audio_path)
+        has_transcript = has_ref and bool(voice.reference_transcript)
+        return {
+            # In ultimate cloning the style prompt is ignored, so drop it there.
+            "voice_design": "" if has_transcript else voice.description,
+            "cfg_value": voice.cfg_value,
+            "inference_timesteps": voice.inference_timesteps,
+            "reference_audio_path": voice.reference_audio_path or "",
+            "reference_transcript": voice.reference_transcript if has_transcript else "",
+            "seed": voice.seed,  # fixed seed → consistent voice across all lines
+        }
+
+    # 1. Per-segment override
+    if seg.voice_id:
+        v = (await db.execute(select(Voice).where(Voice.id == seg.voice_id))).scalar_one_or_none()
+        if v:
+            return await _voice_kwargs(v)
+
+    # 2 & 3. Speaker-level voice, then legacy design prompt
+    if seg.speaker_id:
+        speaker = (await db.execute(select(Speaker).where(Speaker.id == seg.speaker_id))).scalar_one_or_none()
+        if speaker:
+            if speaker.voice_id:
+                v = (await db.execute(select(Voice).where(Voice.id == speaker.voice_id))).scalar_one_or_none()
+                if v:
+                    return await _voice_kwargs(v)
+            return {"voice_design": speaker.voice_design_prompt or ""}
+
+    return {"voice_design": ""}
  
  
 async def _synthesize_segment_db(segment_id: str, db: AsyncSession) -> Segment:
@@ -28,14 +73,9 @@ async def _synthesize_segment_db(segment_id: str, db: AsyncSession) -> Segment:
  
     if not seg.khmer_text or not seg.khmer_text.strip():
         raise HTTPException(status_code=400, detail="Segment has no Khmer text to synthesize")
- 
-    # Get speaker's voice design prompt
-    voice_design = ""
-    if seg.speaker_id:
-        sp_result = await db.execute(select(Speaker).where(Speaker.id == seg.speaker_id))
-        speaker = sp_result.scalar_one_or_none()
-        if speaker:
-            voice_design = speaker.voice_design_prompt
+
+    # Resolve the assigned voice (segment override → speaker voice → legacy prompt)
+    voice_kwargs = await _resolve_voice(seg, db)
 
     # Resolve project_id for correct upload path
     j_result = await db.execute(select(Job).where(Job.id == seg.job_id))
@@ -47,12 +87,12 @@ async def _synthesize_segment_db(segment_id: str, db: AsyncSession) -> Segment:
     tts_dir = job_dir / "tts"
     tts_dir.mkdir(parents=True, exist_ok=True)
     output_path = tts_dir / f"seg_{segment_id}.wav"
- 
+
     # Call VoxCPM2 or Gemini TTS
     result_data = await tts_client.synthesize(
         text=seg.khmer_text,
-        voice_design=voice_design,
         output_path=str(output_path),
+        **voice_kwargs,
     )
  
     if result_data["success"]:
@@ -253,25 +293,13 @@ async def _synthesize_all_segments(job_id: str):
         tts_dir = job_dir / "tts"
         tts_dir.mkdir(parents=True, exist_ok=True)
 
-        # Build speaker cache to avoid repeated DB lookups
-        speaker_cache: dict[str, str] = {}
-
         for seg in segments:
-            voice_design = ""
-            if seg.speaker_id:
-                if seg.speaker_id not in speaker_cache:
-                    sp_result = await db.execute(
-                        select(Speaker).where(Speaker.id == seg.speaker_id)
-                    )
-                    speaker = sp_result.scalar_one_or_none()
-                    speaker_cache[seg.speaker_id] = speaker.voice_design_prompt if speaker else ""
-                voice_design = speaker_cache[seg.speaker_id]
-
+            voice_kwargs = await _resolve_voice(seg, db)
             out_path = tts_dir / f"seg_{seg.id}.wav"
             result_data = await tts_client.synthesize(
                 text=seg.khmer_text,
-                voice_design=voice_design,
                 output_path=str(out_path),
+                **voice_kwargs,
             )
 
             if result_data["success"]:

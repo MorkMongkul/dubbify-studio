@@ -5,7 +5,7 @@ Pydantic v2 schemas for all API request bodies and responses.
 from pydantic import BaseModel, Field, computed_field
 from typing import Optional, List
 from datetime import datetime
-from app.models.models import JobStatus, Gender, AgeGroup
+from app.models.models import JobStatus, Gender, AgeGroup, VoiceMode
 from pathlib import Path
 from app.core.config import settings
 
@@ -95,6 +95,7 @@ class SpeakerUpdate(BaseModel):
     gender: Optional[Gender] = None
     age_group: Optional[AgeGroup] = None
     voice_design_prompt: Optional[str] = None
+    voice_id: Optional[str] = None
 
 
 class SpeakerResponse(BaseModel):
@@ -106,6 +107,7 @@ class SpeakerResponse(BaseModel):
     age_group: AgeGroup
     voice_design_prompt: str
     reference_audio_path: str
+    voice_id: Optional[str]
 
     model_config = {"from_attributes": True}
 
@@ -113,11 +115,13 @@ class SpeakerResponse(BaseModel):
 # ── Segment schemas ───────────────────────────────────────────
 class SegmentUpdate(BaseModel):
     speaker_id: Optional[str] = None
+    voice_id: Optional[str] = None
     start_time: Optional[float] = None
     end_time: Optional[float] = None
     source_text: Optional[str] = None
     english_text: Optional[str] = None
     khmer_text: Optional[str] = None
+    tts_audio_path: Optional[str] = None   # set "" to clear a stale clip after a text edit
     is_approved: Optional[bool] = None
     notes: Optional[str] = None
 
@@ -126,6 +130,7 @@ class SegmentResponse(BaseModel):
     id: str
     job_id: str
     speaker_id: Optional[str]
+    voice_id: Optional[str]
     start_time: float
     end_time: float
     source_text: str
@@ -168,3 +173,48 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     services: dict
+
+
+# ── Voice library (Voice Creator) ─────────────────────────────
+class VoiceUpdate(BaseModel):
+    name: Optional[str] = None
+    mode: Optional[VoiceMode] = None
+    description: Optional[str] = None
+    reference_transcript: Optional[str] = None
+    cfg_value: Optional[float] = Field(None, ge=0.5, le=5.0)
+    inference_timesteps: Optional[int] = Field(None, ge=5, le=50)
+    seed: Optional[int] = None
+
+
+class VoiceResponse(BaseModel):
+    id: str
+    name: str
+    mode: str
+    description: str
+    reference_audio_path: str
+    reference_transcript: str
+    cfg_value: float
+    inference_timesteps: int
+    seed: int
+    created_at: datetime
+
+    @computed_field
+    def has_reference(self) -> bool:
+        return bool(self.reference_audio_path)
+
+    @computed_field
+    def reference_audio_url(self) -> Optional[str]:
+        if not self.reference_audio_path:
+            return None
+        p = Path(self.reference_audio_path)
+        parts = p.parts
+        if "uploads" in parts:
+            idx = parts.index("uploads")
+            return "/" + "/".join(parts[idx:])
+        return f"/uploads/{p.name}"
+
+    model_config = {"from_attributes": True}
+
+
+class VoicePreviewRequest(BaseModel):
+    text: str = Field(..., min_length=1)

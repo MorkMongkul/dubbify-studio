@@ -8,6 +8,7 @@ import type {
   Speaker, SpeakerUpdate,
   Segment, SegmentUpdate,
   TTSResponse, HealthResponse,
+  Voice, VoiceMode,
 } from '@/types'
 
 const api = axios.create({
@@ -37,7 +38,7 @@ api.interceptors.response.use(
 // ── Health ────────────────────────────────────────────────────
 export const health = {
   check: () =>
-    axios.get<HealthResponse>('/health', { baseURL: 'http://localhost:8000' }).then((r) => r.data),
+    axios.get<HealthResponse>('/health').then((r) => r.data),
 }
 
 // ── Projects ──────────────────────────────────────────────────
@@ -90,8 +91,10 @@ export const jobs = {
   getSubtitleTracks: (jobId: string) =>
     api.get(`/jobs/${jobId}/subtitle-tracks`).then((r) => r.data),
 
-  analyze: (jobId: string) =>
-    api.post(`/jobs/${jobId}/analyze`).then((r) => r.data),
+  analyze: (jobId: string, maxSpeakers?: number | null) =>
+    api.post(`/jobs/${jobId}/analyze`, null, {
+      params: maxSpeakers ? { max_speakers: maxSpeakers } : undefined,
+    }).then((r) => r.data),
 }
 
 // ── Speakers ──────────────────────────────────────────────────
@@ -136,6 +139,60 @@ export const tts = {
     api.post(`/tts/mix/${jobId}`, null, {
       params: { mute_original: muteOriginal }
     }).then((r) => r.data),
+}
+
+// ── Voices (Voice Creator library) ────────────────────────────
+export interface VoiceCreateInput {
+  name: string
+  mode: VoiceMode
+  description?: string
+  reference_transcript?: string
+  cfg_value?: number
+  inference_timesteps?: number
+  reference_audio?: File | null
+}
+
+function voiceFormData(data: Partial<VoiceCreateInput>): FormData {
+  const form = new FormData()
+  if (data.name !== undefined) form.append('name', data.name)
+  if (data.mode !== undefined) form.append('mode', data.mode)
+  if (data.description !== undefined) form.append('description', data.description)
+  if (data.reference_transcript !== undefined) form.append('reference_transcript', data.reference_transcript)
+  if (data.cfg_value !== undefined) form.append('cfg_value', String(data.cfg_value))
+  if (data.inference_timesteps !== undefined) form.append('inference_timesteps', String(data.inference_timesteps))
+  if (data.reference_audio) form.append('reference_audio', data.reference_audio)
+  return form
+}
+
+export const voices = {
+  list: () =>
+    api.get<Voice[]>('/voices/').then((r) => r.data),
+
+  create: (data: VoiceCreateInput) =>
+    api.post<Voice>('/voices/', voiceFormData(data), {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then((r) => r.data),
+
+  update: (id: string, data: Partial<Pick<Voice, 'name' | 'mode' | 'description' | 'reference_transcript' | 'cfg_value' | 'inference_timesteps'>>) =>
+    api.patch<Voice>(`/voices/${id}`, data).then((r) => r.data),
+
+  uploadReference: (id: string, file: File) => {
+    const form = new FormData()
+    form.append('reference_audio', file)
+    return api.post<Voice>(`/voices/${id}/reference`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then((r) => r.data)
+  },
+
+  delete: (id: string) =>
+    api.delete(`/voices/${id}`),
+
+  // Returns a WAV blob for the preview player
+  preview: (id: string, text: string) =>
+    api.post(`/voices/${id}/preview`, { text }, {
+      responseType: 'blob',
+      timeout: 300_000,   // cold-start tolerant
+    }).then((r) => r.data as Blob),
 }
 
 export default api
