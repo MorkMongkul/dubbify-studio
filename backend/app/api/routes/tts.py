@@ -86,18 +86,27 @@ async def _synthesize_segment_db(segment_id: str, db: AsyncSession) -> Segment:
     job_dir = Path(settings.UPLOAD_DIR) / project_id / seg.job_id
     tts_dir = job_dir / "tts"
     tts_dir.mkdir(parents=True, exist_ok=True)
-    output_path = tts_dir / f"seg_{segment_id}.wav"
+    output_raw_path = tts_dir / f"seg_{segment_id}_raw.wav"
+    output_final_path = tts_dir / f"seg_{segment_id}.wav"
 
     # Call VoxCPM2 or Gemini TTS
     result_data = await tts_client.synthesize(
         text=seg.khmer_text,
-        output_path=str(output_path),
+        output_path=str(output_raw_path),
         **voice_kwargs,
     )
  
     if result_data["success"]:
-        seg.tts_audio_path    = result_data["audio_path"]
-        seg.tts_duration_secs = result_data["duration_secs"]
+        from app.services.audio_extractor import apply_audio_effects
+        new_duration = await apply_audio_effects(
+            input_path=str(output_raw_path),
+            output_path=str(output_final_path),
+            volume_db=seg.volume_db,
+            voice_filter=seg.voice_filter,
+            voice_speed=seg.voice_speed,
+        )
+        seg.tts_audio_path    = str(output_final_path)
+        seg.tts_duration_secs = new_duration
         await db.flush()
         return seg
     else:
@@ -295,14 +304,23 @@ async def _synthesize_all_segments(job_id: str):
 
         for seg in segments:
             voice_kwargs = await _resolve_voice(seg, db)
-            out_path = tts_dir / f"seg_{seg.id}.wav"
+            out_raw_path = tts_dir / f"seg_{seg.id}_raw.wav"
+            out_final_path = tts_dir / f"seg_{seg.id}.wav"
             result_data = await tts_client.synthesize(
                 text=seg.khmer_text,
-                output_path=str(out_path),
+                output_path=str(out_raw_path),
                 **voice_kwargs,
             )
 
             if result_data["success"]:
-                seg.tts_audio_path    = result_data["audio_path"]
-                seg.tts_duration_secs = result_data["duration_secs"]
+                from app.services.audio_extractor import apply_audio_effects
+                new_duration = await apply_audio_effects(
+                    input_path=str(out_raw_path),
+                    output_path=str(out_final_path),
+                    volume_db=seg.volume_db,
+                    voice_filter=seg.voice_filter,
+                    voice_speed=seg.voice_speed,
+                )
+                seg.tts_audio_path    = str(out_final_path)
+                seg.tts_duration_secs = new_duration
                 await db.commit()

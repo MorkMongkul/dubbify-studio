@@ -3,8 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Maximize2, Minimize2, VolumeX, Play, Pause, SkipBack, SkipForward } from 'lucide-react'
 import type { Segment, Speaker } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
-import { getSpeakerColor, formatTime, cn } from '@/lib/utils'
-import { SubtitleOverlay } from './SubtitleOverlay'
+import { formatTime, cn } from '@/lib/utils'
 
 interface VideoPlayerProps {
   videoUrl?: string
@@ -16,13 +15,18 @@ interface VideoPlayerProps {
   jobStatus?: string
 }
 
-export function VideoPlayer({ videoUrl, segments, speakers, className, jobId, projectId, jobStatus }: VideoPlayerProps) {
+export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const bgmAudioRef = useRef<HTMLAudioElement>(null)
   const vocalsAudioRef = useRef<HTMLAudioElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [showControls, setShowControls] = useState(true)
+  // Most source clips are landscape, but a lot of dubbing work is for Reels/
+  // Shorts (9:16 vertical). Default to 16:9 until the real clip's dimensions
+  // are known, then size the player to match — a portrait video gets a
+  // portrait box instead of shrinking to a sliver inside a landscape frame.
+  const [videoAspectRatio, setVideoAspectRatio] = useState(16 / 9)
   const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   // TTS segment playback — one dubbed clip plays at a time in sync with the video
@@ -62,7 +66,11 @@ export function VideoPlayer({ videoUrl, segments, speakers, className, jobId, pr
     stopTTS()
     const path = seg.tts_audio_path
     if (!path) return
-    const url  = path.startsWith('/') ? path : `/${path}`
+    // Cache-bust: the backend overwrites the same file path on every
+    // re-synthesis, so a version query param is required to avoid the
+    // browser serving a stale cached response for a segment's audio.
+    const versioned = `${path}?v=${seg.tts_duration_secs ?? 0}`
+    const url  = versioned.startsWith('/') ? versioned : `/${versioned}`
     const audio = new Audio(url)
     const offset = Math.max(0, videoTime - seg.start_time)
     if (offset > 0.05) audio.currentTime = offset
@@ -137,7 +145,12 @@ export function VideoPlayer({ videoUrl, segments, speakers, className, jobId, pr
       }
     }
 
-    const onLoadedMetadata = () => setDuration(video.duration)
+    const onLoadedMetadata = () => {
+      setDuration(video.duration)
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        setVideoAspectRatio(video.videoWidth / video.videoHeight)
+      }
+    }
     const onPlay  = () => { setPlaying(true);  ttsAudioRef.current?.play().catch(() => {}) }
     const onPause = () => { setPlaying(false); ttsAudioRef.current?.pause() }
     const onEnded = () => { setPlaying(false); setCurrentTime(0); stopTTS() }
@@ -330,15 +343,6 @@ export function VideoPlayer({ videoUrl, segments, speakers, className, jobId, pr
     return () => document.removeEventListener('fullscreenchange', handler)
   }, [])
 
-  // Active segment for subtitle
-  const activeSegment = segments.find(
-    (s) => currentTime >= s.start_time && currentTime < s.end_time
-  )
-  const activeSpeaker = speakers.find((sp) => sp.id === activeSegment?.speaker_id)
-  const speakerColor = activeSpeaker
-    ? (activeSpeaker.color ?? getSpeakerColor(speakers.indexOf(activeSpeaker)))
-    : '#7C3AED'
-
   return (
     <div
       ref={containerRef}
@@ -347,6 +351,12 @@ export function VideoPlayer({ videoUrl, segments, speakers, className, jobId, pr
         'flex items-center justify-center',
         className
       )}
+      // Sizes the player to the actual clip's aspect ratio (landscape or
+      // portrait) rather than forcing every video into a fixed 16:9 box —
+      // combined with max-width/max-height on the wrapping element (no
+      // explicit width/height), this yields the largest box that fits the
+      // available space while preserving the real aspect ratio.
+      style={{ aspectRatio: videoAspectRatio }}
       onMouseMove={resetControlsTimer}
       onMouseLeave={() => isPlaying && setShowControls(false)}
     >
@@ -375,15 +385,6 @@ export function VideoPlayer({ videoUrl, segments, speakers, className, jobId, pr
           <p className="text-text-muted text-sm">No video available</p>
           <p className="text-text-disabled text-xs mt-1">Upload a video to start editing</p>
         </div>
-      )}
-
-      {/* Subtitle overlay */}
-      {activeSegment && (
-        <SubtitleOverlay
-          segment={activeSegment}
-          speakerName={activeSpeaker?.name ?? activeSpeaker?.label ?? 'Speaker'}
-          speakerColor={speakerColor}
-        />
       )}
 
       {/* Controls overlay */}

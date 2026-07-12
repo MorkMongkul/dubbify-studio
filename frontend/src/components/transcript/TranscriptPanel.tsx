@@ -8,8 +8,8 @@ import { SegmentCardSkeleton } from '@/components/ui/Skeleton'
 import { toast } from 'sonner'
 import { cn, formatTime, getSpeakerColor, isJobRunning, getJobStatusConfig } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
-import { tts, segments as segmentsApi } from '@/api/client'
-import { useVoices } from '@/hooks/useApi'
+import { segments as segmentsApi } from '@/api/client'
+import { useVoices, useSynthesizeSegment, useSynthesizeBatch } from '@/hooks/useApi'
  
 interface TranscriptPanelProps {
   segments: Segment[]
@@ -43,9 +43,12 @@ export function TranscriptPanel({
   const qc = useQueryClient()
   const [singleSynthesizing, setSingleSynthesizing] = useState<string | null>(null)
   const [batchSynthesizing, setBatchSynthesizing] = useState(false)
+  const synthesizeSegment = useSynthesizeSegment()
+  const synthesizeBatch = useSynthesizeBatch()
  
   const scrollRef = useRef<HTMLDivElement>(null)
   const cardRefs = useRef<Map<string, HTMLTableRowElement>>(new Map())
+  const originalTextRef = useRef<string>('')
  
   // Inspector settings states
   const [activeClipTab, setActiveClipTab] = useState<'basic' | 'filter' | 'speed'>('basic')
@@ -105,8 +108,7 @@ export function TranscriptPanel({
   const handleSingleSynthesize = async (segmentId: string) => {
     setSingleSynthesizing(segmentId)
     try {
-      await tts.synthesizeSegment(segmentId)
-      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      await synthesizeSegment.mutateAsync({ segmentId, jobId })
       toast.success('Voice generated successfully ✓')
     } catch (err) {
       toast.error('Failed to generate voice')
@@ -115,16 +117,15 @@ export function TranscriptPanel({
       setSingleSynthesizing(null)
     }
   }
- 
+
   const handleBatchSynthesize = async () => {
     setBatchSynthesizing(true)
     try {
       if (selectedSegmentIds.length === 1) {
-        await tts.synthesizeSegment(selectedSegmentIds[0])
+        await synthesizeSegment.mutateAsync({ segmentId: selectedSegmentIds[0], jobId })
       } else {
-        await tts.synthesizeBatch(selectedSegmentIds)
+        await synthesizeBatch.mutateAsync({ segmentIds: selectedSegmentIds, jobId })
       }
-      qc.invalidateQueries({ queryKey: ['segments', jobId] })
       toast.success(`Generated voice for ${selectedSegmentIds.length} segments ✓`)
       useEditorStore.setState({ selectedSegmentIds: [] })
     } catch (err) {
@@ -139,6 +140,45 @@ export function TranscriptPanel({
   const activeSeg = segments.find(s => s.id === (focusedTimelineItemId || activeSegmentId))
   const activeSpeaker = activeSeg ? getSpeaker(activeSeg) : null
   const activeSpeakerName = activeSpeaker?.name ?? activeSpeaker?.label ?? (activeSeg ? `Speaker ${getSpeakerIndex(activeSeg) + 1}` : 'Audio Clip')
+
+  // Sync local states to the active segment parameters
+  useEffect(() => {
+    if (activeSeg) {
+      setClipVolume(activeSeg.volume_db ?? 0)
+      setClipFilter(activeSeg.voice_filter ?? null)
+      setClipSpeed(activeSeg.voice_speed ?? 1.0)
+    }
+  }, [activeSeg?.id])
+
+  const handleVolumeChange = async (segmentId: string, val: number) => {
+    try {
+      await segmentsApi.update(segmentId, { volume_db: val })
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    } catch (err) {
+      toast.error('Failed to update volume')
+      console.error(err)
+    }
+  }
+
+  const handleFilterChange = async (segmentId: string, val: string | null) => {
+    try {
+      await segmentsApi.update(segmentId, { voice_filter: val || "" })
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    } catch (err) {
+      toast.error('Failed to update voice filter')
+      console.error(err)
+    }
+  }
+
+  const handleSpeedChange = async (segmentId: string, val: number) => {
+    try {
+      await segmentsApi.update(segmentId, { voice_speed: val })
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    } catch (err) {
+      toast.error('Failed to update voice speed')
+      console.error(err)
+    }
+  }
 
   return (
     <div
@@ -386,7 +426,10 @@ export function TranscriptPanel({
                       <textarea
                         value={seg.khmer_text || ''}
                         onChange={(e) => updateSegmentText(seg.id, e.target.value)}
-                        onBlur={(e) => handleTextBlur(seg.id, e.target.value, seg.khmer_text || '')}
+                        onFocus={(e) => {
+                          originalTextRef.current = e.target.value
+                        }}
+                        onBlur={(e) => handleTextBlur(seg.id, e.target.value, originalTextRef.current)}
                         onClick={(e) => {
                           e.stopPropagation()
                           setActiveSegment(seg.id)
@@ -394,7 +437,7 @@ export function TranscriptPanel({
                         className={cn(
                           "w-full bg-transparent resize-none focus:outline-none focus:ring-1 focus:ring-purple-500/50 rounded-sm py-1 px-1.5 whitespace-normal break-words transition-colors",
                           isActive
-                            ? "text-purple-900 dark:text-purple-200 font-semibold"
+                            ? "text-white font-semibold"
                             : "text-zinc-100"
                         )}
                         rows={2}
@@ -529,10 +572,15 @@ export function TranscriptPanel({
                         step="1"
                         value={clipVolume}
                         onChange={(e) => setClipVolume(Number(e.target.value))}
+                        onMouseUp={() => activeSeg && handleVolumeChange(activeSeg.id, clipVolume)}
+                        onTouchEnd={() => activeSeg && handleVolumeChange(activeSeg.id, clipVolume)}
                         className="flex-1 accent-purple-500 bg-zinc-800 rounded-lg cursor-pointer h-1"
                       />
                       <button
-                        onClick={() => setClipVolume(0)}
+                        onClick={() => {
+                          setClipVolume(0)
+                          if (activeSeg) handleVolumeChange(activeSeg.id, 0)
+                        }}
                         className="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-[10px] text-zinc-400 hover:text-white transition-colors"
                       >
                         Reset
@@ -565,7 +613,11 @@ export function TranscriptPanel({
                         return (
                           <button
                             key={filter.id}
-                            onClick={() => setClipFilter(clipFilter === filter.id ? null : filter.id)}
+                            onClick={() => {
+                              const newVal = clipFilter === filter.id ? null : filter.id
+                              setClipFilter(newVal)
+                              if (activeSeg) handleFilterChange(activeSeg.id, newVal)
+                            }}
                             className={cn(
                               "p-2.5 rounded text-left border transition-all flex flex-col gap-0.5",
                               isSelected
@@ -602,13 +654,18 @@ export function TranscriptPanel({
                       step="0.05"
                       value={clipSpeed}
                       onChange={(e) => setClipSpeed(Number(e.target.value))}
+                      onMouseUp={() => activeSeg && handleSpeedChange(activeSeg.id, clipSpeed)}
+                      onTouchEnd={() => activeSeg && handleSpeedChange(activeSeg.id, clipSpeed)}
                       className="w-full accent-purple-500 bg-zinc-800 rounded-lg cursor-pointer h-1"
                     />
                     <div className="flex gap-1.5">
                       {[0.5, 1.0, 1.5, 2.0].map((val) => (
                         <button
                           key={val}
-                          onClick={() => setClipSpeed(val)}
+                          onClick={() => {
+                            setClipSpeed(val)
+                            if (activeSeg) handleSpeedChange(activeSeg.id, val)
+                          }}
                           className={cn(
                             "flex-1 py-1 rounded text-[10px] font-mono border transition-colors",
                             clipSpeed === val
