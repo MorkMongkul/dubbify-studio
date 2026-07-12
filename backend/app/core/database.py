@@ -83,7 +83,24 @@ async def get_db():
             await session.close()
 
 
+import logging
+logger = logging.getLogger(__name__)
+
 # ── Create all tables on startup ──────────────────────────────
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Run safe column additions for audio effects parameters
+    async with engine.begin() as conn:
+        for col, col_type in [
+            ("volume_db", "DOUBLE PRECISION" if "postgresql" in settings.effective_db_url else "FLOAT"),
+            ("voice_filter", "VARCHAR(50)"),
+            ("voice_speed", "DOUBLE PRECISION" if "postgresql" in settings.effective_db_url else "FLOAT"),
+        ]:
+            try:
+                await conn.execute(text(f"ALTER TABLE segments ADD COLUMN {col} {col_type}"))
+                logger.info(f"Added column {col} to segments table.")
+            except Exception:
+                # Column likely already exists, ignore error
+                pass

@@ -223,6 +223,28 @@ export function useSynthesizeJob() {
   })
 }
 
+export function useSynthesizeSegment() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ segmentId }: { segmentId: string; jobId: string }) =>
+      tts.synthesizeSegment(segmentId),
+    onSuccess: (_, { jobId }) => {
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    },
+  })
+}
+
+export function useSynthesizeBatch() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ segmentIds }: { segmentIds: string[]; jobId: string }) =>
+      tts.synthesizeBatch(segmentIds),
+    onSuccess: (_, { jobId }) => {
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    },
+  })
+}
+
 export function useMixFinalAudio() {
   const qc = useQueryClient()
   return useMutation({

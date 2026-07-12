@@ -1,10 +1,10 @@
 // src/components/timeline/TimelineEditor.tsx
 import { useRef, useCallback, useEffect, useState } from 'react'
 import WaveSurfer from 'wavesurfer.js'
-import { ZoomIn, ZoomOut, AlertTriangle, Loader2, Scissors, X } from 'lucide-react'
+import { ZoomIn, ZoomOut, AlertTriangle, Loader2, Scissors, X, RefreshCw } from 'lucide-react'
 import type { Segment, Speaker, Job } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
-import { useUpdateSegment, useDeleteSegment } from '@/hooks/useApi'
+import { useUpdateSegment, useDeleteSegment, useSynthesizeSegment } from '@/hooks/useApi'
 import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, hexToRgba, cn, isJobRunning, getJobStatusConfig } from '@/lib/utils'
 import { Tooltip } from '@/components/ui/Tooltip'
 
@@ -48,16 +48,17 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
 
   const {
     currentTime, zoom, activeSegmentId, volume,
-    mutedTrackIds, soloedTrackIds, simulatingSegmentIds,
+    mutedTrackIds, soloedTrackIds,
     timelineHeight, speakerPanelWidth,
     setCurrentTime, setActiveSegment, zoomIn, zoomOut,
-    updateSegmentPosition, toggleMuteTrack, toggleSoloTrack, setSegmentSimulating,
+    updateSegmentPosition, toggleMuteTrack, toggleSoloTrack,
     setSpeakerPanelWidth, setZoom,
     setInspectorMode, setFocusedTimelineItemId
   } = useEditorStore()
 
-  const { mutate: updateSegment } = useUpdateSegment()
+  const { mutate: updateSegment, isPending: isUpdatingSegment, variables: updateVariables } = useUpdateSegment()
   const { mutate: deleteSegment } = useDeleteSegment()
+  const { mutate: regenerateSegment, isPending: isRegenerating, variables: regenVariables } = useSynthesizeSegment()
 
   // Delete / Backspace key removes the active segment (skip when typing in an input)
   useEffect(() => {
@@ -81,8 +82,18 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const noVocalsPreviewPath = jobId && projectId ? `uploads/${projectId}/${jobId}/no_vocals.preview.wav` : null
   const vocalsPreviewPath   = jobId && projectId ? `uploads/${projectId}/${jobId}/vocals.preview.wav`    : null
 
-  // Group segments by speaker
-  const speakerIds = [...new Set(segments.map((s) => s.speaker_id ?? '__none__'))]
+  // Group segments by speaker — track order must be stable and independent of
+  // segment start_time, otherwise dragging a segment can shift which speaker's
+  // segment comes first in time and reshuffle every track vertically. Order by
+  // the speaker's own (stable) label instead; segments with no speaker sort last.
+  const speakerIdsPresent = new Set(segments.map((s) => s.speaker_id ?? '__none__'))
+  const speakerIds = [
+    ...speakers
+      .filter((sp) => speakerIdsPresent.has(sp.id))
+      .sort((a, b) => a.label.localeCompare(b.label))
+      .map((sp) => sp.id),
+    ...(speakerIdsPresent.has('__none__') ? ['__none__'] : []),
+  ]
 
   // Compute speaker color map
   const speakerColorMap = new Map<string, string>()
@@ -592,6 +603,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                           zoom={zoom}
                           duration={duration}
                           speakerIds={speakerIds}
+                          allSegments={segments}
                           PX_PER_SEC={PX_PER_SEC}
                           scrollRef={scrollRef}
                           updateSegmentPosition={updateSegmentPosition}
@@ -615,10 +627,11 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                             deleteSegment({ segmentId: id, jobId: jobId! })
                             setActiveSegment(null)
                           }}
+                          onRegenerate={jobId ? (id) => regenerateSegment({ segmentId: id, jobId }) : undefined}
+                          isPersisting={isUpdatingSegment && updateVariables?.segmentId === seg.id}
+                          isRegenerating={isRegenerating && regenVariables?.segmentId === seg.id}
                           mutedTrackIds={mutedTrackIds}
                           soloedTrackIds={soloedTrackIds}
-                          simulatingSegmentIds={simulatingSegmentIds}
-                          setSegmentSimulating={setSegmentSimulating}
                           volume={volume}
                         />
                       )
@@ -675,6 +688,44 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   )
 }
 
+// ── Overlap resolution — segments on the same track must never overlap ──
+
+// Dragging: duration is fixed, only position moves. Push the desired start
+// to whichever side of a colliding neighbor is closer to where it was dropped.
+function resolveDragOverlap(
+  desiredStart: number,
+  duration: number,
+  neighbors: { start_time: number; end_time: number }[]
+): number {
+  let start = desiredStart
+  const sorted = [...neighbors].sort((a, b) => a.start_time - b.start_time)
+  for (const n of sorted) {
+    const end = start + duration
+    if (end <= n.start_time || start >= n.end_time) continue // no overlap with this one
+    const pushLeftTo = n.start_time - duration
+    const pushRightTo = n.end_time
+    start = Math.abs(pushLeftTo - desiredStart) <= Math.abs(pushRightTo - desiredStart)
+      ? Math.max(0, pushLeftTo)
+      : pushRightTo
+  }
+  return Math.max(0, start)
+}
+
+// Trimming the left edge can't cross into whatever ends right before it.
+function clampResizeLeft(newStartTime: number, endTime: number, neighbors: { end_time: number }[]): number {
+  const floor = neighbors
+    .filter((n) => n.end_time <= endTime)
+    .reduce((max, n) => Math.max(max, n.end_time), 0)
+  return Math.max(newStartTime, floor)
+}
+
+// Trimming the right edge can't cross into whatever starts right after it.
+function clampResizeRight(newEndTime: number, startTime: number, neighbors: { start_time: number }[]): number {
+  const ceilings = neighbors.filter((n) => n.start_time >= startTime).map((n) => n.start_time)
+  const ceiling = ceilings.length ? Math.min(...ceilings) : Infinity
+  return Math.min(newEndTime, ceiling)
+}
+
 // ── Interactive Segment Block with Pointer Gestures ─────────────────
 interface InteractiveSegmentProps {
   seg: Segment
@@ -684,6 +735,7 @@ interface InteractiveSegmentProps {
   zoom: number
   duration: number
   speakerIds: string[]
+  allSegments: Segment[]
   PX_PER_SEC: number
   scrollRef: React.RefObject<HTMLDivElement | null>
   updateSegmentPosition: (
@@ -697,17 +749,19 @@ interface InteractiveSegmentProps {
   onUpdateBackend: (id: string, startTime: number, endTime: number, speakerId: string | null) => void
   onSelect: () => void
   onDelete: (id: string) => void
+  onRegenerate?: (id: string) => void
+  isPersisting?: boolean
+  isRegenerating?: boolean
   mutedTrackIds: Record<string, boolean>
   soloedTrackIds: Record<string, boolean>
-  simulatingSegmentIds: Record<string, boolean>
-  setSegmentSimulating: (segmentId: string, isSimulating: boolean) => void
   volume: number
 }
 
 function InteractiveSegment({
-  seg, color, isActive, isApproved, zoom, duration, speakerIds, PX_PER_SEC, scrollRef,
-  updateSegmentPosition, onUpdateBackend, onSelect, onDelete,
-  mutedTrackIds, soloedTrackIds, simulatingSegmentIds, setSegmentSimulating, volume
+  seg, color, isActive, isApproved, zoom, duration, speakerIds, allSegments, PX_PER_SEC, scrollRef,
+  updateSegmentPosition, onUpdateBackend, onSelect, onDelete, onRegenerate,
+  isPersisting, isRegenerating,
+  mutedTrackIds, soloedTrackIds, volume
 }: InteractiveSegmentProps) {
   const elementRef = useRef<HTMLDivElement>(null)
 
@@ -719,50 +773,18 @@ function InteractiveSegment({
   const currentDuration = seg.end_time - seg.start_time
   const isTooFast = currentDuration < estimatedDuration
 
-  const isSimulating = simulatingSegmentIds[seg.id]
-  const { segmentPositions } = useEditorStore()
-  const override = segmentPositions[seg.id]
-  const overridingAudioPath = override?.tts_audio_path
+  // Cache-busted URL — the backend overwrites the same file path on every
+  // re-synthesis, so a version query param (tts_duration_secs changes on
+  // every real synth) is what actually busts the browser + peaksCache.
+  const versionedAudioPath = seg.tts_audio_path
+    ? `${seg.tts_audio_path}?v=${seg.tts_duration_secs ?? 0}`
+    : undefined
 
-  // Re-synthesis simulation logic
-  const triggerSimulation = useCallback((startTime: number, endTime: number, speakerId: string | null) => {
-    setSegmentSimulating(seg.id, true)
-    const newEst = seg.khmer_text ? seg.khmer_text.length * 0.12 : 1.0
-
-    setTimeout(() => {
-      setSegmentSimulating(seg.id, false)
-      const mockAudioPath = seg.tts_audio_path || `uploads/simulated_${seg.id}.wav`
-      
-      // Generate randomized peaks to force waveform redraw
-      const numPeaks = 40
-      const randPeaks = Array.from({ length: numPeaks }, () => Math.random() * 0.8 + 0.2)
-      peaksCache[mockAudioPath] = randPeaks
-
-      updateSegmentPosition(seg.id, startTime, endTime, speakerId, newEst, mockAudioPath)
-      onUpdateBackend(seg.id, startTime, endTime, speakerId)
-    }, 1500)
-  }, [seg.id, seg.khmer_text, seg.tts_audio_path, setSegmentSimulating, updateSegmentPosition, onUpdateBackend])
-
-  // Trigger simulation when text changes
-  const prevKhmerText = useRef(seg.khmer_text)
-  useEffect(() => {
-    if (seg.khmer_text !== prevKhmerText.current) {
-      prevKhmerText.current = seg.khmer_text
-      triggerSimulation(seg.start_time, seg.end_time, seg.speaker_id ?? null)
-    }
-  }, [seg.khmer_text, seg.start_time, seg.end_time, seg.speaker_id, triggerSimulation])
-
-  // Native Browser Audio Playback
+  // Native Browser Audio Playback — real audio only, no mock/simulation fallback
   const playAudio = () => {
-    if (isSimulating) return
-    const audioPath = seg.tts_audio_path || overridingAudioPath || `uploads/simulated_${seg.id}.wav`
-    
-    // Fallback sound so local mock can be tested with audible sound
-    const isMock = audioPath.startsWith('uploads/simulated_')
-    const finalUrl = isMock
-      ? 'https://actions.google.com/sounds/v1/alarms/digital_watch_alarm_long.ogg'
-      : (audioPath.startsWith('/') ? audioPath : `/${audioPath}`)
-
+    if (!seg.tts_audio_path) return
+    const path = versionedAudioPath!
+    const finalUrl = path.startsWith('/') ? path : `/${path}`
     const audio = new Audio(finalUrl)
 
     const key = seg.speaker_id ?? '__none__'
@@ -788,7 +810,7 @@ function InteractiveSegment({
     e.stopPropagation()
     const element = elementRef.current
     const container = scrollRef.current
-    if (!element || !container || isSimulating) return
+    if (!element || !container) return
 
     element.setPointerCapture(e.pointerId)
 
@@ -852,9 +874,6 @@ function InteractiveSegment({
       let newStartTime = pixelsToTime(finalLeft, zoom, PX_PER_SEC)
       let newEndTime = pixelsToTime(finalLeft + finalWidth, zoom, PX_PER_SEC)
 
-      newStartTime = Math.round(newStartTime * 1000) / 1000
-      newEndTime = Math.round(newEndTime * 1000) / 1000
-
       let finalSpeakerId = seg.speaker_id ?? null
       if (actionType === 'drag') {
         const containerRect = container.getBoundingClientRect()
@@ -865,8 +884,30 @@ function InteractiveSegment({
         finalSpeakerId = targetSpeakerId === '__none__' ? null : targetSpeakerId
       }
 
-      // Trigger re-synthesis debounce simulation on resize or track reassignment!
-      triggerSimulation(newStartTime, newEndTime, finalSpeakerId)
+      // Prevent overlap with whatever's already on the destination track —
+      // real editors never let two clips on the same track share time range.
+      const targetTrackKey = finalSpeakerId ?? '__none__'
+      const neighbors = allSegments.filter(
+        (s) => s.id !== seg.id && (s.speaker_id ?? '__none__') === targetTrackKey
+      )
+      if (actionType === 'drag') {
+        const dragDuration = newEndTime - newStartTime
+        newStartTime = resolveDragOverlap(newStartTime, dragDuration, neighbors)
+        newEndTime = newStartTime + dragDuration
+      } else if (actionType === 'resize-left') {
+        newStartTime = clampResizeLeft(newStartTime, newEndTime, neighbors)
+      } else if (actionType === 'resize-right') {
+        newEndTime = clampResizeRight(newEndTime, newStartTime, neighbors)
+      }
+
+      newStartTime = Math.round(newStartTime * 1000) / 1000
+      newEndTime = Math.round(newEndTime * 1000) / 1000
+
+      // Position/speaker changes persist immediately — trimming or moving a
+      // segment never touches its audio (matches real NLE trim behavior;
+      // VideoPlayer's playback-rate auto-fit absorbs any duration mismatch).
+      updateSegmentPosition(seg.id, newStartTime, newEndTime, finalSpeakerId)
+      onUpdateBackend(seg.id, newStartTime, newEndTime, finalSpeakerId)
     }
 
     window.addEventListener('pointermove', handlePointerMove)
@@ -878,8 +919,7 @@ function InteractiveSegment({
       ref={elementRef}
       className={cn(
         'timeline-segment absolute top-[5px] bottom-[5px] cursor-grab select-none overflow-hidden transition-all',
-        isActive && 'active border-purple-500 outline-2 outline-purple-500 ring-2 ring-purple-500/20',
-        isSimulating && 'animate-pulse opacity-70 cursor-wait'
+        isActive && 'active border-purple-500 outline-2 outline-purple-500 ring-2 ring-purple-500/20'
       )}
       style={{
         left,
@@ -914,19 +954,17 @@ function InteractiveSegment({
       title={isTooFast ? `${seg.khmer_text || seg.source_text} (Speed Up Required)` : (seg.khmer_text || seg.source_text)}
     >
       {/* Left Trim Handle */}
-      {!isSimulating && (
-        <div
-          className="absolute left-0 top-0 bottom-0 w-2.5 cursor-col-resize z-20 flex items-center justify-center group/left hover:bg-white/10 active:bg-white/20 transition-all"
-          onPointerDown={(e) => {
-            if (e.button === 0) {
-              e.stopPropagation()
-              handlePointerDown(e, 'resize-left')
-            }
-          }}
-        >
-          <div className="w-[2px] h-3.5 bg-white/25 group-hover/left:bg-white/70 group-active/left:bg-white rounded transition-colors" />
-        </div>
-      )}
+      <div
+        className="absolute left-0 top-0 bottom-0 w-2.5 cursor-col-resize z-20 flex items-center justify-center group/left hover:bg-white/10 active:bg-white/20 transition-all"
+        onPointerDown={(e) => {
+          if (e.button === 0) {
+            e.stopPropagation()
+            handlePointerDown(e, 'resize-left')
+          }
+        }}
+      >
+        <div className="w-[2px] h-3.5 bg-white/25 group-hover/left:bg-white/70 group-active/left:bg-white rounded transition-colors" />
+      </div>
 
       {/* Segment Text */}
       {width > 50 && (
@@ -944,9 +982,18 @@ function InteractiveSegment({
         </span>
       )}
 
-      {/* Visual Audio Waveform OR Simulating Wave Animation */}
-      {isSimulating ? (
-        <div className="absolute inset-x-4 bottom-1.5 h-3 flex items-center justify-between pointer-events-none opacity-60">
+      {/* Real audio waveform — decoded from the actual TTS clip, cache-busted
+          so a re-synthesis of the same file path is never shown stale */}
+      {versionedAudioPath && (
+        <SegmentWaveform
+          audioPath={versionedAudioPath}
+          width={width}
+        />
+      )}
+
+      {/* Regenerating indicator — reflects the real in-flight synth call */}
+      {isRegenerating && (
+        <div className="absolute inset-x-4 bottom-1.5 h-3 flex items-center justify-between pointer-events-none opacity-70">
           {[...Array(6)].map((_, i) => (
             <div
               key={i}
@@ -959,13 +1006,11 @@ function InteractiveSegment({
             />
           ))}
         </div>
-      ) : (
-        (seg.tts_audio_path || overridingAudioPath) && (
-          <SegmentWaveform
-            audioPath={seg.tts_audio_path || overridingAudioPath}
-            width={width}
-          />
-        )
+      )}
+
+      {/* Persisting dot — reflects the real in-flight position/speaker PATCH */}
+      {isPersisting && (
+        <div className="absolute top-1 left-1 h-1.5 w-1.5 rounded-full bg-white/70 animate-pulse pointer-events-none" title="Saving…" />
       )}
 
       {/* Approved Indicator (hidden when segment is active — delete button takes that spot) */}
@@ -975,32 +1020,43 @@ function InteractiveSegment({
         />
       )}
 
-      {/* Delete button — visible on active segment, press × or Delete key */}
-      {isActive && !isSimulating && (
-        <button
-          className="absolute top-0.5 right-2.5 z-30 h-4 w-4 rounded-full bg-red-500 hover:bg-red-400 flex items-center justify-center shadow transition-colors"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); onDelete(seg.id) }}
-          title="Delete segment (Delete key)"
-        >
-          <X size={8} className="text-white" strokeWidth={3} />
-        </button>
+      {/* Active-segment actions — Regenerate (real re-synthesis) + Delete */}
+      {isActive && (
+        <div className="absolute top-0.5 right-2.5 z-30 flex items-center gap-1">
+          {seg.tts_audio_path && onRegenerate && (
+            <button
+              className="h-4 w-4 rounded-full bg-zinc-700 hover:bg-zinc-600 flex items-center justify-center shadow transition-colors disabled:opacity-50"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); onRegenerate(seg.id) }}
+              disabled={isRegenerating}
+              title="Regenerate audio"
+            >
+              <RefreshCw size={8} className={cn('text-white', isRegenerating && 'animate-spin')} strokeWidth={3} />
+            </button>
+          )}
+          <button
+            className="h-4 w-4 rounded-full bg-red-500 hover:bg-red-400 flex items-center justify-center shadow transition-colors"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); onDelete(seg.id) }}
+            title="Delete segment (Delete key)"
+          >
+            <X size={8} className="text-white" strokeWidth={3} />
+          </button>
+        </div>
       )}
 
       {/* Right Trim Handle */}
-      {!isSimulating && (
-        <div
-          className="absolute right-0 top-0 bottom-0 w-2.5 cursor-col-resize z-20 flex items-center justify-center group/right hover:bg-white/10 active:bg-white/20 transition-all"
-          onPointerDown={(e) => {
-            if (e.button === 0) {
-              e.stopPropagation()
-              handlePointerDown(e, 'resize-right')
-            }
-          }}
-        >
-          <div className="w-[2px] h-3.5 bg-white/25 group-hover/right:bg-white/70 group-active/right:bg-white rounded transition-colors" />
-        </div>
-      )}
+      <div
+        className="absolute right-0 top-0 bottom-0 w-2.5 cursor-col-resize z-20 flex items-center justify-center group/right hover:bg-white/10 active:bg-white/20 transition-all"
+        onPointerDown={(e) => {
+          if (e.button === 0) {
+            e.stopPropagation()
+            handlePointerDown(e, 'resize-right')
+          }
+        }}
+      >
+        <div className="w-[2px] h-3.5 bg-white/25 group-hover/right:bg-white/70 group-active/right:bg-white rounded transition-colors" />
+      </div>
     </div>
   )
 }

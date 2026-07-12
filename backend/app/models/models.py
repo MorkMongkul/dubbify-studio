@@ -175,6 +175,11 @@ class Segment(Base):
     # Per-segment voice override — takes precedence over the speaker's voice.
     voice_id = Column(String, ForeignKey("voices.id"), nullable=True)
 
+    # Audio effects parameters
+    volume_db    = Column(Float, default=0.0)
+    voice_filter = Column(String(50), default="")
+    voice_speed  = Column(Float, default=1.0)
+
     # Review flags
     is_approved  = Column(Boolean, default=False)
     notes        = Column(Text, default="")

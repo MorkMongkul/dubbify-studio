@@ -41,17 +41,47 @@ async def update_segment(
     Update a segment's text or approval status.
     Used by the script editor — editors can fix translation errors.
     """
+    from pathlib import Path
+    import shutil
+
     result = await db.execute(select(Segment).where(Segment.id == segment_id))
     seg = result.scalar_one_or_none()
     if not seg:
         raise HTTPException(status_code=404, detail="Segment not found")
 
+    # Capture old parameters to check for changes
+    old_volume = seg.volume_db
+    old_filter = seg.voice_filter
+    old_speed = seg.voice_speed
+
     update_data = payload.model_dump(exclude_none=True)
     for field, value in update_data.items():
         setattr(seg, field, value)
 
+    effects_changed = (
+        seg.volume_db != old_volume or
+        seg.voice_filter != old_filter or
+        seg.voice_speed != old_speed
+    )
+
+    if effects_changed and seg.tts_audio_path:
+        raw_path = Path(seg.tts_audio_path).with_name(f"seg_{seg.id}_raw.wav")
+        if not raw_path.exists():
+            shutil.copy2(seg.tts_audio_path, raw_path)
+
+        from app.services.audio_extractor import apply_audio_effects
+        new_duration = await apply_audio_effects(
+            input_path=str(raw_path),
+            output_path=seg.tts_audio_path,
+            volume_db=seg.volume_db,
+            voice_filter=seg.voice_filter,
+            voice_speed=seg.voice_speed,
+        )
+        seg.tts_duration_secs = new_duration
+
     await db.flush()
     await db.refresh(seg)
+    await db.commit()
     return seg
 
 

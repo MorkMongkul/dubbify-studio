@@ -56,11 +56,9 @@ interface EditorStore {
   // Mute & Solo States
   mutedTrackIds: Record<string, boolean>
   soloedTrackIds: Record<string, boolean>
-  simulatingSegmentIds: Record<string, boolean>
 
   toggleMuteTrack: (speakerId: string | null) => void
   toggleSoloTrack: (speakerId: string | null) => void
-  setSegmentSimulating: (segmentId: string, isSimulating: boolean) => void
 
   // Panel visibility
   leftPanelCollapsed: boolean
@@ -121,7 +119,6 @@ const DEFAULT_STATE = {
   segmentPositions: {},
   mutedTrackIds: {},
   soloedTrackIds: {},
-  simulatingSegmentIds: {},
   selectedSegmentIds: [] as string[],
   availableVoices: [
     { id: 'male_actor_1', name: 'Male Actor 1', gender: 'male' },
@@ -235,14 +232,6 @@ export const useEditorStore = create<EditorStore>()(
         },
       }))
     },
-    setSegmentSimulating: (segmentId, isSimulating) =>
-      set((s) => ({
-        simulatingSegmentIds: {
-          ...s.simulatingSegmentIds,
-          [segmentId]: isSimulating,
-        },
-      })),
-
     // ── Panels ────────────────────────────────────────────────
     toggleLeftPanel: () => set((s) => ({ leftPanelCollapsed: !s.leftPanelCollapsed })),
     toggleRightPanel: () => set((s) => ({ rightPanelCollapsed: !s.rightPanelCollapsed })),

@@ -124,6 +124,9 @@ class SegmentUpdate(BaseModel):
     tts_audio_path: Optional[str] = None   # set "" to clear a stale clip after a text edit
     is_approved: Optional[bool] = None
     notes: Optional[str] = None
+    volume_db: Optional[float] = None
+    voice_filter: Optional[str] = None
+    voice_speed: Optional[float] = None
 
 
 class SegmentResponse(BaseModel):
@@ -140,6 +143,9 @@ class SegmentResponse(BaseModel):
     tts_duration_secs: float
     is_approved: bool
     notes: str
+    volume_db: float
+    voice_filter: str
+    voice_speed: float
 
     model_config = {"from_attributes": True}
 

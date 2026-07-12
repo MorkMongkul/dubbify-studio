@@ -325,3 +325,66 @@ async def mix_dubbed_audio(
 
     logger.info(f"Dubbed video saved: {output_path}")
     return output_path
+
+
+async def apply_audio_effects(
+    input_path: str,
+    output_path: str,
+    volume_db: float = 0.0,
+    voice_filter: str = "",
+    voice_speed: float = 1.0,
+) -> float:
+    """
+    Applies volume, speed, and voice filters to a WAV file using ffmpeg.
+    Returns the new duration of the audio in seconds.
+    """
+    filters = []
+
+    # 1. Volume filter
+    if volume_db != 0.0:
+        filters.append(f"volume={volume_db}dB")
+
+    # 2. Voice Filter presets
+    if voice_filter == "echo":
+        filters.append("aecho=0.8:0.88:60:0.4")
+    elif voice_filter == "synth":
+        filters.append("aphaser=type=t:decay=0.6")
+    elif voice_filter == "bass":
+        filters.append("bass=g=8:f=100")
+    elif voice_filter == "phone":
+        filters.append("highpass=f=200,lowpass=f=3000")
+
+    # 3. Speed (atempo) filter
+    if voice_speed != 1.0:
+        # Clamp speed between 0.5 and 2.0 (ffmpeg atempo limits)
+        speed = max(0.5, min(2.0, voice_speed))
+        filters.append(f"atempo={speed}")
+
+    if not filters:
+        # Just copy file if no effects are selected
+        import shutil
+        shutil.copy2(input_path, output_path)
+    else:
+        filter_str = ",".join(filters)
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-filter_complex", f"[0:a]{filter_str}[out]",
+            "-map", "[out]",
+            output_path
+        ]
+        logger.info(f"Applying filters to segment {Path(input_path).name}: {filter_str}")
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            logger.error(f"Failed to apply audio effects: {stderr.decode()}")
+            # fallback to copy
+            import shutil
+            shutil.copy2(input_path, output_path)
+
+    # Get new duration of the audio clip
+    return await get_video_duration(output_path)

@@ -616,10 +616,11 @@ export default function EditorPage() {
                     {renderPipelineView(job)}
                   </div>
                 ) : jobId && job && (isStemsReady || isStage2 || (!isRunning && !isStage1)) && videoUrl ? (
-                  // Stems ready, Stage 2, or completed — show video player
-                  <div className="w-full max-w-[800px] aspect-video shrink-0 bg-zinc-900 relative flex items-center justify-center overflow-hidden">
-                    <VideoPlayer videoUrl={videoUrl} segments={displaySegs} speakers={spks} className="w-full h-full" jobId={jobId} projectId={projectId} jobStatus={job.status} />
-                  </div>
+                  // Stems ready, Stage 2, or completed — show video player.
+                  // No fixed aspect-ratio wrapper here: VideoPlayer sizes itself
+                  // to the clip's real dimensions (landscape or portrait/Reel),
+                  // bounded by the available pane space via max-w/max-h.
+                  <VideoPlayer videoUrl={videoUrl} segments={displaySegs} speakers={spks} className="max-w-full max-h-full" jobId={jobId} projectId={projectId} jobStatus={job.status} />
                 ) : jobId && job && !videoUrl ? (
                   <div className="flex flex-col items-center gap-4 text-center max-w-xs">
                     <Loader2 size={20} className="animate-spin text-brand-300" />
