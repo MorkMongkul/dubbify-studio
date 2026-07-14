@@ -43,14 +43,14 @@ export function SpeakerPanel({ speakers, className, segments }: SpeakerPanelProp
 
   const startEdit = (sp: Speaker) => {
     setEditingId(sp.id)
-    setEditName(sp.name ?? sp.label ?? '')
+    setEditName(sp.display_name || sp.label || '')
   }
 
   const cancelEdit = () => { setEditingId(null); setEditName('') }
 
   const saveEdit = (sp: Speaker) => {
     updateSpeaker(
-      { speakerId: sp.id, data: { name: editName.trim() || sp.label } },
+      { speakerId: sp.id, data: { display_name: editName.trim() || sp.label } },
       {
         onSuccess: () => { cancelEdit(); toast.success('Speaker name updated') },
         onError:   () => toast.error('Failed to update speaker'),
@@ -127,7 +127,7 @@ export function SpeakerPanel({ speakers, className, segments }: SpeakerPanelProp
                   className="h-8 w-8 rounded-lg flex items-center justify-center shrink-0 text-white font-bold text-sm"
                   style={{ background: color }}
                 >
-                  {(sp.name ?? sp.label ?? 'S')[0].toUpperCase()}
+                  {(sp.display_name || sp.label || 'S')[0].toUpperCase()}
                 </div>
 
                 {/* Name / edit */}
@@ -147,7 +147,7 @@ export function SpeakerPanel({ speakers, className, segments }: SpeakerPanelProp
                   ) : (
                     <div>
                       <p className="text-xs font-medium text-text-primary truncate">
-                        {sp.name ?? sp.label ?? `Speaker ${idx + 1}`}
+                        {sp.display_name || sp.label || `Speaker ${idx + 1}`}
                       </p>
                       <p className="text-[10px] text-text-disabled">{segmentCount} segment{segmentCount !== 1 ? 's' : ''}</p>
                     </div>

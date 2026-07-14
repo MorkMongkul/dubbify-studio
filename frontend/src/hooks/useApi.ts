@@ -4,7 +4,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { projects, jobs, speakers, segments, tts, health, voices } from '@/api/client'
 import type { VoiceCreateInput } from '@/api/client'
-import type { ProjectCreate, SpeakerUpdate, SegmentUpdate, Voice } from '@/types'
+import type { ProjectCreate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice } from '@/types'
 
 // ── Health ────────────────────────────────────────────────────
 export function useHealth() {
@@ -148,6 +148,17 @@ export function useUpdateSpeaker() {
   })
 }
 
+export function useCreateSpeaker() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ projectId, data }: { projectId: string; data: SpeakerCreate }) =>
+      speakers.create(projectId, data),
+    onSuccess: (created) => {
+      qc.invalidateQueries({ queryKey: ['speakers', created.project_id] })
+    },
+  })
+}
+
 // ── Segments ──────────────────────────────────────────────────
 export function useSegments(jobId: string | null) {
   return useQuery({
@@ -165,6 +176,17 @@ export function useUpdateSegment() {
       segments.update(segmentId, data),
     onSuccess: (updated) => {
       qc.invalidateQueries({ queryKey: ['segments', updated.job_id] })
+    },
+  })
+}
+
+export function useCreateSegment() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ jobId, data }: { jobId: string; data: SegmentCreate }) =>
+      segments.create(jobId, data),
+    onSuccess: (created) => {
+      qc.invalidateQueries({ queryKey: ['segments', created.job_id] })
     },
   })
 }

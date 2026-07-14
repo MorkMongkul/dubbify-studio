@@ -179,31 +179,45 @@ export function PipelineStepper({ job, compact = false }: PipelineStepperProps) 
   )
 }
 
+// Compact step-dot row — one dot per real pipeline stage, never a fake
+// percentage. The backend only ever knows which discrete stage it's in, not
+// how far through that stage it is, so a percentage number necessarily either
+// lies (implies precision that doesn't exist) or sits visually frozen for the
+// whole stage. Dots only ever communicate what's actually known: done, active
+// (animated — no implied duration), or not yet reached.
 function PipelineStepperCompact({ job }: { job: Job }) {
-  const currentIdx = STATUS_ORDER.indexOf(job.status)
-  // pending=0, extracting=1…mixing=6, completed=7 → map to 0–100%
-  const totalSteps = 7 // extracting through mixing
-  const progress =
-    job.status === 'completed' ? 100
-    : job.status === 'failed'  ? 0
-    : Math.max(0, Math.min(95, (currentIdx / totalSteps) * 100))
+  const isFailed = job.status === 'failed'
 
   return (
     <div className="space-y-1.5">
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] text-white/40 capitalize">{job.status.replace('_', ' ')}</span>
-        <span className="text-[11px] font-mono text-white/40">{Math.round(progress)}%</span>
-      </div>
-      <div className="h-1 rounded-full overflow-hidden" style={{ background: 'var(--color-surface-4)' }}>
-        <motion.div
-          className={cn(
-            'h-full rounded-full bg-gradient-to-r',
-            job.status === 'failed' ? 'from-red-500 to-red-400' : 'from-brand to-accent'
-          )}
-          initial={{ width: 0 }}
-          animate={{ width: `${progress}%` }}
-          transition={{ duration: 0.4 }}
-        />
+      <span className="text-[11px] text-white/40 capitalize">
+        {isFailed ? 'Failed' : job.status.replace('_', ' ')}
+      </span>
+      <div className="flex items-center gap-1">
+        {STEPS.map((step) => {
+          const state = getStepState(step.key, job.status)
+          return (
+            <div
+              key={step.key}
+              title={step.label}
+              className={cn(
+                'h-1.5 flex-1 rounded-full transition-colors duration-300',
+                state === 'done'    && 'bg-emerald-500/70',
+                state === 'error'   && 'bg-red-500/70',
+                state === 'pending' && 'bg-white/10',
+              )}
+              style={state === 'active' ? { background: 'var(--color-brand, #7C3AED)' } : undefined}
+            >
+              {state === 'active' && (
+                <motion.div
+                  className="h-full w-full rounded-full bg-gradient-to-r from-brand to-accent"
+                  animate={{ opacity: [0.5, 1, 0.5] }}
+                  transition={{ duration: 1.2, repeat: Infinity, ease: 'easeInOut' }}
+                />
+              )}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
