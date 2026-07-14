@@ -1,6 +1,13 @@
 """
 app/services/tts_client.py
 TTS client — tries VoxCPM2 first, falls back to Gemini TTS, then mock silence.
+
+VoxCPM2 itself has 3 possible backends, picked in VoxCPM2Client.__init__:
+  - VOXCPM2_API_URL set, "rest"   -> our own Modal/RunPod server
+  - VOXCPM2_API_URL set, "gradio" -> a Colab notebook's gradio.live URL
+  - VOXCPM2_API_URL blank         -> free public HF Space (openbmb/VoxCPM-Demo),
+                                      automatic, no setup — used whenever the
+                                      Colab notebook isn't running that session
 """
 import logging
 import wave
@@ -74,24 +81,39 @@ class VoxCPM2Client:
     """
 
     def __init__(self):
-        self.base_url = settings.VOXCPM2_API_URL.rstrip("/")
+        configured_url = settings.VOXCPM2_API_URL.rstrip("/")
         self.api_key  = settings.VOXCPM2_API_KEY
         # Generous timeout: serverless GPU hosts (Modal etc.) cold-start the
         # container + load the model on the first call after idle, which can
         # take 2–3 minutes before any audio is returned.
         self.timeout  = 300.0
 
-        # Backend protocol: "rest" (our Modal server) or "gradio" (Colab Gradio
-        # app). Auto-detect from the URL when not explicitly configured.
-        configured = (settings.VOXCPM2_BACKEND or "").lower().strip()
-        if configured in ("gradio", "rest"):
-            self.backend = configured
+        if configured_url:
+            self.base_url = configured_url
+            # Backend protocol: "rest" (our Modal server) or "gradio" (Colab
+            # Gradio app). Auto-detect from the URL when not explicitly configured.
+            configured_backend = (settings.VOXCPM2_BACKEND or "").lower().strip()
+            if configured_backend in ("gradio", "rest"):
+                self.backend = configured_backend
+            else:
+                self.backend = "gradio" if "gradio" in self.base_url else "rest"
         else:
-            self.backend = "gradio" if "gradio" in self.base_url else "rest"
+            # No VOXCPM2_API_URL configured (e.g. the Colab notebook isn't
+            # running this session) — use the free public HF Space instead of
+            # skipping VoxCPM2 entirely. Real VoxCPM2 quality with zero setup;
+            # falls through to Gemini TTS below if the Space is busy/down.
+            self.base_url = settings.VOXCPM2_HF_SPACE_FALLBACK
+            self.backend = "hf_space"
 
-        # Cached gradio_client.Client (recreated if the URL changes)
+        # Cached gradio_client.Client for the primary/configured backend
+        # (recreated if the URL changes).
         self._gradio_client = None
         self._gradio_url = None
+        # Separate cached client specifically for the HF Space fallback, so
+        # that falling back to it while the primary backend is Colab/Modal
+        # doesn't thrash the primary cache slot on every call.
+        self._hf_fallback_client = None
+        self._hf_fallback_url = None
 
     def _headers(self) -> dict:
         h = {"Content-Type": "application/json"}
@@ -104,7 +126,7 @@ class VoxCPM2Client:
             return False
         # Gradio apps have no /health route — treat a configured URL as available
         # (the real connection is validated on the first synthesis call).
-        if self.backend == "gradio":
+        if self.backend in ("gradio", "hf_space"):
             return True
         try:
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
@@ -127,41 +149,76 @@ class VoxCPM2Client:
     ) -> dict:
         """
         Synthesize speech.  Fallback chain:
-          1. VoxCPM2 (if VOXCPM2_API_URL is set)
-          2. Gemini TTS (if GEMINI_API_KEY is set)
-          3. Mock silence
+          1. VoxCPM2 — configured backend if VOXCPM2_API_URL is set (Modal/Colab),
+             else the free HF Space directly
+          2. Free HF Space (VOXCPM2_HF_SPACE_FALLBACK) — only tried here if step 1
+             was a *configured* backend that failed (e.g. Colab URL is stale/dead);
+             skipped if step 1 already *was* the HF Space, to avoid a pointless retry
+          3. Gemini TTS (if GEMINI_API_KEY is set)
+          4. Mock silence
 
         Voice modes (decided by what's passed):
           - voice_design only                       -> Voice Design
           - reference_audio_path                    -> Controllable Cloning
           - reference_audio_path + transcript       -> Ultimate Cloning
         """
-        if self.base_url:
-            if self.backend == "gradio":
-                result = await self._gradio_synthesize(
-                    text, voice_design, output_path, cfg_value, inference_timesteps,
-                    reference_audio_path, reference_transcript, seed,
-                )
-            else:
-                result = await self._voxcpm2_synthesize(
-                    text, voice_design, output_path, cfg_value, inference_timesteps,
-                    reference_audio_path, reference_transcript, max_retries,
-                )
-            if result["success"]:
-                return result
-            logger.warning(f"VoxCPM2 failed ({result['error']}) — falling back to Gemini TTS")
+        if self.backend == "gradio":
+            result = await self._gradio_synthesize(
+                text, voice_design, output_path, cfg_value, inference_timesteps,
+                reference_audio_path, reference_transcript, seed,
+            )
+        elif self.backend == "hf_space":
+            result = await self._hf_space_synthesize(
+                text, voice_design, output_path, cfg_value,
+                reference_audio_path, reference_transcript,
+            )
+        else:
+            result = await self._voxcpm2_synthesize(
+                text, voice_design, output_path, cfg_value, inference_timesteps,
+                reference_audio_path, reference_transcript, max_retries,
+            )
 
+        if result["success"]:
+            return result
+        logger.warning(f"VoxCPM2 ({self.backend}) failed: {result['error']}")
+
+        # The configured backend (Colab/Modal) didn't work — before giving up
+        # on VoxCPM2 quality entirely, try the free HF Space. Skip this if that
+        # backend WAS already the HF Space (no point retrying the same thing).
+        if self.backend != "hf_space":
+            logger.warning("Trying free HF Space fallback before Gemini TTS...")
+            fallback = await self._hf_space_synthesize(
+                text, voice_design, output_path, cfg_value,
+                reference_audio_path, reference_transcript,
+            )
+            if fallback["success"]:
+                return fallback
+            logger.warning(f"HF Space fallback also failed: {fallback['error']}")
+
+        logger.warning("Falling back to Gemini TTS")
         return await self._gemini_synthesize(text, output_path, voice_design=voice_design)
 
     # ── Gradio (Colab gradio.live app) ───────────────────────────────────
 
-    def _get_gradio_client(self):
+    def _get_gradio_client(self, url: str = None):
+        """Cached gradio_client.Client for `url` (defaults to self.base_url —
+        the primary/configured backend). Pass an explicit `url` to connect
+        somewhere else (e.g. the HF Space fallback) without disturbing the
+        primary connection's cache."""
         from gradio_client import Client
-        if self._gradio_client is None or self._gradio_url != self.base_url:
-            logger.info(f"Connecting gradio_client to {self.base_url}")
-            self._gradio_client = Client(self.base_url)
-            self._gradio_url = self.base_url
-        return self._gradio_client
+        target = url or self.base_url
+        if target == self.base_url:
+            if self._gradio_client is None or self._gradio_url != target:
+                logger.info(f"Connecting gradio_client to {target}")
+                self._gradio_client = Client(target)
+                self._gradio_url = target
+            return self._gradio_client
+
+        if self._hf_fallback_client is None or self._hf_fallback_url != target:
+            logger.info(f"Connecting gradio_client to {target}")
+            self._hf_fallback_client = Client(target)
+            self._hf_fallback_url = target
+        return self._hf_fallback_client
 
     def _gradio_call(
         self, text, voice_design, output_path, cfg_value, inference_timesteps,
@@ -224,6 +281,66 @@ class VoxCPM2Client:
             )
         except Exception as e:
             logger.warning(f"Gradio VoxCPM2 failed: {e}")
+            return {"success": False, "audio_path": "", "duration_secs": 0, "error": str(e)}
+
+    # ── HF Space fallback (openbmb/VoxCPM-Demo, no setup required) ────────
+    # Different Gradio app from the Colab one above — a single unified
+    # /generate endpoint instead of 4 mode-specific ones, and no seed/
+    # inference_timesteps controls (the Space doesn't expose them, so a
+    # design-mode voice's identity can't be locked across calls the way the
+    # Colab backend's `locked` param does — acceptable since baked design
+    # voices reuse a saved reference clip via cloning after the first call
+    # anyway, per voices.py's _bake_design_voice).
+
+    def _hf_space_call(
+        self, text, voice_design, output_path, cfg_value,
+        reference_audio_path, reference_transcript,
+    ) -> dict:
+        """Blocking gradio_client call — run inside a thread."""
+        import shutil
+        from gradio_client import handle_file
+
+        # Always connect to the fallback Space explicitly — self.base_url may
+        # currently be a different (failed) primary backend's URL if this is
+        # being called as a secondary fallback, not the configured backend.
+        client = self._get_gradio_client(settings.VOXCPM2_HF_SPACE_FALLBACK)
+        has_ref = bool(reference_audio_path) and Path(reference_audio_path).exists()
+        use_prompt_text = has_ref and bool(reference_transcript)
+
+        out = client.predict(
+            text_input=text,
+            control_instruction=voice_design or "",
+            reference_wav_path_input=handle_file(reference_audio_path) if has_ref else None,
+            use_prompt_text=use_prompt_text,
+            prompt_text_input=reference_transcript if use_prompt_text else "",
+            cfg_value_input=cfg_value,
+            do_normalize=False,
+            denoise=False,
+            api_name="/generate",
+        )
+
+        # /generate returns a single filepath (unlike the Colab backend's
+        # (filepath, seed) tuples) — handle both shapes defensively.
+        src = out[0] if isinstance(out, (list, tuple)) else out
+        out_p = Path(output_path)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, out_p)
+        duration = _get_wav_duration(str(out_p))
+        logger.info(f"HF Space VoxCPM2 saved: {out_p.name} ({duration:.1f}s)")
+        return {"success": True, "audio_path": str(out_p), "duration_secs": duration, "error": ""}
+
+    async def _hf_space_synthesize(
+        self, text, voice_design, output_path, cfg_value,
+        reference_audio_path, reference_transcript,
+    ) -> dict:
+        try:
+            logger.info(f"HF Space VoxCPM2 TTS ({self.base_url}): {text[:50]}...")
+            return await asyncio.to_thread(
+                self._hf_space_call, text, voice_design, output_path, cfg_value,
+                reference_audio_path, reference_transcript,
+            )
+        except Exception as e:
+            logger.warning(f"HF Space VoxCPM2 failed: {e}")
             return {"success": False, "audio_path": "", "duration_secs": 0, "error": str(e)}
 
     # ── VoxCPM2 ──────────────────────────────────────────────────────────

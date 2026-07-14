@@ -7,12 +7,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List
+import uuid
 
 from app.core.database import get_db
-from app.models.models import Segment, Speaker, Job
+from app.models.models import Segment, Speaker, Job, Project
 from app.schemas.schemas import (
-    SegmentResponse, SegmentUpdate,
-    SpeakerResponse, SpeakerUpdate,
+    SegmentResponse, SegmentUpdate, SegmentCreate,
+    SpeakerResponse, SpeakerUpdate, SpeakerCreate,
 )
 
 router = APIRouter(tags=["Segments & Speakers"])
@@ -29,6 +30,28 @@ async def list_segments(job_id: str, db: AsyncSession = Depends(get_db)):
         .order_by(Segment.start_time)
     )
     return result.scalars().all()
+
+
+@router.post("/jobs/{job_id}/segments", response_model=SegmentResponse, status_code=status.HTTP_201_CREATED)
+async def create_segment(
+    job_id: str,
+    payload: SegmentCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually add a subtitle segment to a job's transcript (manual workflow)."""
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if payload.end_time <= payload.start_time:
+        raise HTTPException(status_code=422, detail="end_time must be greater than start_time")
+
+    seg = Segment(job_id=job_id, **payload.model_dump())
+    db.add(seg)
+    await db.flush()
+    await db.refresh(seg)
+    await db.commit()
+    return seg
 
 
 @router.patch("/segments/{segment_id}", response_model=SegmentResponse)
@@ -133,6 +156,29 @@ async def list_speakers(project_id: str, db: AsyncSession = Depends(get_db)):
         select(Speaker).where(Speaker.project_id == project_id)
     )
     return result.scalars().all()
+
+
+@router.post("/projects/{project_id}/speakers", response_model=SpeakerResponse, status_code=status.HTTP_201_CREATED)
+async def create_speaker(
+    project_id: str,
+    payload: SpeakerCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually create a reusable speaker profile (manual workflow)."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    data = payload.model_dump()
+    if not data.get("label"):
+        data["label"] = f"MANUAL_{uuid.uuid4().hex[:8]}"
+
+    speaker = Speaker(project_id=project_id, **data)
+    db.add(speaker)
+    await db.flush()
+    await db.refresh(speaker)
+    await db.commit()
+    return speaker
 
 
 @router.patch("/speakers/{speaker_id}", response_model=SpeakerResponse)

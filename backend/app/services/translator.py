@@ -251,37 +251,46 @@ async def _translate_batch_with_gemini(
     src_name = LANG_NAMES.get(source_lang, source_lang)
     tgt_name = LANG_NAMES.get(target_lang, target_lang)
 
-    # Build numbered list of all lines to translate
+    # Build numbered list of all lines to translate, each tagged with its
+    # speaker. This is the actual context mechanism now: instead of a static
+    # preview of only the first few lines, EVERY line carries who said it, for
+    # the whole chunk — Gemini can track who's-speaking-to-whom throughout,
+    # which matters a lot for short/fragmented lines (a single word like "行"
+    # or "我" is close to unreadable in isolation, but is clear once you know
+    # which character said it and that the previous line was the same speaker
+    # continuing a thought vs. a different character responding).
     numbered_lines = "\n".join(
-        f"{i+1}. {_clean_chinese(text)}"
+        f"{i+1}. [{segments_context[i].get('speaker_label', 'SPEAKER')}] {_clean_chinese(text)}"
+        if segments_context and i < len(segments_context)
+        else f"{i+1}. {_clean_chinese(text)}"
         for i, text in enumerate(texts)
         if text.strip()
     )
 
-    # Build scene context (first few lines for tone setting)
-    context_preview = ""
-    if segments_context and len(segments_context) > 0:
-        preview_lines = []
-        for seg in segments_context[:5]:
-            text = _clean_chinese(seg.get("source_text", "")).strip()
-            if text:
-                speaker = seg.get("speaker_label", "SPEAKER")
-                preview_lines.append(f"  [{speaker}]: {text}")
-        if preview_lines:
-            context_preview = f"""
-SCENE CONTEXT (opening lines to understand tone/setting):
-{chr(10).join(preview_lines)}
-"""
-
-    prompt = f"""You are a professional Khmer dubbing scriptwriter with expertise in {src_name} drama/film.
+    prompt = f"""You are a professional {tgt_name} dubbing scriptwriter with expertise in {src_name} drama/film.
 
 STEP 1 — ANALYZE THE SCENE (do this internally, don't write it out):
-Read all the lines below and determine:
+Read all the lines below, in order. Each line is tagged with [SPEAKER_XX] —
+use these tags to follow the conversation:
+- Consecutive lines with the SAME speaker tag are one character continuing a
+  thought — translate them so they flow together naturally.
+- A line with a DIFFERENT speaker tag than the one before it means a
+  different character is now responding — adjust pronouns/address terms to
+  fit who is speaking to whom (e.g. a subordinate addressing a superior needs
+  different words than two peers talking).
+- For EACH distinct speaker tag, infer that character's likely GENDER from
+  any clue across the whole set of lines: their name, how other speakers
+  address or refer to them, self-references, or context (e.g. "girlfriend",
+  "老公"/"husband"). Once you decide a speaker's gender, use it CONSISTENTLY
+  for every line from that same tag — never switch mid-conversation. If a
+  speaker's gender truly cannot be determined from anything in the lines,
+  prefer using their name (if one is known) over guessing a gendered term.
+From the full set of lines, determine:
 - Era: Is this ancient/wuxia/xianxia (immortals, cultivation, dynasty) or modern/contemporary?
 - Tone: Formal/royal, family drama, action, comedy, romantic?
 - Relationships: Who is speaking to whom — child to parent, student to master, subjects to royalty?
 
-STEP 2 — CHOOSE THE RIGHT KHMER REGISTER based on what you detected:
+STEP 2 — CHOOSE THE RIGHT {tgt_name.upper()} REGISTER based on what you detected:
 
 For ANCIENT/WUXIA/XIANXIA (immortals, cultivation, martial arts, historical):
 - Use classical Khmer vocabulary that feels like old stories/legends
@@ -289,29 +298,39 @@ For ANCIENT/WUXIA/XIANXIA (immortals, cultivation, martial arts, historical):
 - Speech sounds like Khmer folk tales — dignified but not stiff
 
 For MODERN/CONTEMPORARY (cities, phones, offices, schools):
-- Use everyday casual Khmer
+- Use everyday casual {tgt_name}
 - Address words: dad → "ប៉ា", mom → "មា", grandpa → "តា"
 - Speech sounds like how young Khmers actually talk today
 
 For BOTH registers:
+- Gendered pronouns/address terms MUST match each speaker's inferred gender
+  (from STEP 1): refer to or address a MALE character as "លោក", a FEMALE
+  character as "អ្នកនាង" or "នាង" — never use the female form for a male
+  speaker or vice versa
 - SHORT sentences — voice actors need to breathe and sync to video
 - Match the EMOTION of each line (anger, sadness, wonder, warmth)
 - Keep roughly the SAME LENGTH as the original
 - NEVER add words that aren't in the original meaning
-{context_preview}
-STEP 3 — TRANSLATE ALL {len(texts)} LINES from {src_name} to Khmer.
+- Modern Chinese internet/youth slang (e.g. self-deprecating terms like
+  "考研狗", industry jargon like "红圈所") should be adapted to what it
+  ACTUALLY MEANS in context, not translated character-by-character — if
+  unsure of an exact idiom, prioritize the emotional intent over literal words
 
-Return ONLY a numbered list:
-1. [Khmer spoken line]
-2. [Khmer spoken line]
+STEP 3 — TRANSLATE ALL {len(texts)} LINES from {src_name} to {tgt_name}.
+
+Return ONLY a numbered list, WITHOUT the [SPEAKER_XX] tags — those are for
+your reference only, not part of the line:
+1. [{tgt_name} spoken line]
+2. [{tgt_name} spoken line]
 ...for all {len(texts)} lines.
 
-No era analysis, no explanations — just the numbered Khmer lines.
+No era analysis, no explanations, no speaker tags in the output — just the
+numbered {tgt_name} lines.
 
 LINES TO TRANSLATE:
 {numbered_lines}
 
-Khmer translations:"""
+{tgt_name} translations:"""
 
     headers = {
         "Content-Type": "application/json",

@@ -36,6 +36,15 @@ class Settings(BaseSettings):
     # Free trial at: dashboard.pyannote.ai
     PYANNOTEAI_TOKEN: str = ""
 
+    # ── Diarization backend ────────────────────────────────────
+    # "moss"     = OpenMOSS-Team/MOSS-transcribe-diarize HF Space (free, default —
+    #              combined diarization+transcription in one call, up to ~1800s)
+    # "pyannote" = pyannoteAI cloud API (paid beyond free tier, needs PYANNOTEAI_TOKEN)
+    # On failure, "moss" falls back straight to the mock diarizer (never silently
+    # incurs pyannoteAI cost); "pyannote" falls back to mock if no token is set.
+    DIARIZATION_BACKEND: str = "moss"
+    DIARIZATION_MOSS_SPACE: str = "OpenMOSS-Team/MOSS-transcribe-diarize"
+
     # ── Google Gemini — translation ───────────────────────────
     # Free at: aistudio.google.com
     GEMINI_API_KEY: str = ""
@@ -54,6 +63,10 @@ class Settings(BaseSettings):
     # Backend protocol: "rest" (our Modal server) or "gradio" (Colab Gradio app).
     # Leave blank to auto-detect: a "gradio" in the URL → gradio, else rest.
     VOXCPM2_BACKEND: str = ""
+    # Free public HF Space used automatically when VOXCPM2_API_URL is blank —
+    # i.e. whenever the Colab notebook isn't running that session. Real VoxCPM2
+    # quality with zero setup; falls back to Gemini TTS if the Space is busy/down.
+    VOXCPM2_HF_SPACE_FALLBACK: str = "openbmb/VoxCPM-Demo"
 
     # ── Source separation (vocals / background) ───────────────
     # "local" = Demucs on this machine (heavy on 8GB Macs, can freeze)
