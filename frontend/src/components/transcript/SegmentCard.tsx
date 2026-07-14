@@ -26,7 +26,7 @@ export function SegmentCard({ segment, speaker, speakerIndex, isActive, onSeek }
   const { mutate: approveSegment, isPending: approving } = useApproveSegment()
 
   const speakerColor = speaker?.color ?? getSpeakerColor(speakerIndex)
-  const speakerName  = speaker?.name ?? speaker?.label ?? `Speaker ${speakerIndex + 1}`
+  const speakerName  = speaker?.display_name || speaker?.label || `Speaker ${speakerIndex + 1}`
   const isApproved   = segment.is_approved
 
   // Auto-focus textarea when editing starts

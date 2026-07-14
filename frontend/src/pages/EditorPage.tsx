@@ -413,7 +413,7 @@ export default function EditorPage() {
                 </div>
               )}
               <Button variant="default" size="sm" className="w-full font-semibold shadow-glow" onClick={handleStartPipeline} loading={isSetupLoading}>
-                {isSetupLoading ? `Uploading… (${Math.round(uploadProgress)}%)` : 'Start AI Dubbing Pipeline'}
+                {isSetupLoading ? `Uploading… (${Math.round(uploadProgress)}%)` : 'Start Dubbing'}
               </Button>
             </div>
           </div>
@@ -495,18 +495,15 @@ export default function EditorPage() {
             </div>
           </div>
 
-          {/* Center: stage status hint */}
+          {/* Center: stage status hint — Stage 1 is already shown on the main
+              panel's own processing card, so only Stage 2 needs a top-bar hint;
+              stems_ready has no banner here either, the Vocals track's own
+              Analyze button and the transcript panel's hint already cover it. */}
           <div className="flex-1 flex items-center justify-center gap-2">
-            {(isStage1 || isStage2) && (
+            {isStage2 && (
               <div className="flex items-center gap-1.5 text-[11px] text-brand-300">
                 <Loader2 size={11} className="animate-spin" />
                 <span>{statusConfig?.description ?? 'Processing…'}</span>
-              </div>
-            )}
-            {isStemsReady && (
-              <div className="flex items-center gap-1.5 text-[11px] text-emerald-400">
-                <Scissors size={11} />
-                <span>Audio split complete — click <strong>Analyze Speech</strong> on the Vocals track</span>
               </div>
             )}
           </div>
@@ -661,6 +658,7 @@ export default function EditorPage() {
                       segments={displaySegs}
                       speakers={spks}
                       jobId={jobId!}
+                      projectId={projectId!}
                       isLoading={loadingSegs}
                       className="h-full border-l-0"
                       job={job}

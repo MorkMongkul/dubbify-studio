@@ -5,8 +5,8 @@ import axios from 'axios'
 import type {
   Project, ProjectCreate,
   Job, PipelineStartResponse,
-  Speaker, SpeakerUpdate,
-  Segment, SegmentUpdate,
+  Speaker, SpeakerUpdate, SpeakerCreate,
+  Segment, SegmentUpdate, SegmentCreate,
   TTSResponse, HealthResponse,
   Voice, VoiceMode,
 } from '@/types'
@@ -102,6 +102,9 @@ export const speakers = {
   listByProject: (projectId: string) =>
     api.get<Speaker[]>(`/projects/${projectId}/speakers`).then((r) => r.data),
 
+  create: (projectId: string, data: SpeakerCreate) =>
+    api.post<Speaker>(`/projects/${projectId}/speakers`, data).then((r) => r.data),
+
   update: (speakerId: string, data: SpeakerUpdate) =>
     api.patch<Speaker>(`/speakers/${speakerId}`, data).then((r) => r.data),
 }
@@ -110,6 +113,9 @@ export const speakers = {
 export const segments = {
   listByJob: (jobId: string) =>
     api.get<Segment[]>(`/jobs/${jobId}/segments`).then((r) => r.data),
+
+  create: (jobId: string, data: SegmentCreate) =>
+    api.post<Segment>(`/jobs/${jobId}/segments`, data).then((r) => r.data),
 
   update: (segmentId: string, data: SegmentUpdate) =>
     api.patch<Segment>(`/segments/${segmentId}`, data).then((r) => r.data),

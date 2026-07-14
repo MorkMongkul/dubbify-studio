@@ -1,27 +1,31 @@
 // src/components/transcript/TranscriptPanel.tsx
 import { useRef, useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { AlignLeft, Loader2, ChevronRight, Sliders, Volume2, Type, RefreshCw, Mic } from 'lucide-react'
+import { AlignLeft, Loader2, ChevronRight, Sliders, Volume2, Type, RefreshCw, Mic, Plus } from 'lucide-react'
 import type { Segment, Speaker, Job } from '@/types'
 import { useEditorStore, useActiveSegmentId } from '@/store/editorStore'
 import { SegmentCardSkeleton } from '@/components/ui/Skeleton'
+import { Modal, InputField } from '@/components/ui/Modal'
+import { Button } from '@/components/ui/Button'
 import { toast } from 'sonner'
 import { cn, formatTime, getSpeakerColor, isJobRunning, getJobStatusConfig } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import { segments as segmentsApi } from '@/api/client'
-import { useVoices, useSynthesizeSegment, useSynthesizeBatch } from '@/hooks/useApi'
- 
+import { useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker } from '@/hooks/useApi'
+import { PipelineStepper } from '@/features/upload/PipelineStepper'
+
 interface TranscriptPanelProps {
   segments: Segment[]
   speakers: Speaker[]
   jobId: string
+  projectId: string
   isLoading?: boolean
   className?: string
   job?: Job
 }
- 
+
 export function TranscriptPanel({
-  segments, speakers, jobId, isLoading, className, job
+  segments, speakers, jobId, projectId, isLoading, className, job
 }: TranscriptPanelProps) {
   const activeSegmentId = useActiveSegmentId()
   const {
@@ -45,7 +49,11 @@ export function TranscriptPanel({
   const [batchSynthesizing, setBatchSynthesizing] = useState(false)
   const synthesizeSegment = useSynthesizeSegment()
   const synthesizeBatch = useSynthesizeBatch()
- 
+  const createSegment = useCreateSegment()
+  const createSpeaker = useCreateSpeaker()
+  const [newSpeakerModal, setNewSpeakerModal] = useState<{ segmentId: string } | null>(null)
+  const [newSpeakerName, setNewSpeakerName] = useState('')
+
   const scrollRef = useRef<HTMLDivElement>(null)
   const cardRefs = useRef<Map<string, HTMLTableRowElement>>(new Map())
   const originalTextRef = useRef<string>('')
@@ -86,6 +94,66 @@ export function TranscriptPanel({
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
     } catch (err) {
       toast.error('Failed to assign voice')
+      console.error(err)
+    }
+  }
+
+  // Manually add a new subtitle segment — used for the "build the transcript by
+  // hand" workflow instead of relying on the automatic diarize/transcribe pipeline.
+  // Placed right after the last existing segment; the user then edits its text,
+  // assigns a speaker, drags it into place on the timeline, and generates voice.
+  const handleAddSegment = async () => {
+    const lastEnd = segments.length > 0 ? Math.max(...segments.map((s) => s.end_time)) : 0
+    const defaultDur = 3
+    const cap = job?.duration_secs && job.duration_secs > 0 ? job.duration_secs : null
+    const start = cap && lastEnd >= cap ? Math.max(0, cap - defaultDur) : lastEnd
+    const end = cap ? Math.min(start + defaultDur, cap) : start + defaultDur
+    try {
+      const created = await createSegment.mutateAsync({
+        jobId,
+        data: { start_time: start, end_time: end, speaker_id: null, khmer_text: '' },
+      })
+      setActiveSegment(created.id)
+      setFocusedTimelineItemId(created.id)
+      setCurrentTime(created.start_time)
+    } catch (err) {
+      toast.error('Failed to add segment')
+      console.error(err)
+    }
+  }
+
+  const handleSpeakerSelectChange = async (segmentId: string, value: string) => {
+    if (value === '__new__') {
+      setNewSpeakerName('')
+      setNewSpeakerModal({ segmentId })
+      return
+    }
+    try {
+      await segmentsApi.update(segmentId, { speaker_id: value || null })
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    } catch (err) {
+      toast.error('Failed to assign speaker')
+      console.error(err)
+    }
+  }
+
+  const handleCreateSpeakerConfirm = async () => {
+    if (!newSpeakerModal) return
+    const name = newSpeakerName.trim()
+    if (!name) {
+      toast.error('Name is required')
+      return
+    }
+    try {
+      const speaker = await createSpeaker.mutateAsync({
+        projectId,
+        data: { display_name: name },
+      })
+      await segmentsApi.update(newSpeakerModal.segmentId, { speaker_id: speaker.id })
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      setNewSpeakerModal(null)
+    } catch (err) {
+      toast.error('Failed to create speaker')
       console.error(err)
     }
   }
@@ -139,7 +207,7 @@ export function TranscriptPanel({
   // Active clip references
   const activeSeg = segments.find(s => s.id === (focusedTimelineItemId || activeSegmentId))
   const activeSpeaker = activeSeg ? getSpeaker(activeSeg) : null
-  const activeSpeakerName = activeSpeaker?.name ?? activeSpeaker?.label ?? (activeSeg ? `Speaker ${getSpeakerIndex(activeSeg) + 1}` : 'Audio Clip')
+  const activeSpeakerName = activeSpeaker?.display_name || activeSpeaker?.label || (activeSeg ? `Speaker ${getSpeakerIndex(activeSeg) + 1}` : 'Audio Clip')
 
   // Sync local states to the active segment parameters
   useEffect(() => {
@@ -232,6 +300,18 @@ export function TranscriptPanel({
 
           {inspectorMode === 'global_synthesis' && (
             <button
+              onClick={handleAddSegment}
+              disabled={createSegment.isPending || !jobId}
+              className="flex items-center gap-1 text-[10px] font-semibold text-purple-400 hover:text-purple-300 hover:bg-purple-500/10 px-1.5 py-0.5 rounded transition-colors disabled:opacity-50"
+              title="Add a new subtitle segment"
+            >
+              <Plus size={12} />
+              <span>Add Segment</span>
+            </button>
+          )}
+
+          {inspectorMode === 'global_synthesis' && (
+            <button
               onClick={() => setRightPanelCollapsed(true)}
               className="p-1 rounded hover:bg-white/10 text-text-muted hover:text-white transition-colors"
               title="Collapse transcript"
@@ -294,9 +374,8 @@ export function TranscriptPanel({
                 <p className="text-[11px] text-white/40 max-w-[200px] leading-normal">
                   Stems will appear on the timeline when ready
                 </p>
-                <div className="w-48 h-1 bg-zinc-800 rounded-full overflow-hidden mt-1">
-                  <div className="h-full bg-brand-400 rounded-full transition-all duration-500"
-                    style={{ width: `${job.progress ?? 0}%` }} />
+                <div className="w-48 mt-1">
+                  <PipelineStepper job={job} compact />
                 </div>
               </>
             ) : job?.status === 'stems_ready' ? (
@@ -307,7 +386,7 @@ export function TranscriptPanel({
                 </div>
                 <p className="text-[12px] font-semibold text-emerald-400">Audio split complete</p>
                 <p className="text-[11px] text-white/40 max-w-[200px] leading-normal">
-                  Click the <span className="text-emerald-400 font-semibold">Analyze Speech</span> button on the Vocals track to detect speakers and transcribe.
+                  Click the <span className="text-emerald-400 font-semibold">Analyze</span> button on the Vocals track to detect speakers and transcribe.
                 </p>
               </>
             ) : job && (job.status === 'diarizing' || job.status === 'transcribing' || job.status === 'translating') ? (
@@ -320,15 +399,13 @@ export function TranscriptPanel({
                   : 'Translating dialogue…'}
                 </p>
                 <p className="text-[11px] text-white/40 max-w-[200px] leading-normal">
-                  {job.status === 'diarizing'    ? 'pyannoteAI is identifying who speaks when'
+                  {job.status === 'diarizing'    ? 'Identifying who speaks when'
                   : job.status === 'transcribing' ? 'Converting speech to text'
-                  : 'Gemini is translating to Khmer'}
+                  : 'Translating to Khmer'}
                 </p>
-                <div className="w-48 h-1.5 bg-zinc-800 rounded-full overflow-hidden mt-1">
-                  <div className="h-full bg-brand-400 rounded-full transition-all duration-500"
-                    style={{ width: `${job.progress ?? 0}%` }} />
+                <div className="w-48 mt-1">
+                  <PipelineStepper job={job} compact />
                 </div>
-                <span className="text-[10px] text-white/25 font-mono">{job.progress ?? 0}%</span>
               </>
             ) : (
               <>
@@ -401,15 +478,22 @@ export function TranscriptPanel({
                     </td>
  
                     {/* Speaker */}
-                    <td className="p-2 whitespace-nowrap">
+                    <td className="p-2 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center gap-1.5">
                         <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
-                        <span className={cn(
-                          "truncate max-w-[70px] font-medium transition-colors",
-                          isActive ? "text-purple-700 dark:text-purple-300 font-bold" : "text-zinc-300"
-                        )}>
-                          {speaker?.name ?? speaker?.label ?? `S${spkIdx + 1}`}
-                        </span>
+                        <select
+                          className="bg-zinc-900 text-zinc-200 text-[10px] rounded border border-zinc-800 hover:border-zinc-700 hover:bg-zinc-800 py-0.5 px-1 focus:outline-none focus:border-purple-500/50 cursor-pointer w-full max-w-[90px] truncate"
+                          value={seg.speaker_id ?? ''}
+                          onChange={(e) => handleSpeakerSelectChange(seg.id, e.target.value)}
+                        >
+                          <option value="">Unassigned</option>
+                          {speakers.map((sp) => (
+                            <option key={sp.id} value={sp.id}>
+                              {sp.display_name || sp.label}
+                            </option>
+                          ))}
+                          <option value="__new__">+ New Speaker…</option>
+                        </select>
                       </div>
                     </td>
  
@@ -734,6 +818,32 @@ export function TranscriptPanel({
           </div>
         )}
       </div>
+
+      <Modal
+        open={!!newSpeakerModal}
+        onClose={() => setNewSpeakerModal(null)}
+        title="New Speaker"
+        description="Create a reusable speaker profile and assign it to this segment."
+        size="sm"
+      >
+        <div className="space-y-4">
+          <InputField
+            label="Speaker Name"
+            required
+            value={newSpeakerName}
+            onChange={(e) => setNewSpeakerName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleCreateSpeakerConfirm() }}
+            placeholder="e.g. Narrator"
+            autoFocus
+          />
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setNewSpeakerModal(null)}>Cancel</Button>
+            <Button onClick={handleCreateSpeakerConfirm} disabled={createSpeaker.isPending}>
+              {createSpeaker.isPending ? 'Creating…' : 'Create & Assign'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

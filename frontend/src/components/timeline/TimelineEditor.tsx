@@ -1,10 +1,11 @@
 // src/components/timeline/TimelineEditor.tsx
-import { useRef, useCallback, useEffect, useState } from 'react'
+import { useRef, useCallback, useEffect, useState, useMemo } from 'react'
 import WaveSurfer from 'wavesurfer.js'
-import { ZoomIn, ZoomOut, AlertTriangle, Loader2, Scissors, X, RefreshCw } from 'lucide-react'
+import { ZoomIn, ZoomOut, Maximize2, AlertTriangle, Loader2, Scissors, X, RefreshCw } from 'lucide-react'
 import type { Segment, Speaker, Job } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
-import { useUpdateSegment, useDeleteSegment, useSynthesizeSegment } from '@/hooks/useApi'
+import { useUpdateSegment, useDeleteSegment, useSynthesizeSegment, useUpdateSpeaker } from '@/hooks/useApi'
+import { PipelineStepper } from '@/features/upload/PipelineStepper'
 import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, hexToRgba, cn, isJobRunning, getJobStatusConfig } from '@/lib/utils'
 import { Tooltip } from '@/components/ui/Tooltip'
 
@@ -59,6 +60,9 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const { mutate: updateSegment, isPending: isUpdatingSegment, variables: updateVariables } = useUpdateSegment()
   const { mutate: deleteSegment } = useDeleteSegment()
   const { mutate: regenerateSegment, isPending: isRegenerating, variables: regenVariables } = useSynthesizeSegment()
+  const updateSpeaker = useUpdateSpeaker()
+  const [editingSpeakerId, setEditingSpeakerId] = useState<string | null>(null)
+  const [editingSpeakerName, setEditingSpeakerName] = useState('')
 
   // Delete / Backspace key removes the active segment (skip when typing in an input)
   useEffect(() => {
@@ -198,6 +202,30 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     window.addEventListener('pointerup', handlePointerUp)
   }, [speakerPanelWidth, setSpeakerPanelWidth])
 
+  // Throttle zoom-slider commits to one per animation frame — the slider's
+  // native `input` event can fire far faster than 60fps, and every commit
+  // triggers a re-render of every track/segment, so batching keeps it smooth.
+  const zoomRafRef = useRef<number | null>(null)
+  const pendingZoomRef = useRef<number | null>(null)
+  const commitZoomThrottled = useCallback((z: number) => {
+    pendingZoomRef.current = z
+    if (zoomRafRef.current != null) return
+    zoomRafRef.current = requestAnimationFrame(() => {
+      if (pendingZoomRef.current != null) setZoom(pendingZoomRef.current)
+      zoomRafRef.current = null
+    })
+  }, [setZoom])
+
+  // Fit the whole job duration into the visible track viewport at once.
+  const handleZoomToFit = useCallback(() => {
+    const container = scrollRef.current
+    if (!container || !duration) return
+    const viewportWidth = container.clientWidth - speakerPanelWidth
+    if (viewportWidth <= 0) return
+    setZoom(viewportWidth / (duration * PX_PER_SEC))
+    container.scrollLeft = 0
+  }, [duration, speakerPanelWidth, setZoom])
+
 
   // Time ruler ticks
   const renderRulerTicks = () => {
@@ -271,7 +299,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
               max="8"
               step="0.05"
               value={zoom}
-              onChange={(e) => setZoom(parseFloat(e.target.value))}
+              onChange={(e) => commitZoomThrottled(parseFloat(e.target.value))}
               onMouseEnter={() => setShowZoomTooltip(true)}
               onMouseLeave={() => setShowZoomTooltip(false)}
               onPointerDown={() => {
@@ -296,6 +324,17 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
               onClick={zoomIn}
             >
               <ZoomIn size={13} />
+            </button>
+          </Tooltip>
+
+          <div className="w-px h-4 bg-white/[0.06] mx-0.5" />
+
+          <Tooltip content="Zoom to fit">
+            <button
+              className="h-6 w-6 rounded flex items-center justify-center text-text-muted hover:text-text-primary hover:bg-white/8 transition-colors"
+              onClick={handleZoomToFit}
+            >
+              <Maximize2 size={12} />
             </button>
           </Tooltip>
         </div>
@@ -474,10 +513,10 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                         max={20}
                         value={maxSpeakers}
                         onChange={(e) => setMaxSpeakers(e.target.value)}
-                        placeholder="max spk"
+                        placeholder="spk"
                         title="Max speakers (optional) — caps over-detection. Leave blank for auto."
                         disabled={analyzing}
-                        className="w-14 px-1.5 py-0.5 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-200 text-[9px] focus:outline-none focus:border-emerald-500 disabled:opacity-60"
+                        className="w-10 px-1 py-0.5 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-200 text-[9px] focus:outline-none focus:border-emerald-500 disabled:opacity-60"
                       />
                       <button
                         onClick={() => {
@@ -551,9 +590,39 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                       className="h-2 w-2 rounded-full shrink-0"
                       style={{ background: color }}
                     />
-                    <span className="text-xs text-text-muted truncate grow min-w-0 pr-1">
-                      {speaker?.name ?? speaker?.label ?? `S${trackIdx + 1}`}
-                    </span>
+                    {editingSpeakerId === speakerId ? (
+                      <input
+                        autoFocus
+                        className="bg-zinc-950 text-xs text-text-primary rounded px-1 py-0.5 w-full min-w-0 focus:outline-none border border-purple-500/50"
+                        value={editingSpeakerName}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => setEditingSpeakerName(e.target.value)}
+                        onBlur={() => {
+                          const trimmed = editingSpeakerName.trim()
+                          if (speaker && trimmed && trimmed !== (speaker.display_name || speaker.label)) {
+                            updateSpeaker.mutate({ speakerId: speaker.id, data: { display_name: trimmed } })
+                          }
+                          setEditingSpeakerId(null)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') e.currentTarget.blur()
+                          if (e.key === 'Escape') setEditingSpeakerId(null)
+                        }}
+                      />
+                    ) : (
+                      <span
+                        className="text-xs text-text-muted truncate grow min-w-0 pr-1 cursor-text hover:text-text-primary transition-colors"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (!speaker) return
+                          setEditingSpeakerId(speaker.id)
+                          setEditingSpeakerName(speaker.display_name || speaker.label || '')
+                        }}
+                        title={speaker ? 'Click to rename' : undefined}
+                      >
+                        {speaker?.display_name || speaker?.label || `S${trackIdx + 1}`}
+                      </span>
+                    )}
 
                     {/* Mute & Solo Track Controls */}
                     <div className="flex items-center gap-0.5 ml-auto shrink-0">
@@ -650,23 +719,8 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                       <Loader2 size={14} className="animate-spin" />
                       <span>{getJobStatusConfig(job.status).description}</span>
                     </div>
-                    {/* Progress bar */}
-                    <div className="w-64 h-1.5 rounded-full overflow-hidden bg-zinc-800 border border-zinc-700/50">
-                      <div
-                        className="h-full bg-gradient-to-r from-brand to-accent transition-all duration-300"
-                        style={{
-                          width: `${
-                            job.status === 'extracting' ? 10
-                            : job.status === 'separating' ? 20
-                            : job.status === 'diarizing' ? 35
-                            : job.status === 'transcribing' ? 55
-                            : job.status === 'translating' ? 75
-                            : job.status === 'synthesizing' ? 85
-                            : job.status === 'mixing' ? 95
-                            : 0
-                          }%`
-                        }}
-                      />
+                    <div className="w-64">
+                      <PipelineStepper job={job} compact />
                     </div>
                   </>
                 ) : (
@@ -775,7 +829,7 @@ function InteractiveSegment({
 
   // Cache-busted URL — the backend overwrites the same file path on every
   // re-synthesis, so a version query param (tts_duration_secs changes on
-  // every real synth) is what actually busts the browser + peaksCache.
+  // every real synth) is what actually busts the browser + decodedPeaksCache.
   const versionedAudioPath = seg.tts_audio_path
     ? `${seg.tts_audio_path}?v=${seg.tts_duration_secs ?? 0}`
     : undefined
@@ -821,21 +875,63 @@ function InteractiveSegment({
 
     const maxTimelineWidth = timeToPixels(duration || 60, zoom, PX_PER_SEC)
 
+    // Magnetic snapping — CapCut-style: snap the moving edge(s) to any other
+    // segment's start/end edge (any track) or the playhead, within a small
+    // pixel threshold. Targets are computed once per gesture (not per-move).
+    const SNAP_THRESHOLD_PX = 8
+    const snapTargetsPx = allSegments
+      .filter((s) => s.id !== seg.id)
+      .flatMap((s) => [
+        timeToPixels(s.start_time, zoom, PX_PER_SEC),
+        timeToPixels(s.end_time, zoom, PX_PER_SEC),
+      ])
+    snapTargetsPx.push(timeToPixels(useEditorStore.getState().currentTime, zoom, PX_PER_SEC))
+    const snapValue = (px: number): number => {
+      let closest = px
+      let closestDist = SNAP_THRESHOLD_PX
+      for (const t of snapTargetsPx) {
+        const d = Math.abs(t - px)
+        if (d < closestDist) { closest = t; closestDist = d }
+      }
+      return closest
+    }
+
     element.style.zIndex = '50'
     element.style.opacity = '0.9'
+
+    // Drag never touches style.left during the gesture (see handlePointerMove) —
+    // this tracks the last resolved left so pointer-up can commit it once.
+    let lastDragLeft = startLeft
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
       const deltaX = moveEvent.clientX - startX
       const deltaY = moveEvent.clientY - startY
+      let snapped = false
 
       if (actionType === 'drag') {
         let newLeft = startLeft + deltaX
+        const rawLeft = newLeft
+        const rawRight = newLeft + startWidth
+        const snappedLeft = snapValue(rawLeft)
+        const snappedRight = snapValue(rawRight)
+        if (snappedLeft !== rawLeft) {
+          newLeft = snappedLeft
+          snapped = true
+        } else if (snappedRight !== rawRight) {
+          newLeft = snappedRight - startWidth
+          snapped = true
+        }
         newLeft = Math.max(0, Math.min(maxTimelineWidth - startWidth, newLeft))
-        element.style.left = `${newLeft}px`
-        element.style.transform = `translateY(${deltaY}px)`
+        lastDragLeft = newLeft
+        // Compositor-only transform — no layout reflow per frame, unlike
+        // mutating `left` directly (was the cause of jumpy/laggy dragging).
+        element.style.transform = `translate(${newLeft - startLeft}px, ${deltaY}px)`
       } else if (actionType === 'resize-left') {
+        const rightEdge = startLeft + startWidth
         let newLeft = startLeft + deltaX
-        let newWidth = startWidth - deltaX
+        const snappedLeft = snapValue(newLeft)
+        if (snappedLeft !== newLeft) { newLeft = snappedLeft; snapped = true }
+        let newWidth = rightEdge - newLeft
 
         const minWidthPx = timeToPixels(0.1, zoom, PX_PER_SEC)
         if (newLeft < 0) {
@@ -850,13 +946,20 @@ function InteractiveSegment({
         element.style.left = `${newLeft}px`
         element.style.width = `${newWidth}px`
       } else if (actionType === 'resize-right') {
-        let newWidth = startWidth + deltaX
+        const rawRight = startLeft + startWidth + deltaX
+        const snappedRight = snapValue(rawRight)
+        if (snappedRight !== rawRight) snapped = true
+        let newWidth = snappedRight - startLeft
 
         const minWidthPx = timeToPixels(0.1, zoom, PX_PER_SEC)
         const maxWidthPx = maxTimelineWidth - startLeft
         newWidth = Math.max(minWidthPx, Math.min(maxWidthPx, newWidth))
         element.style.width = `${newWidth}px`
       }
+
+      // Cheap, non-reactive visual cue when snapped — direct style mutation,
+      // no React state, consistent with the rest of this drag implementation.
+      element.style.boxShadow = snapped ? '0 0 0 2px rgba(167,139,250,0.9)' : ''
     }
 
     const handlePointerUp = (upEvent: PointerEvent) => {
@@ -866,6 +969,12 @@ function InteractiveSegment({
 
       element.style.zIndex = ''
       element.style.opacity = ''
+      element.style.boxShadow = ''
+      if (actionType === 'drag') {
+        // Commit the transform-tracked position to style.left once, so the
+        // existing pixel-parsing logic below is untouched.
+        element.style.left = `${lastDragLeft}px`
+      }
       element.style.transform = ''
 
       const finalLeft = parseFloat(element.style.left)
@@ -1076,7 +1185,11 @@ function getSharedAudioContext() {
   return w[AUDIO_CONTEXT_KEY] as AudioContext
 }
 
-const peaksCache: Record<string, number[]> = {}
+// High-resolution peaks, decoded once per audioPath — independent of zoom/width,
+// so changing zoom never re-fetches or re-decodes audio (that was the cause of
+// zoom-stutter: it used to re-fetch+re-decode every segment on every zoom tick).
+const HIGH_RES_PEAKS = 300
+const decodedPeaksCache: Record<string, number[]> = {}
 
 function extractPeaks(buffer: AudioBuffer, numPeaks = 60): number[] {
   const channelData = buffer.getChannelData(0)
@@ -1098,6 +1211,24 @@ function extractPeaks(buffer: AudioBuffer, numPeaks = 60): number[] {
   return peaks.map((p) => p / maxPeak)
 }
 
+// Cheap synchronous resample of already-decoded peaks to fit the current
+// display width — this is the only thing that runs on a zoom tick now.
+function downsamplePeaks(peaks: number[], targetCount: number): number[] {
+  if (targetCount >= peaks.length) return peaks
+  const step = peaks.length / targetCount
+  const out: number[] = []
+  for (let i = 0; i < targetCount; i++) {
+    const start = Math.floor(i * step)
+    const end = Math.max(start + 1, Math.floor((i + 1) * step))
+    let max = 0
+    for (let j = start; j < end; j++) {
+      if (peaks[j] > max) max = peaks[j]
+    }
+    out.push(max)
+  }
+  return out
+}
+
 interface SegmentWaveformProps {
   audioPath?: string
   width: number
@@ -1106,26 +1237,28 @@ interface SegmentWaveformProps {
 }
 
 function SegmentWaveform({ audioPath, width, color = 'white', loading: externalLoading }: SegmentWaveformProps) {
-  const [peaks, setPeaks] = useState<number[] | null>(() => {
-    return (audioPath && peaksCache[audioPath]) || null
+  const [highResPeaks, setHighResPeaks] = useState<number[] | null>(() => {
+    return (audioPath && decodedPeaksCache[audioPath]) || null
   })
   const [error,    setError]   = useState(false)
   const [fetching, setFetching] = useState(false)
 
+  // Decode once per audioPath — deliberately NOT keyed on width, so zoom
+  // changes never re-fetch or re-decode audio (only re-resample, below).
   useEffect(() => {
     let active = true
 
     if (!audioPath) {
       requestAnimationFrame(() => {
-        if (active) setPeaks(null)
+        if (active) setHighResPeaks(null)
       })
       return () => {
         active = false
       }
     }
-    if (peaksCache[audioPath]) {
+    if (decodedPeaksCache[audioPath]) {
       requestAnimationFrame(() => {
-        if (active) setPeaks(peaksCache[audioPath])
+        if (active) setHighResPeaks(decodedPeaksCache[audioPath])
       })
       return () => {
         active = false
@@ -1144,11 +1277,10 @@ function SegmentWaveform({ audioPath, width, color = 'white', loading: externalL
 
         // decodeAudioData can throw on corrupt/unsupported files
         const audioBuffer = await ctx.decodeAudioData(arrayBuffer)
-        const numPeaks = Math.max(20, Math.floor(width / 3.5))
-        const extracted = extractPeaks(audioBuffer, numPeaks)
+        const extracted = extractPeaks(audioBuffer, HIGH_RES_PEAKS)
 
-        peaksCache[audioPath] = extracted
-        if (active) { setPeaks(extracted); setFetching(false) }
+        decodedPeaksCache[audioPath] = extracted
+        if (active) { setHighResPeaks(extracted); setFetching(false) }
       } catch (err) {
         console.warn('Waveform load failed for', audioPath, err)
         if (active) { setError(true); setFetching(false) }
@@ -1157,7 +1289,15 @@ function SegmentWaveform({ audioPath, width, color = 'white', loading: externalL
 
     fetchAndDecode()
     return () => { active = false }
-  }, [audioPath, width])
+  }, [audioPath])
+
+  // Cheap synchronous resample to the current display width — this is all
+  // that runs on a zoom tick now, no network/decode involved.
+  const numPeaks = Math.max(20, Math.floor(width / 3.5))
+  const peaks = useMemo(
+    () => (highResPeaks ? downsamplePeaks(highResPeaks, numPeaks) : null),
+    [highResPeaks, numPeaks]
+  )
 
   const isLoading = externalLoading || (fetching && !peaks && !error)
 

@@ -110,7 +110,7 @@ const DEFAULT_STATE = {
   zoom: 1,
   timelineScrollLeft: 0,
   timelineHeight: 240,
-  speakerPanelWidth: 200,
+  speakerPanelWidth: 228,
   activeSegmentId: null,
   editingSegmentId: null,
   selectedSpeakerId: null,

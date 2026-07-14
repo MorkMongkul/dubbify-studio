@@ -953,6 +953,7 @@ export default function WorkspacePage() {
                       segments={displaySegs}
                       speakers={spks}
                       jobId={jobId!}
+                      projectId={projectId!}
                       isLoading={loadingSegs}
                       className="h-full border-l-0"
                     />

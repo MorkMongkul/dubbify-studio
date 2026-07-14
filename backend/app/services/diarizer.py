@@ -1,17 +1,21 @@
 """
 app/services/diarizer.py
-Speaker diarization + transcription via pyannoteAI cloud API.
+Speaker diarization + transcription — two backends, selected by
+DIARIZATION_BACKEND (see app/core/config.py):
 
-Handles any video length via automatic chunking:
-  - Audio ≤ CHUNK_THRESHOLD_MINUTES → single API call (fast path)
-  - Audio >  CHUNK_THRESHOLD_MINUTES → split into chunks → process each
-                                        → merge results with correct timestamps
+  "moss"     (default) — OpenMOSS-Team/MOSS-transcribe-diarize, a free HF
+             Space via gradio_client. One call returns diarization + ASR
+             together, no auth, up to ~1800s. Falls back to the mock
+             diarizer on any failure (never silently falls through to the
+             paid pyannoteAI path).
+  "pyannote" — pyannoteAI cloud API (paid beyond its free tier). Handles any
+             video length via automatic chunking:
+               - Audio ≤ CHUNK_THRESHOLD_MINUTES → single API call
+               - Audio >  CHUNK_THRESHOLD_MINUTES → split into chunks →
+                 process each → merge results with correct timestamps
+             Falls back to mock if PYANNOTEAI_TOKEN is unset.
 
-One API call returns BOTH:
-  - Speaker segments with timestamps (who spoke when)
-  - Full transcribed text per speaker turn (Whisper large-v3-turbo)
-
-Flow per chunk:
+pyannoteAI flow per chunk:
   Step 1 → POST /v1/media/input   get pre-signed PUT URL
   Step 2 → PUT audio chunk        upload WAV slice to S3
   Step 3 → POST /v1/diarize       submit job with transcription:true
@@ -22,6 +26,7 @@ Flow per chunk:
 """
 import asyncio
 import logging
+import re
 import uuid
 import httpx
 import tempfile
@@ -34,6 +39,9 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 PYANNOTEAI_BASE = "https://api.pyannote.ai/v1"
+
+# The Space's own documented cap is ~1800s; small safety margin under that.
+MOSS_MAX_DURATION_SECONDS = 1750
 
 # Audio shorter than this is sent as a single chunk
 CHUNK_THRESHOLD_MINUTES = 10
@@ -165,6 +173,120 @@ async def _split_audio_into_chunks(
     logger.info(f"Split audio into {len(chunks)} chunks "
                 f"({chunk_duration_secs:.0f}s each, {overlap_secs:.0f}s overlap)")
     return chunks
+
+
+# ── MOSS (free HF Space) diarization + transcription ──────────
+# OpenMOSS-Team/MOSS-transcribe-diarize — combined diarization+ASR in one call,
+# no auth needed, up to ~1800s per call. Output is a plain-text transcript, one
+# turn per line: "[start-end] [S##] text", e.g. "[8.09-9.14] [S01] 我叫顾望舒".
+# Timestamps are SS.ff under 1 minute, MM:SS.ff at/after 1 minute — verified live.
+
+_MOSS_LINE_RE = re.compile(
+    r"^\[(?P<start>(?:\d+:)?\d+(?:\.\d+)?)-(?P<end>(?:\d+:)?\d+(?:\.\d+)?)\]\s*"
+    r"\[S(?P<spk>\d+)\]\s*(?P<text>.*)$"
+)
+
+
+def _parse_moss_timestamp(ts: str) -> float:
+    """MOSS formats timestamps as SS.ff under 1 minute, MM:SS.ff at/after."""
+    if ":" in ts:
+        mm, ss = ts.split(":", 1)
+        return int(mm) * 60 + float(ss)
+    return float(ts)
+
+
+def _parse_moss_output(raw: str, time_offset: float = 0.0) -> List[DiarizedSegment]:
+    """Parse MOSS's line-per-turn transcript into DiarizedSegments.
+
+    time_offset: added to all timestamps — used when this is one chunk of a
+    longer audio file, to shift back to absolute time in the full audio.
+    """
+    segments = []
+    for line in raw.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = _MOSS_LINE_RE.match(line)
+        if not m:
+            logger.debug(f"Skipping unparsable MOSS line: {line!r}")
+            continue
+
+        start = _parse_moss_timestamp(m.group("start")) + time_offset
+        end   = _parse_moss_timestamp(m.group("end"))   + time_offset
+        if end <= start:
+            continue
+
+        speaker_num = int(m.group("spk"))
+        segments.append(DiarizedSegment(
+            speaker_label=f"SPEAKER_{speaker_num - 1:02d}",  # S01 -> SPEAKER_00
+            start_time=round(start, 3),
+            end_time=round(end, 3),
+            gender="unknown",
+            age_group="adult",
+            source_text=m.group("text").strip(),
+        ))
+
+    segments.sort(key=lambda s: s.start_time)
+    return segments
+
+
+def _moss_transcribe_call(audio_path: str) -> str:
+    """Blocking gradio_client call to the MOSS Space. Run in a thread.
+
+    The API docs mark both audio_obj/video_obj as "required", but the app
+    actually enforces exactly one — passing both raises "Please select
+    either audio or video, not both." Confirmed live; audio_obj-only works.
+    """
+    from gradio_client import Client, handle_file
+
+    client = Client(settings.DIARIZATION_MOSS_SPACE)
+    result = client.predict(
+        audio_obj=handle_file(audio_path),
+        video_obj=None,
+        api_name="/run_transcription",
+    )
+    return result
+
+
+async def _diarize_via_moss(audio_path: str) -> List[DiarizedSegment]:
+    """Transcribe + diarize via the free MOSS-transcribe-diarize HF Space.
+
+    A single call handles up to ~MOSS_MAX_DURATION_SECONDS and keeps speaker
+    labels consistent throughout (no cross-chunk speaker-drift). Longer audio
+    reuses the same chunk-and-merge infrastructure as the pyannoteAI path.
+    """
+    duration = _get_audio_duration(audio_path)
+
+    if duration <= MOSS_MAX_DURATION_SECONDS:
+        logger.info(f"MOSS: audio {duration:.0f}s ≤ {MOSS_MAX_DURATION_SECONDS}s — single call")
+        raw = await asyncio.to_thread(_moss_transcribe_call, audio_path)
+        segments = _parse_moss_output(raw)
+        speakers = len(set(s.speaker_label for s in segments))
+        logger.info(f"MOSS: {len(segments)} segments, {speakers} speakers")
+        return segments
+
+    logger.info(f"MOSS: audio {duration:.0f}s > {MOSS_MAX_DURATION_SECONDS}s — chunking")
+    chunk_duration = MOSS_MAX_DURATION_SECONDS - CHUNK_OVERLAP_SECONDS
+
+    with tempfile.TemporaryDirectory(prefix="moss_chunks_") as chunk_dir:
+        chunks = await _split_audio_into_chunks(
+            audio_path=audio_path,
+            chunk_dir=chunk_dir,
+            chunk_duration_secs=chunk_duration,
+            overlap_secs=CHUNK_OVERLAP_SECONDS,
+        )
+
+        all_segments: List[DiarizedSegment] = []
+        for i, chunk in enumerate(chunks):
+            try:
+                raw = await asyncio.to_thread(_moss_transcribe_call, chunk["path"])
+                all_segments.extend(_parse_moss_output(raw, time_offset=chunk["offset"]))
+            except Exception as e:
+                logger.error(f"MOSS chunk {i+1} failed: {e} — skipping")
+                continue
+
+        all_segments.sort(key=lambda s: s.start_time)
+        return _normalise_speakers(all_segments, CHUNK_OVERLAP_SECONDS)
 
 
 # ── pyannoteAI API helpers ────────────────────────────────────
@@ -523,13 +645,24 @@ async def diarize_audio(
     max_speakers: int | None = None,
 ) -> List[DiarizedSegment]:
     """
-    Main entry point for diarization.
-    Automatically handles any video length via chunking.
+    Main entry point for diarization. Routes to DIARIZATION_BACKEND ("moss" or
+    "pyannote"). Automatically handles any video length via chunking.
 
-    Optional speaker-count hints (curb over-clustering):
+    Optional speaker-count hints (curb over-clustering) — pyannoteAI only;
+    MOSS's API has no speaker-count parameter, so these are ignored on that path.
       - num_speakers: exact count
       - max_speakers: upper bound
     """
+    backend = (settings.DIARIZATION_BACKEND or "moss").lower()
+
+    if backend == "moss":
+        try:
+            return await _diarize_via_moss(audio_path)
+        except Exception as e:
+            logger.error(f"MOSS diarization failed: {e} — falling back to mock")
+            return _mock_diarize(audio_path)
+
+    # backend == "pyannote"
     if not settings.PYANNOTEAI_TOKEN:
         logger.warning("PYANNOTEAI_TOKEN not set — using mock diarizer")
         return _mock_diarize(audio_path)

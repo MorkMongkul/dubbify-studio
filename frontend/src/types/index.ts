@@ -69,7 +69,7 @@ export interface Speaker {
   id: string
   project_id: string
   label: string
-  name?: string
+  display_name: string
   color?: string
   voice_id?: string
   voice_design_prompt?: string
@@ -79,7 +79,7 @@ export interface Speaker {
 }
 
 export interface SpeakerUpdate {
-  name?: string
+  display_name?: string
   color?: string
   voice_id?: string
   voice_design_prompt?: string
@@ -132,6 +132,25 @@ export interface SegmentUpdate {
   tts_audio_path?: string
   is_approved?: boolean
   notes?: string
+}
+
+export interface SegmentCreate {
+  speaker_id?: string | null
+  voice_id?: string | null
+  start_time: number
+  end_time: number
+  source_text?: string
+  english_text?: string
+  khmer_text?: string
+  notes?: string
+}
+
+export interface SpeakerCreate {
+  label?: string
+  display_name?: string
+  gender?: string
+  age_group?: string
+  voice_design_prompt?: string
 }
 
 // ── API Responses ─────────────────────────────────────────────────

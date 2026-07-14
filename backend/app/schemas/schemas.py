@@ -83,7 +83,7 @@ class JobStatusUpdate(BaseModel):
 
 # ── Speaker schemas ───────────────────────────────────────────
 class SpeakerCreate(BaseModel):
-    label: str
+    label: Optional[str] = None   # auto-generated server-side when absent (manual creation)
     display_name: str = ""
     gender: Gender = Gender.UNKNOWN
     age_group: AgeGroup = AgeGroup.ADULT
@@ -113,6 +113,17 @@ class SpeakerResponse(BaseModel):
 
 
 # ── Segment schemas ───────────────────────────────────────────
+class SegmentCreate(BaseModel):
+    speaker_id: Optional[str] = None
+    voice_id: Optional[str] = None
+    start_time: float = Field(..., ge=0)
+    end_time: float = Field(..., ge=0)
+    source_text: str = ""
+    english_text: str = ""
+    khmer_text: str = ""
+    notes: str = ""
+
+
 class SegmentUpdate(BaseModel):
     speaker_id: Optional[str] = None
     voice_id: Optional[str] = None
