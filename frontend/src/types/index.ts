@@ -119,6 +119,9 @@ export interface Segment {
   tts_duration_secs: number
   is_approved: boolean
   notes: string
+  volume_db: number       // dB gain applied to the synthesised clip, 0 = unchanged
+  voice_filter: string    // ffmpeg preset name ("" | "echo" | "synth" | "bass" | "phone")
+  voice_speed: number     // atempo multiplier applied to the synthesised clip, 1.0 = unchanged
 }
 
 export interface SegmentUpdate {
@@ -132,6 +135,9 @@ export interface SegmentUpdate {
   tts_audio_path?: string
   is_approved?: boolean
   notes?: string
+  volume_db?: number
+  voice_filter?: string
+  voice_speed?: number
 }
 
 export interface SegmentCreate {

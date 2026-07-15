@@ -117,9 +117,19 @@ def _hf_separate_call(audio_path: str) -> Tuple[str, str]:
     be MP3/FLAC, so the caller transcodes them to real WAV.
     """
     from gradio_client import Client, handle_file
+    import httpx
 
     token = settings.HF_TOKEN or None
-    client = Client(settings.SEPARATION_HF_SPACE, token=token)
+    # gradio_client defaults to httpx's own default timeout (5s per phase) when
+    # httpx_kwargs isn't set — nowhere near enough to upload a multi-MB audio
+    # file on a slower/less stable connection than a fast broadband line, and
+    # fails with "The write operation timed out" well before the Space even
+    # starts processing. Give uploads real headroom.
+    client = Client(
+        settings.SEPARATION_HF_SPACE,
+        token=token,
+        httpx_kwargs={"timeout": httpx.Timeout(180.0, connect=30.0)},
+    )
     # /separate → (vocals_filepath, background_filepath)
     result = client.predict(
         handle_file(audio_path),

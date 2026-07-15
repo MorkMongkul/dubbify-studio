@@ -75,19 +75,29 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     const offset = Math.max(0, videoTime - seg.start_time)
     if (offset > 0.05) audio.currentTime = offset
 
-    // Auto-fit: speed up the clip so it finishes within the segment window.
-    // This keeps dubbed voices in sync with lip movements regardless of how
-    // long Gemini took to say the line.
-    const segDuration = Math.max(0.1, seg.end_time - seg.start_time)
-    const ttsDuration = seg.tts_duration_secs ?? 0
-    const videoRate   = videoRef.current?.playbackRate ?? 1
+    const videoRate = videoRef.current?.playbackRate ?? 1
     let rate = videoRate
-    if (ttsDuration > 0) {
-      // fitRate > 1  → clip is longer than the slot, speed it up
-      // fitRate < 1  → clip is shorter, let it play naturally (don't slow down)
-      const fitRate = ttsDuration / segDuration
-      if (fitRate > 1.05) {
-        rate = Math.min(3.5, fitRate * videoRate)
+
+    // If the user explicitly set a speed for this clip (Voice Speed slider,
+    // baked into the file via ffmpeg atempo on the backend), respect it as-is
+    // — don't let the auto-fit logic below silently re-speed it to chase the
+    // segment window, which would undo the user's own choice.
+    const hasManualSpeed = typeof seg.voice_speed === 'number' && Math.abs(seg.voice_speed - 1.0) > 0.001
+
+    if (!hasManualSpeed) {
+      // Auto-fit: speed up the clip so it finishes within the segment window.
+      // This keeps dubbed voices in sync with lip movements regardless of how
+      // long Gemini took to say the line — but only applies when the user
+      // hasn't already made an explicit speed choice for this segment.
+      const segDuration = Math.max(0.1, seg.end_time - seg.start_time)
+      const ttsDuration = seg.tts_duration_secs ?? 0
+      if (ttsDuration > 0) {
+        // fitRate > 1  → clip is longer than the slot, speed it up
+        // fitRate < 1  → clip is shorter, let it play naturally (don't slow down)
+        const fitRate = ttsDuration / segDuration
+        if (fitRate > 1.05) {
+          rate = Math.min(3.5, fitRate * videoRate)
+        }
       }
     }
     audio.playbackRate = rate
