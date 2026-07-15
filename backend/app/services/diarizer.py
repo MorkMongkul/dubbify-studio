@@ -238,8 +238,16 @@ def _moss_transcribe_call(audio_path: str) -> str:
     either audio or video, not both." Confirmed live; audio_obj-only works.
     """
     from gradio_client import Client, handle_file
+    import httpx
 
-    client = Client(settings.DIARIZATION_MOSS_SPACE)
+    # gradio_client defaults to httpx's own default timeout (5s per phase)
+    # when httpx_kwargs isn't set — not enough to upload a multi-MB audio file
+    # on a slower/less stable connection, and fails with "The write operation
+    # timed out" before the Space even starts. Give uploads real headroom.
+    client = Client(
+        settings.DIARIZATION_MOSS_SPACE,
+        httpx_kwargs={"timeout": httpx.Timeout(180.0, connect=30.0)},
+    )
     result = client.predict(
         audio_obj=handle_file(audio_path),
         video_obj=None,
