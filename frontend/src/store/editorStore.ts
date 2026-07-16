@@ -37,7 +37,7 @@ interface EditorStore {
   segmentPositions: Record<string, {
     start_time: number
     end_time: number
-    speaker_id: string | null
+    lane_index: number
     tts_duration_secs?: number
     tts_audio_path?: string
     khmer_text?: string
@@ -46,7 +46,7 @@ interface EditorStore {
     id: string,
     start_time: number,
     end_time: number,
-    speaker_id: string | null,
+    lane_index: number,
     tts_duration_secs?: number,
     tts_audio_path?: string
   ) => void
@@ -109,7 +109,7 @@ const DEFAULT_STATE = {
   playbackRate: 1,
   zoom: 1,
   timelineScrollLeft: 0,
-  timelineHeight: 240,
+  timelineHeight: 300,
   speakerPanelWidth: 228,
   activeSegmentId: null,
   editingSegmentId: null,
@@ -184,7 +184,7 @@ export const useEditorStore = create<EditorStore>()(
     setInspectorMode: (mode) => set({ inspectorMode: mode }),
     setFocusedTimelineItemId: (id) => set({ focusedTimelineItemId: id }),
 
-    updateSegmentPosition: (id, start_time, end_time, speaker_id, tts_duration_secs, tts_audio_path) =>
+    updateSegmentPosition: (id, start_time, end_time, lane_index, tts_duration_secs, tts_audio_path) =>
       set((s) => ({
         segmentPositions: {
           ...s.segmentPositions,
@@ -192,7 +192,7 @@ export const useEditorStore = create<EditorStore>()(
             ...s.segmentPositions[id],
             start_time,
             end_time,
-            speaker_id,
+            lane_index,
             ...(tts_duration_secs !== undefined ? { tts_duration_secs } : {}),
             ...(tts_audio_path !== undefined ? { tts_audio_path } : {}),
           },

@@ -189,7 +189,7 @@ export default function WorkspacePage() {
           nextPositions[s.id] = {
             start_time: s.start_time,
             end_time: s.end_time,
-            speaker_id: s.speaker_id ?? null,
+            lane_index: s.lane_index ?? 0,
             tts_duration_secs: s.tts_duration_secs,
             tts_audio_path: s.tts_audio_path,
           }

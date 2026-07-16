@@ -159,6 +159,10 @@ class Segment(Base):
     job_id     = Column(String, ForeignKey("jobs.id"), nullable=False)
     speaker_id = Column(String, ForeignKey("speakers.id"), nullable=True)
 
+    # Vertical timeline row — independent of speaker_id, so clips from any
+    # speaker can share a lane or be spread across separate ones.
+    lane_index = Column(Integer, nullable=True, default=0)
+
     # Timing
     start_time = Column(Float, nullable=False)   # seconds
     end_time   = Column(Float, nullable=False)   # seconds

@@ -110,6 +110,7 @@ export interface Segment {
   job_id: string
   speaker_id?: string | null
   voice_id?: string | null
+  lane_index?: number | null  // timeline row — independent of speaker_id
   start_time: number      // seconds
   end_time: number        // seconds
   source_text: string     // original language (e.g. Chinese)
@@ -127,6 +128,7 @@ export interface Segment {
 export interface SegmentUpdate {
   speaker_id?: string | null
   voice_id?: string | null
+  lane_index?: number | null
   start_time?: number
   end_time?: number
   source_text?: string
@@ -143,6 +145,7 @@ export interface SegmentUpdate {
 export interface SegmentCreate {
   speaker_id?: string | null
   voice_id?: string | null
+  lane_index?: number | null
   start_time: number
   end_time: number
   source_text?: string

@@ -146,10 +146,13 @@ async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None =
             sub_objs = [_Sub(s) for s in existing_segments]
             sub_objs = assign_speakers_by_timing(sub_objs, diarized)
 
-            # Update segments with assigned speakers
+            # Update segments with assigned speakers — each speaker starts on
+            # its own lane (user can freely rearrange after).
+            lane_by_speaker: dict = {}
             for sub, db_seg in zip(sub_objs, existing_segments):
                 speaker = speaker_map.get(sub.speaker_label)
                 db_seg.speaker_id = speaker.id if speaker else None
+                db_seg.lane_index = lane_by_speaker.setdefault(sub.speaker_label, len(lane_by_speaker))
             await db.commit()
 
             # Translate

@@ -36,6 +36,18 @@ export function getSpeakerColor(index: number): string {
   return SPEAKER_COLORS[index % SPEAKER_COLORS.length]
 }
 
+/**
+ * Standard display name for a speaker: the user's custom name if set,
+ * otherwise a friendly "Speaker N" (1-indexed) — never the raw internal
+ * diarization label (e.g. "SPEAKER_00"), which reads as a technical ID.
+ */
+export function getSpeakerDisplayName(
+  speaker: { display_name?: string; label?: string } | null | undefined,
+  index: number
+): string {
+  return speaker?.display_name || `Speaker ${index + 1}`
+}
+
 /** Compute hex → rgba with alpha */
 export function hexToRgba(hex: string, alpha: number): string {
   const r = parseInt(hex.slice(1, 3), 16)
