@@ -130,11 +130,15 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
 
             await _update_job(db, job, JobStatus.TRANSLATING, 85)
 
+            # Each speaker starts on its own lane (user can freely rearrange after).
+            lane_by_speaker: dict = {}
             for i, seg in enumerate(diarized):
                 speaker = speaker_map.get(seg.speaker_label)
+                lane = lane_by_speaker.setdefault(seg.speaker_label, len(lane_by_speaker))
                 db.add(Segment(
                     job_id=job.id,
                     speaker_id=speaker.id if speaker else None,
+                    lane_index=lane,
                     start_time=seg.start_time,
                     end_time=seg.end_time,
                     source_text=seg.source_text,

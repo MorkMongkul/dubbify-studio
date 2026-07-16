@@ -116,6 +116,7 @@ class SpeakerResponse(BaseModel):
 class SegmentCreate(BaseModel):
     speaker_id: Optional[str] = None
     voice_id: Optional[str] = None
+    lane_index: Optional[int] = None
     start_time: float = Field(..., ge=0)
     end_time: float = Field(..., ge=0)
     source_text: str = ""
@@ -127,6 +128,7 @@ class SegmentCreate(BaseModel):
 class SegmentUpdate(BaseModel):
     speaker_id: Optional[str] = None
     voice_id: Optional[str] = None
+    lane_index: Optional[int] = None
     start_time: Optional[float] = None
     end_time: Optional[float] = None
     source_text: Optional[str] = None
@@ -145,6 +147,7 @@ class SegmentResponse(BaseModel):
     job_id: str
     speaker_id: Optional[str]
     voice_id: Optional[str]
+    lane_index: Optional[int]
     start_time: float
     end_time: float
     source_text: str

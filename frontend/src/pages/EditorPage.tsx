@@ -15,7 +15,7 @@ import {
   Loader2, AlertCircle, Zap, Scissors,
   UploadCloud, Film, FileText, X,
   Activity, VideoIcon, AlignLeft,
-  FolderOpen, CheckCircle2, Trash2,
+  FolderOpen, CheckCircle2, Trash2, Users,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useQueryClient } from '@tanstack/react-query'
@@ -25,6 +25,7 @@ import {
   useProjectJobs, useDeleteJob,
   useCreateProject, useUploadVideo, useUploadWithSubtitle,
   useAnalyzeJob, useMixFinalAudio,
+  useUpdateSpeaker, useVoices,
 } from '@/hooks/useApi'
 import { useEditorStore } from '@/store/editorStore'
 import { jobs as jobsApi } from '@/api/client'
@@ -36,7 +37,7 @@ import { Button } from '@/components/ui/Button'
 import { PipelineStepper } from '@/features/upload/PipelineStepper'
 import { LANGUAGE_OPTIONS } from '@/types'
 import type { Job } from '@/types'
-import { getJobStatusConfig, isJobRunning, cn } from '@/lib/utils'
+import { getJobStatusConfig, isJobRunning, getSpeakerDisplayName, getSpeakerColor, cn } from '@/lib/utils'
 
 // Stage 1 status messages shown on the loading overlay
 const STAGE1_MESSAGES: Record<string, string> = {
@@ -90,8 +91,8 @@ export default function EditorPage() {
   useEffect(() => { if (jobId) resetEditor() }, [jobId, resetEditor])
 
   // ── Resizable panels ──────────────────────────────────────────────────────
-  const [leftPanelWidth,  setLeftPanelWidth]  = useState(260)
-  const [rightPanelWidth, setRightPanelWidth] = useState(480)
+  const [leftPanelWidth,  setLeftPanelWidth]  = useState(470)
+  const [rightPanelWidth, setRightPanelWidth] = useState(720)
 
   const leftDragRef  = useRef<{ startX: number; startWidth: number } | null>(null)
   const rightDragRef = useRef<{ startX: number; startWidth: number } | null>(null)
@@ -138,6 +139,10 @@ export default function EditorPage() {
   const { data: segs = [],  isLoading: loadingSegs } = useSegments(jobId ?? null)
   const { data: spks = []  } = useSpeakers(projectId ?? null)
   const { data: projectJobs = [], isLoading: loadingJobs, refetch: refetchJobs } = useProjectJobs(projectId ?? null)
+  const { data: availableVoices = [] } = useVoices()
+  const updateSpeaker = useUpdateSpeaker()
+  const [editingSpeakerId, setEditingSpeakerId] = useState<string | null>(null)
+  const [editingSpeakerName, setEditingSpeakerName] = useState('')
 
   // Invalidate segments/speakers when job status changes
   useEffect(() => {
@@ -171,6 +176,13 @@ export default function EditorPage() {
     }
   })
 
+  // Speakers actually present in this session — shown in the left sidebar in
+  // place of the Sessions list while a session is active.
+  const sessionSpeakerIds = new Set(displaySegs.map(s => s.speaker_id).filter(Boolean))
+  const sessionSpeakers = spks
+    .filter(sp => sessionSpeakerIds.has(sp.id))
+    .sort((a, b) => a.label.localeCompare(b.label))
+
   // Sync segmentPositions whenever server data changes:
   //   • New segments get an initial entry (timing + speaker only)
   //   • Existing entries get their tts_audio_path/duration updated when synthesis completes
@@ -186,7 +198,7 @@ export default function EditorPage() {
         next[s.id] = {
           start_time: s.start_time,
           end_time: s.end_time,
-          speaker_id: s.speaker_id ?? null,
+          lane_index: s.lane_index ?? 0,
           tts_duration_secs: s.tts_duration_secs,
           tts_audio_path: s.tts_audio_path,
         }
@@ -488,7 +500,16 @@ export default function EditorPage() {
             <div className="w-px h-4 mx-2" style={{ background: 'var(--color-border)' }} />
             <div className="flex items-center gap-1 text-[10px] text-text-muted">
               {jobId ? (
-                <><span>Active Session</span><ChevronRight size={10} className="opacity-40" /><span className="text-white font-mono">{jobId.slice(0, 8)}</span></>
+                <>
+                  <button
+                    onClick={() => navigate(`/projects/${projectId}`)}
+                    className="hover:text-white transition-colors"
+                    title="Back to sessions list"
+                  >
+                    Active Session
+                  </button>
+                  <ChevronRight size={10} className="opacity-40" /><span className="text-white font-mono">{jobId.slice(0, 8)}</span>
+                </>
               ) : (
                 <span className="text-brand-300 font-semibold tracking-wider uppercase text-[9px] px-1.5 py-0.5 rounded bg-brand/10 border border-brand/20">Editor</span>
               )}
@@ -528,62 +549,135 @@ export default function EditorPage() {
           {/* Top row: Sessions | Video | Transcript */}
           <div className="flex-1 min-h-0 flex gap-2 overflow-hidden">
 
-            {/* 1. Sessions Panel */}
+            {/* 1. Sessions Panel — becomes the Speaker list once a session is
+                active; switch sessions via the "Active Session" breadcrumb above */}
             <div className="shrink-0 bg-zinc-900 rounded-lg border border-zinc-800/50 flex flex-col min-w-0 overflow-hidden" style={{ width: leftPanelWidth }}>
-              <div className="h-9 border-b border-zinc-800/50 flex items-center gap-2 px-3 shrink-0">
-                <FolderOpen size={13} className="text-purple-400" />
-                <span className="text-xs font-semibold text-zinc-200">Sessions</span>
-              </div>
-              <div className="flex-1 overflow-y-auto p-3 space-y-3">
-                {/* Import new video */}
-                <label className="flex items-center gap-2 p-2 rounded border border-dashed border-zinc-700/60 hover:border-purple-500/50 hover:bg-purple-500/5 cursor-pointer transition-all group">
-                  <input type="file" className="hidden" accept="video/mp4,video/mkv,video/webm,video/avi,video/mov" onChange={e => { const files = Array.from(e.target.files || []); if (files.length) onDropVideo(files) }} />
-                  <div className="h-6 w-6 rounded-md bg-purple-500/10 border border-purple-500/20 flex items-center justify-center shrink-0">
-                    <UploadCloud size={11} className="text-purple-400" />
+              {jobId ? (
+                <>
+                  <div className="h-9 border-b border-zinc-800/50 flex items-center gap-2 px-3 shrink-0">
+                    <Users size={13} className="text-purple-400" />
+                    <span className="text-xs font-semibold text-zinc-200">Speakers</span>
                   </div>
-                  <span className="text-[11px] text-zinc-400 group-hover:text-zinc-200 transition-colors">Import new video</span>
-                </label>
+                  <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                    {sessionSpeakers.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-6 text-center">
+                        <Users size={18} className="text-zinc-700 mb-2" />
+                        <p className="text-[10px] text-zinc-600">No speakers yet</p>
+                        <p className="text-[9px] text-zinc-700 mt-0.5">Appear here once segments are analyzed</p>
+                      </div>
+                    ) : (
+                      sessionSpeakers.map((speaker, i) => {
+                        const color = speaker.color ?? getSpeakerColor(i)
+                        return (
+                          <div key={speaker.id} className="p-2 rounded bg-zinc-800/30 border border-zinc-800/40 space-y-1.5">
+                            <div className="flex items-center gap-1.5">
+                              <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                              {editingSpeakerId === speaker.id ? (
+                                <input
+                                  autoFocus
+                                  className="bg-zinc-950 text-[11px] text-zinc-200 rounded px-1 py-0.5 flex-1 min-w-0 focus:outline-none border border-purple-500/50"
+                                  value={editingSpeakerName}
+                                  onChange={(e) => setEditingSpeakerName(e.target.value)}
+                                  onBlur={() => {
+                                    const trimmed = editingSpeakerName.trim()
+                                    if (trimmed && trimmed !== speaker.display_name) {
+                                      updateSpeaker.mutate({ speakerId: speaker.id, data: { display_name: trimmed } })
+                                    }
+                                    setEditingSpeakerId(null)
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') e.currentTarget.blur()
+                                    if (e.key === 'Escape') setEditingSpeakerId(null)
+                                  }}
+                                />
+                              ) : (
+                                <span
+                                  className="text-[11px] font-medium text-zinc-200 truncate flex-1 cursor-text hover:text-white transition-colors"
+                                  onClick={() => {
+                                    setEditingSpeakerId(speaker.id)
+                                    setEditingSpeakerName(speaker.display_name || getSpeakerDisplayName(speaker, i))
+                                  }}
+                                  title="Click to rename"
+                                >
+                                  {getSpeakerDisplayName(speaker, i)}
+                                </span>
+                              )}
+                            </div>
+                            <select
+                              className="w-full bg-zinc-900 text-zinc-300 text-[10px] rounded border border-zinc-700/60 hover:border-zinc-600 py-1 px-1.5 focus:outline-none focus:border-purple-500/50 cursor-pointer"
+                              value={speaker.voice_id || ''}
+                              onChange={(e) => updateSpeaker.mutate({ speakerId: speaker.id, data: { voice_id: e.target.value || undefined } })}
+                              title="Voice used for all of this speaker's clips"
+                            >
+                              <option value="">Auto (voice design)</option>
+                              {availableVoices.map((v) => (
+                                <option key={v.id} value={v.id}>{v.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )
+                      })
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="h-9 border-b border-zinc-800/50 flex items-center gap-2 px-3 shrink-0">
+                    <FolderOpen size={13} className="text-purple-400" />
+                    <span className="text-xs font-semibold text-zinc-200">Sessions</span>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-3 space-y-3">
+                    {/* Import new video */}
+                    <label className="flex items-center gap-2 p-2 rounded border border-dashed border-zinc-700/60 hover:border-purple-500/50 hover:bg-purple-500/5 cursor-pointer transition-all group">
+                      <input type="file" className="hidden" accept="video/mp4,video/mkv,video/webm,video/avi,video/mov" onChange={e => { const files = Array.from(e.target.files || []); if (files.length) onDropVideo(files) }} />
+                      <div className="h-6 w-6 rounded-md bg-purple-500/10 border border-purple-500/20 flex items-center justify-center shrink-0">
+                        <UploadCloud size={11} className="text-purple-400" />
+                      </div>
+                      <span className="text-[11px] text-zinc-400 group-hover:text-zinc-200 transition-colors">Import new video</span>
+                    </label>
 
-                {/* Job list */}
-                {loadingJobs && <div className="flex items-center gap-1.5 text-zinc-600 text-[10px] py-2"><Loader2 size={10} className="animate-spin" /> Loading…</div>}
-                {projectJobs.length > 0 && (
-                  <div className="space-y-1">
-                    <p className="text-[9px] font-semibold text-zinc-600 uppercase tracking-wider mb-1.5">Sessions</p>
-                    {projectJobs.map(j => {
-                      const isActive = j.id === jobId
-                      const isDone = j.status === 'completed'
-                      const isFailed = j.status === 'failed'
-                      const isStemsReadyJob = j.status === 'stems_ready'
-                      const filename = j.video_path ? j.video_path.split('/').pop() : 'Video'
-                      const createdAt = new Date(j.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-                      return (
-                        <div key={j.id} onClick={() => navigate(`/projects/${projectId}/jobs/${j.id}`)} className={`group flex items-center gap-2 p-2 rounded cursor-pointer transition-all border ${isActive ? 'bg-purple-500/10 border-purple-500/30 text-white' : 'bg-zinc-800/30 border-zinc-800/40 hover:bg-zinc-800/60 hover:border-zinc-700/60'}`}>
-                          <div className="shrink-0">
-                            {isDone ? <CheckCircle2 size={13} className="text-emerald-400" />
-                              : isFailed ? <AlertCircle size={13} className="text-red-400" />
-                              : isStemsReadyJob ? <Scissors size={13} className="text-emerald-400" />
-                              : <Loader2 size={13} className="text-purple-400 animate-spin" />}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className={`text-[10px] font-medium truncate ${isActive ? 'text-white' : 'text-zinc-300'}`}>{filename}</p>
-                            <p className="text-[9px] text-zinc-600">{createdAt}</p>
-                          </div>
-                          <button onClick={e => handleDeleteJob(e, j.id)} disabled={deletingJob} className={`shrink-0 p-1 rounded transition-all ${isActive ? 'opacity-60 hover:opacity-100 hover:bg-red-500/20 hover:text-red-400 text-zinc-400' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-red-500/20 hover:text-red-400 text-zinc-500'}`}>
-                            <Trash2 size={11} />
-                          </button>
-                        </div>
-                      )
-                    })}
+                    {/* Job list */}
+                    {loadingJobs && <div className="flex items-center gap-1.5 text-zinc-600 text-[10px] py-2"><Loader2 size={10} className="animate-spin" /> Loading…</div>}
+                    {projectJobs.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-[9px] font-semibold text-zinc-600 uppercase tracking-wider mb-1.5">Sessions</p>
+                        {projectJobs.map(j => {
+                          const isActive = j.id === jobId
+                          const isDone = j.status === 'completed'
+                          const isFailed = j.status === 'failed'
+                          const isStemsReadyJob = j.status === 'stems_ready'
+                          const filename = j.video_path ? j.video_path.split('/').pop() : 'Video'
+                          const createdAt = new Date(j.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                          return (
+                            <div key={j.id} onClick={() => navigate(`/projects/${projectId}/jobs/${j.id}`)} className={`group flex items-center gap-2 p-2 rounded cursor-pointer transition-all border ${isActive ? 'bg-purple-500/10 border-purple-500/30 text-white' : 'bg-zinc-800/30 border-zinc-800/40 hover:bg-zinc-800/60 hover:border-zinc-700/60'}`}>
+                              <div className="shrink-0">
+                                {isDone ? <CheckCircle2 size={13} className="text-emerald-400" />
+                                  : isFailed ? <AlertCircle size={13} className="text-red-400" />
+                                  : isStemsReadyJob ? <Scissors size={13} className="text-emerald-400" />
+                                  : <Loader2 size={13} className="text-purple-400 animate-spin" />}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className={`text-[10px] font-medium truncate ${isActive ? 'text-white' : 'text-zinc-300'}`}>{filename}</p>
+                                <p className="text-[9px] text-zinc-600">{createdAt}</p>
+                              </div>
+                              <button onClick={e => handleDeleteJob(e, j.id)} disabled={deletingJob} className={`shrink-0 p-1 rounded transition-all ${isActive ? 'opacity-60 hover:opacity-100 hover:bg-red-500/20 hover:text-red-400 text-zinc-400' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-red-500/20 hover:text-red-400 text-zinc-500'}`}>
+                                <Trash2 size={11} />
+                              </button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                    {!loadingJobs && projectJobs.length === 0 && (
+                      <div className="flex flex-col items-center justify-center py-6 text-center">
+                        <VideoIcon size={18} className="text-zinc-700 mb-2" />
+                        <p className="text-[10px] text-zinc-600">No sessions yet</p>
+                        <p className="text-[9px] text-zinc-700 mt-0.5">Import a video above</p>
+                      </div>
+                    )}
                   </div>
-                )}
-                {!loadingJobs && projectJobs.length === 0 && (
-                  <div className="flex flex-col items-center justify-center py-6 text-center">
-                    <VideoIcon size={18} className="text-zinc-700 mb-2" />
-                    <p className="text-[10px] text-zinc-600">No sessions yet</p>
-                    <p className="text-[9px] text-zinc-700 mt-0.5">Import a video above</p>
-                  </div>
-                )}
-              </div>
+                </>
+              )}
             </div>
 
             {/* Left resize handle */}

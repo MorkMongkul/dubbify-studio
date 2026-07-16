@@ -40,6 +40,10 @@ export function TranscriptPanel({
   } = useEditorStore()
  
   const selectedSegmentIds = useEditorStore((s) => s.selectedSegmentIds)
+  const pendingSelectedCount = selectedSegmentIds.filter((id) => {
+    const seg = segments.find((s) => s.id === id)
+    return seg && !seg.tts_audio_path
+  }).length
   const { data: availableVoices = [] } = useVoices()
   const inspectorMode = useEditorStore((s) => s.inspectorMode)
   const focusedTimelineItemId = useEditorStore((s) => s.focusedTimelineItemId)
@@ -111,7 +115,7 @@ export function TranscriptPanel({
     try {
       const created = await createSegment.mutateAsync({
         jobId,
-        data: { start_time: start, end_time: end, speaker_id: null, khmer_text: '' },
+        data: { start_time: start, end_time: end, speaker_id: null, lane_index: 0, khmer_text: '' },
       })
       setActiveSegment(created.id)
       setFocusedTimelineItemId(created.id)
@@ -186,15 +190,36 @@ export function TranscriptPanel({
     }
   }
 
+  // Only segments without audio yet (never synthesized, or marked stale by a
+  // text edit in handleTextBlur) actually need generating — segments that
+  // already have a clip are skipped so "select all → generate" doesn't waste
+  // API calls/time redoing work that's already done. To force a specific
+  // already-generated segment to redo, use its own Regenerate button instead.
   const handleBatchSynthesize = async () => {
+    const pendingIds = selectedSegmentIds.filter((id) => {
+      const seg = segments.find((s) => s.id === id)
+      return seg && !seg.tts_audio_path
+    })
+    const skipped = selectedSegmentIds.length - pendingIds.length
+
+    if (pendingIds.length === 0) {
+      toast.info('All selected segments already have generated audio')
+      useEditorStore.setState({ selectedSegmentIds: [] })
+      return
+    }
+
     setBatchSynthesizing(true)
     try {
-      if (selectedSegmentIds.length === 1) {
-        await synthesizeSegment.mutateAsync({ segmentId: selectedSegmentIds[0], jobId })
+      if (pendingIds.length === 1) {
+        await synthesizeSegment.mutateAsync({ segmentId: pendingIds[0], jobId })
       } else {
-        await synthesizeBatch.mutateAsync({ segmentIds: selectedSegmentIds, jobId })
+        await synthesizeBatch.mutateAsync({ segmentIds: pendingIds, jobId })
       }
-      toast.success(`Generated voice for ${selectedSegmentIds.length} segments ✓`)
+      toast.success(
+        skipped > 0
+          ? `Generated ${pendingIds.length} segments ✓ (${skipped} already done, skipped)`
+          : `Generated voice for ${pendingIds.length} segments ✓`
+      )
       useEditorStore.setState({ selectedSegmentIds: [] })
     } catch (err) {
       toast.error('Failed to generate voice for selected segments')
@@ -322,8 +347,6 @@ export function TranscriptPanel({
         </div>
       </div>
 
-
- 
       {/* Selection Actions Toolbar */}
       <AnimatePresence>
         {selectedSegmentIds.length > 0 && (
@@ -340,10 +363,14 @@ export function TranscriptPanel({
               <button
                 onClick={handleBatchSynthesize}
                 disabled={batchSynthesizing}
+                title="Only segments without generated audio yet are actually synthesized — already-done ones are skipped"
                 className="text-[10px] bg-purple-600 hover:bg-purple-500 text-white px-2.5 py-1 rounded font-semibold transition-all flex items-center gap-1 disabled:opacity-50 cursor-pointer"
               >
                 {batchSynthesizing ? <Loader2 size={10} className="animate-spin" /> : <Mic size={10} />}
-                <span>Generate Voice</span>
+                <span>
+                  Generate Voice
+                  {pendingSelectedCount !== selectedSegmentIds.length && ` (${pendingSelectedCount} pending)`}
+                </span>
               </button>
               <button
                 onClick={() => useEditorStore.setState({ selectedSegmentIds: [] })}
@@ -442,6 +469,9 @@ export function TranscriptPanel({
                 const isSelected = selectedSegmentIds.includes(seg.id)
                 const isActive = seg.id === activeSegmentId
                 const isDone = !!seg.tts_audio_path
+                const speakerVoiceName = speaker?.voice_id
+                  ? availableVoices.find((v) => v.id === speaker.voice_id)?.name
+                  : null
 
                 return (
                   <tr
@@ -534,8 +564,11 @@ export function TranscriptPanel({
                         className="bg-zinc-900 text-zinc-200 text-[10px] rounded border border-zinc-800 hover:border-zinc-700 hover:bg-zinc-800 py-0.5 px-1 focus:outline-none focus:border-purple-500/50 cursor-pointer w-full max-w-[100px] truncate"
                         value={seg.voice_id || ''}
                         onChange={(e) => handleVoiceChange(seg.id, e.target.value)}
+                        title={speakerVoiceName ? `Inherits ${speakerVoiceName} from speaker` : 'No speaker voice assigned — uses voice design'}
                       >
-                        <option value="">Default Voice</option>
+                        <option value="">
+                          {speakerVoiceName || 'Default Voice'}
+                        </option>
                         {availableVoices.map((v) => (
                           <option key={v.id} value={v.id}>
                             {v.name}

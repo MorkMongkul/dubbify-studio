@@ -4,7 +4,7 @@ import WaveSurfer from 'wavesurfer.js'
 import { ZoomIn, ZoomOut, Maximize2, AlertTriangle, Loader2, Scissors, X, RefreshCw } from 'lucide-react'
 import type { Segment, Speaker, Job } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
-import { useUpdateSegment, useDeleteSegment, useSynthesizeSegment, useUpdateSpeaker } from '@/hooks/useApi'
+import { useUpdateSegment, useDeleteSegment, useSynthesizeSegment } from '@/hooks/useApi'
 import { PipelineStepper } from '@/features/upload/PipelineStepper'
 import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, hexToRgba, cn, isJobRunning, getJobStatusConfig } from '@/lib/utils'
 import { Tooltip } from '@/components/ui/Tooltip'
@@ -43,6 +43,10 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const containerRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const rulerRef  = useRef<HTMLDivElement>(null)
+  // Top of the lane rows specifically (excludes BGM/Vocals/Speakers-legend
+  // rows above them, whose combined height varies) — used to translate a
+  // drop's Y position into the correct lane index.
+  const lanesRef = useRef<HTMLDivElement>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [showZoomTooltip, setShowZoomTooltip] = useState(false)
   const [isDraggingSlider, setIsDraggingSlider] = useState(false)
@@ -52,7 +56,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     mutedTrackIds, soloedTrackIds,
     timelineHeight, speakerPanelWidth,
     setCurrentTime, setActiveSegment, zoomIn, zoomOut,
-    updateSegmentPosition, toggleMuteTrack, toggleSoloTrack,
+    updateSegmentPosition, toggleMuteTrack,
     setSpeakerPanelWidth, setZoom,
     setInspectorMode, setFocusedTimelineItemId
   } = useEditorStore()
@@ -60,9 +64,6 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const { mutate: updateSegment, isPending: isUpdatingSegment, variables: updateVariables } = useUpdateSegment()
   const { mutate: deleteSegment } = useDeleteSegment()
   const { mutate: regenerateSegment, isPending: isRegenerating, variables: regenVariables } = useSynthesizeSegment()
-  const updateSpeaker = useUpdateSpeaker()
-  const [editingSpeakerId, setEditingSpeakerId] = useState<string | null>(null)
-  const [editingSpeakerName, setEditingSpeakerName] = useState('')
 
   // Delete / Backspace key removes the active segment (skip when typing in an input)
   useEffect(() => {
@@ -86,18 +87,13 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const noVocalsPreviewPath = jobId && projectId ? `uploads/${projectId}/${jobId}/no_vocals.preview.wav` : null
   const vocalsPreviewPath   = jobId && projectId ? `uploads/${projectId}/${jobId}/vocals.preview.wav`    : null
 
-  // Group segments by speaker — track order must be stable and independent of
-  // segment start_time, otherwise dragging a segment can shift which speaker's
-  // segment comes first in time and reshuffle every track vertically. Order by
-  // the speaker's own (stable) label instead; segments with no speaker sort last.
-  const speakerIdsPresent = new Set(segments.map((s) => s.speaker_id ?? '__none__'))
-  const speakerIds = [
-    ...speakers
-      .filter((sp) => speakerIdsPresent.has(sp.id))
-      .sort((a, b) => a.label.localeCompare(b.label))
-      .map((sp) => sp.id),
-    ...(speakerIdsPresent.has('__none__') ? ['__none__'] : []),
-  ]
+  // Timeline rows are free lanes, independent of speaker — a lane is just a
+  // vertical position, and clips of any speaker can live on any lane. One
+  // extra empty lane always trails the highest used one so there's somewhere
+  // to drag a clip to create a brand new lane.
+  const usedLanes = new Set(segments.map((s) => s.lane_index ?? 0))
+  const maxLane = usedLanes.size > 0 ? Math.max(...usedLanes) : 0
+  const laneIndices = Array.from({ length: maxLane + 2 }, (_, i) => i)
 
   // Compute speaker color map
   const speakerColorMap = new Map<string, string>()
@@ -485,7 +481,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                     {vocalsReplaced ? 'Orig. Vocals' : 'Vocals'}
                   </span>
                   {vocalsReplaced && (
-                    <span className="text-[8px] text-zinc-600 truncate leading-tight">replaced by TTS</span>
+                    <span className="text-[8px] text-zinc-600 truncate leading-tight"></span>
                   )}
                 </div>
                 <div className="flex items-center gap-1 ml-auto shrink-0">
@@ -569,15 +565,14 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
               </div>
             </div>
 
-            {/* Speaker tracks */}
-            {speakerIds.map((speakerId, trackIdx) => {
-              const speaker = speakers.find((s) => s.id === speakerId)
-              const trackSegments = segments.filter((s) => (s.speaker_id ?? '__none__') === speakerId)
-              const color = speakerColorMap.get(speakerId) ?? getSpeakerColor(trackIdx)
+            {/* Timeline lanes — free rows, independent of speaker */}
+            <div ref={lanesRef}>
+            {laneIndices.map((laneIdx) => {
+              const laneSegments = segments.filter((s) => (s.lane_index ?? 0) === laneIdx)
 
               return (
                 <div
-                  key={speakerId}
+                  key={laneIdx}
                   className="relative border-b border-timeline-grid"
                   style={{ height: 48 }}
                 >
@@ -586,71 +581,9 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                     className="sticky left-0 z-10 h-full flex items-center px-2 gap-1.5 shrink-0 bg-zinc-900/95 backdrop-blur-sm border-r border-white/[0.04]"
                     style={{ float: 'left', width: 'var(--speaker-width)' }}
                   >
-                    <div
-                      className="h-2 w-2 rounded-full shrink-0"
-                      style={{ background: color }}
-                    />
-                    {editingSpeakerId === speakerId ? (
-                      <input
-                        autoFocus
-                        className="bg-zinc-950 text-xs text-text-primary rounded px-1 py-0.5 w-full min-w-0 focus:outline-none border border-purple-500/50"
-                        value={editingSpeakerName}
-                        onClick={(e) => e.stopPropagation()}
-                        onChange={(e) => setEditingSpeakerName(e.target.value)}
-                        onBlur={() => {
-                          const trimmed = editingSpeakerName.trim()
-                          if (speaker && trimmed && trimmed !== (speaker.display_name || speaker.label)) {
-                            updateSpeaker.mutate({ speakerId: speaker.id, data: { display_name: trimmed } })
-                          }
-                          setEditingSpeakerId(null)
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') e.currentTarget.blur()
-                          if (e.key === 'Escape') setEditingSpeakerId(null)
-                        }}
-                      />
-                    ) : (
-                      <span
-                        className="text-xs text-text-muted truncate grow min-w-0 pr-1 cursor-text hover:text-text-primary transition-colors"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          if (!speaker) return
-                          setEditingSpeakerId(speaker.id)
-                          setEditingSpeakerName(speaker.display_name || speaker.label || '')
-                        }}
-                        title={speaker ? 'Click to rename' : undefined}
-                      >
-                        {speaker?.display_name || speaker?.label || `S${trackIdx + 1}`}
-                      </span>
-                    )}
-
-                    {/* Mute & Solo Track Controls */}
-                    <div className="flex items-center gap-0.5 ml-auto shrink-0">
-                      <button
-                        onClick={() => toggleMuteTrack(speakerId)}
-                        className={cn(
-                          "h-5 w-5 rounded text-[10px] font-bold flex items-center justify-center border transition-all select-none",
-                          mutedTrackIds[speakerId ?? '__none__']
-                            ? "bg-amber-500/20 text-amber-500 border-amber-500/30 hover:bg-amber-500/30"
-                            : "bg-transparent text-text-disabled border-transparent hover:bg-white/5 hover:text-text-muted"
-                        )}
-                        title="Mute Track"
-                      >
-                        M
-                      </button>
-                      <button
-                        onClick={() => toggleSoloTrack(speakerId)}
-                        className={cn(
-                          "h-5 w-5 rounded text-[10px] font-bold flex items-center justify-center border transition-all select-none",
-                          soloedTrackIds[speakerId ?? '__none__']
-                            ? "bg-emerald-500/20 text-emerald-500 border-emerald-500/30 hover:bg-emerald-500/30"
-                            : "bg-transparent text-text-disabled border-transparent hover:bg-white/5 hover:text-text-muted"
-                        )}
-                        title="Solo Track"
-                      >
-                        S
-                      </button>
-                    </div>
+                    <span className="text-xs text-text-disabled truncate grow min-w-0 pr-1 select-none">
+                      Track {laneIdx + 1}
+                    </span>
                   </div>
 
                   {/* Segments */}
@@ -658,9 +591,10 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                     className="absolute top-0 bottom-0 right-0"
                     style={{ left: 'var(--speaker-width)' }}
                   >
-                    {trackSegments.map((seg) => {
+                    {laneSegments.map((seg) => {
                       const isActive = seg.id === activeSegmentId
                       const isApproved = seg.is_approved
+                      const color = speakerColorMap.get(seg.speaker_id ?? '__none__') ?? getSpeakerColor(0)
 
                       return (
                         <InteractiveSegment
@@ -671,18 +605,19 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                           isApproved={isApproved}
                           zoom={zoom}
                           duration={duration}
-                          speakerIds={speakerIds}
+                          laneIndices={laneIndices}
                           allSegments={segments}
                           PX_PER_SEC={PX_PER_SEC}
                           scrollRef={scrollRef}
+                          lanesRef={lanesRef}
                           updateSegmentPosition={updateSegmentPosition}
-                          onUpdateBackend={(id, startTime, endTime, speakerId) => {
+                          onUpdateBackend={(id, startTime, endTime, laneIndex) => {
                             updateSegment({
                               segmentId: id,
                               data: {
                                 start_time: startTime,
                                 end_time: endTime,
-                                speaker_id: speakerId
+                                lane_index: laneIndex
                               }
                             })
                           }}
@@ -709,6 +644,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                 </div>
               )
             })}
+            </div>
 
             {/* Empty state */}
             {segments.length === 0 && (
@@ -788,19 +724,20 @@ interface InteractiveSegmentProps {
   isApproved: boolean
   zoom: number
   duration: number
-  speakerIds: string[]
+  laneIndices: number[]
   allSegments: Segment[]
   PX_PER_SEC: number
   scrollRef: React.RefObject<HTMLDivElement | null>
+  lanesRef: React.RefObject<HTMLDivElement | null>
   updateSegmentPosition: (
     id: string,
     start_time: number,
     end_time: number,
-    speaker_id: string | null,
+    lane_index: number,
     tts_duration_secs?: number,
     tts_audio_path?: string
   ) => void
-  onUpdateBackend: (id: string, startTime: number, endTime: number, speakerId: string | null) => void
+  onUpdateBackend: (id: string, startTime: number, endTime: number, laneIndex: number) => void
   onSelect: () => void
   onDelete: (id: string) => void
   onRegenerate?: (id: string) => void
@@ -812,7 +749,7 @@ interface InteractiveSegmentProps {
 }
 
 function InteractiveSegment({
-  seg, color, isActive, isApproved, zoom, duration, speakerIds, allSegments, PX_PER_SEC, scrollRef,
+  seg, color, isActive, isApproved, zoom, duration, laneIndices, allSegments, PX_PER_SEC, scrollRef, lanesRef,
   updateSegmentPosition, onUpdateBackend, onSelect, onDelete, onRegenerate,
   isPersisting, isRegenerating,
   mutedTrackIds, soloedTrackIds, volume
@@ -983,21 +920,22 @@ function InteractiveSegment({
       let newStartTime = pixelsToTime(finalLeft, zoom, PX_PER_SEC)
       let newEndTime = pixelsToTime(finalLeft + finalWidth, zoom, PX_PER_SEC)
 
-      let finalSpeakerId = seg.speaker_id ?? null
-      if (actionType === 'drag') {
-        const containerRect = container.getBoundingClientRect()
-        const relativeY = upEvent.clientY - containerRect.top + container.scrollTop
+      let finalLaneIndex = seg.lane_index ?? 0
+      if (actionType === 'drag' && lanesRef.current) {
+        // Measure from the lanes container itself (not the outer scroll
+        // container) so the BGM/Vocals/Speakers-legend rows above it — whose
+        // combined height varies — never throw off which lane a drop lands on.
+        const lanesRect = lanesRef.current.getBoundingClientRect()
+        const relativeY = upEvent.clientY - lanesRect.top
         const trackIdx = Math.floor(relativeY / 48)
-        const clampedIdx = Math.max(0, Math.min(speakerIds.length - 1, trackIdx))
-        const targetSpeakerId = speakerIds[clampedIdx]
-        finalSpeakerId = targetSpeakerId === '__none__' ? null : targetSpeakerId
+        const clampedIdx = Math.max(0, Math.min(laneIndices.length - 1, trackIdx))
+        finalLaneIndex = laneIndices[clampedIdx]
       }
 
-      // Prevent overlap with whatever's already on the destination track —
-      // real editors never let two clips on the same track share time range.
-      const targetTrackKey = finalSpeakerId ?? '__none__'
+      // Prevent overlap with whatever's already on the destination lane —
+      // real editors never let two clips on the same lane share time range.
       const neighbors = allSegments.filter(
-        (s) => s.id !== seg.id && (s.speaker_id ?? '__none__') === targetTrackKey
+        (s) => s.id !== seg.id && (s.lane_index ?? 0) === finalLaneIndex
       )
       if (actionType === 'drag') {
         const dragDuration = newEndTime - newStartTime
@@ -1012,11 +950,11 @@ function InteractiveSegment({
       newStartTime = Math.round(newStartTime * 1000) / 1000
       newEndTime = Math.round(newEndTime * 1000) / 1000
 
-      // Position/speaker changes persist immediately — trimming or moving a
+      // Position/lane changes persist immediately — trimming or moving a
       // segment never touches its audio (matches real NLE trim behavior;
       // VideoPlayer's playback-rate auto-fit absorbs any duration mismatch).
-      updateSegmentPosition(seg.id, newStartTime, newEndTime, finalSpeakerId)
-      onUpdateBackend(seg.id, newStartTime, newEndTime, finalSpeakerId)
+      updateSegmentPosition(seg.id, newStartTime, newEndTime, finalLaneIndex)
+      onUpdateBackend(seg.id, newStartTime, newEndTime, finalLaneIndex)
     }
 
     window.addEventListener('pointermove', handlePointerMove)
@@ -1084,8 +1022,14 @@ function InteractiveSegment({
           )}
           style={{ textShadow: '0 1px 2px rgba(0,0,0,0.6)' }}
         >
-          {isTooFast && (
+          {isTooFast ? (
             <AlertTriangle size={10} className="shrink-0 text-red-500 animate-pulse" />
+          ) : (
+            <span
+              className="h-1.5 w-1.5 rounded-full shrink-0 ring-1 ring-black/30"
+              style={{ background: color }}
+              title="Speaker color"
+            />
           )}
           <span className="truncate">{seg.khmer_text || seg.source_text}</span>
         </span>
