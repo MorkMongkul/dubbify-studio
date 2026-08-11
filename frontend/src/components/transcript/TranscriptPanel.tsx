@@ -8,11 +8,12 @@ import { SegmentCardSkeleton } from '@/components/ui/Skeleton'
 import { Modal, InputField } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
 import { toast } from 'sonner'
-import { cn, formatTime, getSpeakerColor, isJobRunning, getJobStatusConfig } from '@/lib/utils'
+import { cn, formatTime, getSpeakerColor } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import { segments as segmentsApi } from '@/api/client'
 import { useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker } from '@/hooks/useApi'
 import { PipelineStepper } from '@/features/upload/PipelineStepper'
+import { recordSegmentChange, recordSegmentCreate } from '@/lib/historyHelpers'
 
 interface TranscriptPanelProps {
   segments: Segment[]
@@ -28,16 +29,17 @@ export function TranscriptPanel({
   segments, speakers, jobId, projectId, isLoading, className, job
 }: TranscriptPanelProps) {
   const activeSegmentId = useActiveSegmentId()
-  const {
-    setCurrentTime,
-    setRightPanelCollapsed,
-    toggleSelectSegment,
-    toggleSelectAllSegments,
-    setInspectorMode,
-    setFocusedTimelineItemId,
-    setActiveSegment,
-    updateSegmentText,
-  } = useEditorStore()
+  // Individual action selectors (zustand actions are stable references) — a
+  // whole-store destructure would re-render this panel on every playhead tick.
+  const setCurrentTime          = useEditorStore((s) => s.setCurrentTime)
+  const setRightPanelCollapsed  = useEditorStore((s) => s.setRightPanelCollapsed)
+  const toggleSelectSegment     = useEditorStore((s) => s.toggleSelectSegment)
+  const toggleSelectAllSegments = useEditorStore((s) => s.toggleSelectAllSegments)
+  const setInspectorMode        = useEditorStore((s) => s.setInspectorMode)
+  const setFocusedTimelineItemId = useEditorStore((s) => s.setFocusedTimelineItemId)
+  const setActiveSegment        = useEditorStore((s) => s.setActiveSegment)
+  const updateSegmentText       = useEditorStore((s) => s.updateSegmentText)
+  const clearSegmentTextOverride = useEditorStore((s) => s.clearSegmentTextOverride)
  
   const selectedSegmentIds = useEditorStore((s) => s.selectedSegmentIds)
   const pendingSelectedCount = selectedSegmentIds.filter((id) => {
@@ -50,7 +52,16 @@ export function TranscriptPanel({
  
   const qc = useQueryClient()
   const [singleSynthesizing, setSingleSynthesizing] = useState<string | null>(null)
-  const [batchSynthesizing, setBatchSynthesizing] = useState(false)
+  const batchGeneratingIds = useEditorStore((s) => s.batchGeneratingIds)
+  const batchGeneratingJobId = useEditorStore((s) => s.batchGeneratingJobId)
+  // A batch may belong to a different episode than the one on screen — its
+  // badges/banner/progress only render when viewing that episode, but the
+  // polling effect below tracks it either way.
+  const anyBatchRunning = batchGeneratingIds.length > 0
+  const batchSynthesizing = anyBatchRunning && batchGeneratingJobId === jobId
+  const batchDoneCount = batchSynthesizing
+    ? batchGeneratingIds.filter((id) => segments.find((s) => s.id === id)?.tts_audio_path).length
+    : 0
   const synthesizeSegment = useSynthesizeSegment()
   const synthesizeBatch = useSynthesizeBatch()
   const createSegment = useCreateSegment()
@@ -61,6 +72,7 @@ export function TranscriptPanel({
   const scrollRef = useRef<HTMLDivElement>(null)
   const cardRefs = useRef<Map<string, HTMLTableRowElement>>(new Map())
   const originalTextRef = useRef<string>('')
+
  
   // Inspector settings states
   const [activeClipTab, setActiveClipTab] = useState<'basic' | 'filter' | 'speed'>('basic')
@@ -93,9 +105,14 @@ export function TranscriptPanel({
   }
  
   const handleVoiceChange = async (segmentId: string, voiceId: string) => {
+    const seg = segments.find((s) => s.id === segmentId)
     try {
-      await segmentsApi.update(segmentId, { voice_id: voiceId })
+      await segmentsApi.update(segmentId, { voice_id: voiceId || null })
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      if (seg) {
+        recordSegmentChange(qc, jobId, segmentId,
+          { voice_id: seg.voice_id ?? null }, { voice_id: voiceId || null }, 'Change voice')
+      }
     } catch (err) {
       toast.error('Failed to assign voice')
       console.error(err)
@@ -120,6 +137,7 @@ export function TranscriptPanel({
       setActiveSegment(created.id)
       setFocusedTimelineItemId(created.id)
       setCurrentTime(created.start_time)
+      recordSegmentCreate(qc, jobId, created, 'Add segment')
     } catch (err) {
       toast.error('Failed to add segment')
       console.error(err)
@@ -132,9 +150,14 @@ export function TranscriptPanel({
       setNewSpeakerModal({ segmentId })
       return
     }
+    const seg = segments.find((s) => s.id === segmentId)
     try {
       await segmentsApi.update(segmentId, { speaker_id: value || null })
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      if (seg) {
+        recordSegmentChange(qc, jobId, segmentId,
+          { speaker_id: seg.speaker_id ?? null }, { speaker_id: value || null }, 'Reassign speaker')
+      }
     } catch (err) {
       toast.error('Failed to assign speaker')
       console.error(err)
@@ -149,12 +172,19 @@ export function TranscriptPanel({
       return
     }
     try {
+      const seg = segments.find((s) => s.id === newSpeakerModal.segmentId)
       const speaker = await createSpeaker.mutateAsync({
         projectId,
         data: { display_name: name },
       })
       await segmentsApi.update(newSpeakerModal.segmentId, { speaker_id: speaker.id })
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      // Only the segment's speaker_id is undoable — there's no delete-speaker
+      // endpoint, so the newly-created Speaker itself stays even after undo.
+      if (seg) {
+        recordSegmentChange(qc, jobId, newSpeakerModal.segmentId,
+          { speaker_id: seg.speaker_id ?? null }, { speaker_id: speaker.id }, 'Assign new speaker')
+      }
       setNewSpeakerModal(null)
     } catch (err) {
       toast.error('Failed to create speaker')
@@ -168,9 +198,24 @@ export function TranscriptPanel({
   // are untouched.
   const handleTextBlur = async (segmentId: string, text: string, original: string) => {
     if (text === original) return   // nothing changed
+    const seg = segments.find((s) => s.id === segmentId)
     try {
-      await segmentsApi.update(segmentId, { khmer_text: text, tts_audio_path: '' })
-      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      const updated = await segmentsApi.update(segmentId, { khmer_text: text, tts_audio_path: '' })
+      // Write the PATCH response straight into the cache, then drop the local
+      // text override so server state owns this segment's text again — leaving
+      // the override in place made it outrank anything that arrived later,
+      // including the reverted text an undo had just written.
+      qc.setQueryData<Segment[]>(['segments', jobId], (old) =>
+        old ? old.map((s) => (s.id === updated.id ? updated : s)) : old
+      )
+      clearSegmentTextOverride(segmentId)
+      // Restores the old text and its old audio pointer — correct as long as
+      // the clip hasn't been regenerated since (that would've overwritten
+      // the file at the same path; there's no audio versioning to recover it).
+      recordSegmentChange(qc, jobId, segmentId,
+        { khmer_text: original, tts_audio_path: seg?.tts_audio_path ?? '' },
+        { khmer_text: text, tts_audio_path: '' },
+        'Edit text')
     } catch (err) {
       toast.error('Failed to save edit')
       console.error(err)
@@ -208,26 +253,78 @@ export function TranscriptPanel({
       return
     }
 
-    setBatchSynthesizing(true)
-    try {
-      if (pendingIds.length === 1) {
-        await synthesizeSegment.mutateAsync({ segmentId: pendingIds[0], jobId })
-      } else {
-        await synthesizeBatch.mutateAsync({ segmentIds: pendingIds, jobId })
-      }
-      toast.success(
-        skipped > 0
-          ? `Generated ${pendingIds.length} segments ✓ (${skipped} already done, skipped)`
-          : `Generated voice for ${pendingIds.length} segments ✓`
-      )
+    if (pendingIds.length === 1) {
+      await handleSingleSynthesize(pendingIds[0])
       useEditorStore.setState({ selectedSegmentIds: [] })
+      return
+    }
+
+    try {
+      // Batch runs as a backend background task (202). Tracking/polling is
+      // handled by the batchGeneratingIds effect below — storing the ids is
+      // what kicks it off, and clearing the selection right away lets the
+      // per-row "Generating…" badges and the progress banner take over.
+      const res = await synthesizeBatch.mutateAsync({ segmentIds: pendingIds, jobId })
+      const ids: string[] = res.segment_ids ?? pendingIds
+      useEditorStore.setState({ batchGeneratingIds: ids, batchGeneratingJobId: jobId, selectedSegmentIds: [] })
+      toast.info(
+        skipped > 0
+          ? `Generating ${ids.length} voices… (${skipped} already done, skipped)`
+          : `Generating ${ids.length} voices…`
+      )
     } catch (err) {
-      toast.error('Failed to generate voice for selected segments')
+      toast.error('Failed to start voice generation')
       console.error(err)
-    } finally {
-      setBatchSynthesizing(false)
     }
   }
+
+  // Poll the segment list while a batch is running. Effect-driven (keyed on
+  // the store, not a handler-local loop) so a panel remount mid-batch —
+  // navigation, project switch — resumes tracking automatically instead of
+  // silently going dark while the backend keeps working. Polls the batch's
+  // OWN job (batchGeneratingJobId), which may differ from the episode on
+  // screen: hopping to another project to fix translations doesn't stop
+  // tracking, and the completion toast fires wherever the user is.
+  useEffect(() => {
+    const batchJobId = batchGeneratingJobId
+    if (batchGeneratingIds.length === 0 || !batchJobId) return
+    let cancelled = false
+    const ids = new Set(batchGeneratingIds)
+    // Generous ceiling: cold start + ~1 min per line, capped at 30 min
+    const deadline = Date.now() + Math.min(30 * 60_000, 300_000 + ids.size * 60_000)
+
+    ;(async () => {
+      while (!cancelled) {
+        await new Promise((r) => setTimeout(r, 3000))
+        if (cancelled) return
+        // A transient poll failure (backend busy with a TTS call, network
+        // blip) must not abort tracking — skip the pass and poll again.
+        let fresh: Segment[]
+        try {
+          fresh = await segmentsApi.listByJob(batchJobId)
+        } catch {
+          continue
+        }
+        if (cancelled) return
+        qc.setQueryData(['segments', batchJobId], fresh)
+        const remaining = fresh.filter((s) => ids.has(s.id) && !s.tts_audio_path)
+        if (remaining.length === 0) {
+          useEditorStore.setState({ batchGeneratingIds: [], batchGeneratingJobId: null })
+          toast.success(`Generated voice for ${ids.size} segments ✓`)
+          return
+        }
+        if (Date.now() > deadline) {
+          useEditorStore.setState({ batchGeneratingIds: [], batchGeneratingJobId: null })
+          toast.warning(
+            `${ids.size - remaining.length} of ${ids.size} segments generated — ${remaining.length} did not finish`
+          )
+          return
+        }
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [batchGeneratingIds.length > 0, batchGeneratingJobId])
 
   // Active clip references
   const activeSeg = segments.find(s => s.id === (focusedTimelineItemId || activeSegmentId))
@@ -244,9 +341,13 @@ export function TranscriptPanel({
   }, [activeSeg?.id])
 
   const handleVolumeChange = async (segmentId: string, val: number) => {
+    const before = activeSeg?.volume_db ?? 0
     try {
       await segmentsApi.update(segmentId, { volume_db: val })
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      if (before !== val) {
+        recordSegmentChange(qc, jobId, segmentId, { volume_db: before }, { volume_db: val }, 'Change volume')
+      }
     } catch (err) {
       toast.error('Failed to update volume')
       console.error(err)
@@ -254,9 +355,14 @@ export function TranscriptPanel({
   }
 
   const handleFilterChange = async (segmentId: string, val: string | null) => {
+    const before = activeSeg?.voice_filter ?? ''
+    const after = val || ''
     try {
-      await segmentsApi.update(segmentId, { voice_filter: val || "" })
+      await segmentsApi.update(segmentId, { voice_filter: after })
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      if (before !== after) {
+        recordSegmentChange(qc, jobId, segmentId, { voice_filter: before }, { voice_filter: after }, 'Change voice filter')
+      }
     } catch (err) {
       toast.error('Failed to update voice filter')
       console.error(err)
@@ -264,9 +370,13 @@ export function TranscriptPanel({
   }
 
   const handleSpeedChange = async (segmentId: string, val: number) => {
+    const before = activeSeg?.voice_speed ?? 1.0
     try {
       await segmentsApi.update(segmentId, { voice_speed: val })
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      if (before !== val) {
+        recordSegmentChange(qc, jobId, segmentId, { voice_speed: before }, { voice_speed: val }, 'Change voice speed')
+      }
     } catch (err) {
       toast.error('Failed to update voice speed')
       console.error(err)
@@ -347,6 +457,23 @@ export function TranscriptPanel({
         </div>
       </div>
 
+      {/* Batch generation progress — independent of selection, so it stays
+          visible for the whole run even after the selection is cleared */}
+      {batchSynthesizing && inspectorMode === 'global_synthesis' && (
+        <div className="px-3 py-1.5 border-b border-zinc-800/50 shrink-0 bg-purple-950/20 flex items-center gap-2">
+          <Loader2 size={11} className="animate-spin text-purple-400 shrink-0" />
+          <span className="text-[10px] font-semibold text-purple-300 whitespace-nowrap">
+            Generating voices… {batchDoneCount}/{batchGeneratingIds.length}
+          </span>
+          <div className="flex-1 h-1 rounded bg-zinc-800 overflow-hidden">
+            <div
+              className="h-full bg-purple-500 transition-all duration-500"
+              style={{ width: `${(batchDoneCount / Math.max(1, batchGeneratingIds.length)) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Selection Actions Toolbar */}
       <AnimatePresence>
         {selectedSegmentIds.length > 0 && (
@@ -362,14 +489,17 @@ export function TranscriptPanel({
             <div className="flex items-center gap-2">
               <button
                 onClick={handleBatchSynthesize}
-                disabled={batchSynthesizing}
-                title="Only segments without generated audio yet are actually synthesized — already-done ones are skipped"
+                disabled={anyBatchRunning}
+                title={anyBatchRunning && !batchSynthesizing
+                  ? 'Another episode is still generating voices — wait for it to finish'
+                  : 'Only segments without generated audio yet are actually synthesized — already-done ones are skipped'}
                 className="text-[10px] bg-purple-600 hover:bg-purple-500 text-white px-2.5 py-1 rounded font-semibold transition-all flex items-center gap-1 disabled:opacity-50 cursor-pointer"
               >
                 {batchSynthesizing ? <Loader2 size={10} className="animate-spin" /> : <Mic size={10} />}
                 <span>
-                  Generate Voice
-                  {pendingSelectedCount !== selectedSegmentIds.length && ` (${pendingSelectedCount} pending)`}
+                  {batchSynthesizing
+                    ? `Generating ${batchDoneCount}/${batchGeneratingIds.length}…`
+                    : <>Generate Voice{pendingSelectedCount !== selectedSegmentIds.length && ` (${pendingSelectedCount} pending)`}</>}
                 </span>
               </button>
               <button
@@ -454,10 +584,10 @@ export function TranscriptPanel({
                     onChange={() => toggleSelectAllSegments(segments.map((s) => s.id))}
                   />
                 </th>
-                <th className="p-2 w-20">Speaker</th>
-                <th className="p-2 w-20">Time</th>
-                <th className="p-2">Target Translation</th>
-                <th className="p-2 w-28">Voice Clone</th>
+                <th className="p-2 w-20">Speakers</th>
+                <th className="p-2 w-20">Timestamps</th>
+                <th className="p-2">Translated Text</th>
+                <th className="p-2 w-28">Voices</th>
                 <th className="p-2 w-16 text-center">Status</th>
               </tr>
             </thead>
@@ -469,6 +599,7 @@ export function TranscriptPanel({
                 const isSelected = selectedSegmentIds.includes(seg.id)
                 const isActive = seg.id === activeSegmentId
                 const isDone = !!seg.tts_audio_path
+                const isBatchGenerating = batchSynthesizing && !isDone && batchGeneratingIds.includes(seg.id)
                 const speakerVoiceName = speaker?.voice_id
                   ? availableVoices.find((v) => v.id === speaker.voice_id)?.name
                   : null
@@ -580,7 +711,12 @@ export function TranscriptPanel({
                     {/* Status Badge */}
                     <td className="p-2 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-center min-h-[22px] relative">
-                        {isDone ? (
+                        {isBatchGenerating ? (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                            <Loader2 size={8} className="animate-spin" />
+                            Generating
+                          </span>
+                        ) : isDone ? (
                           <>
                             <span className={cn(
                               "inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 transition-all",

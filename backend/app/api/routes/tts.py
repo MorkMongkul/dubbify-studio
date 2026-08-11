@@ -109,6 +109,17 @@ async def _synthesize_segment_db(segment_id: str, db: AsyncSession) -> Segment:
         **voice_kwargs,
     )
 
+    # Mock (silent) audio at the end of the fallback chain means every real
+    # backend failed or rate-limited. When real backends ARE configured, treat
+    # that as a failure so the segment stays visibly ungenerated and can be
+    # retried — a silent clip saved as "done" is far worse than no clip.
+    # (With zero keys configured — pure dev mode — mock is accepted as-is.)
+    if result_data.get("mock") and (settings.VOXCPM2_API_URL or settings.GEMINI_API_KEY):
+        raise HTTPException(
+            status_code=503,
+            detail="All TTS backends failed or rate-limited — wait a minute and retry",
+        )
+
     if result_data["success"]:
         from app.services.audio_extractor import apply_audio_effects
         new_duration = await apply_audio_effects(
@@ -192,25 +203,55 @@ async def _synthesize_ids_task(segment_ids: List[str]) -> None:
 
     Commits after every segment so results appear incrementally to polling
     clients, and the DB connection is released during each TTS call.
+    Segments that fail (rate limits, backend hiccups) get a second pass after
+    a cool-off, so one bad stretch doesn't permanently skip half the batch.
     """
     from app.core.database import AsyncSessionLocal
 
-    async with AsyncSessionLocal() as db:
-        for i, segment_id in enumerate(segment_ids):
-            try:
-                await _synthesize_segment_db(segment_id, db)
-                await db.commit()
-            except HTTPException as e:
-                logger.warning(f"Batch synthesis: segment {segment_id[:8]} failed: {e.detail}")
-                await db.rollback()
-            except Exception:
-                logger.exception(f"Batch synthesis: segment {segment_id[:8]} failed")
-                await db.rollback()
+    async def _try_one(db, segment_id: str) -> bool:
+        try:
+            await _synthesize_segment_db(segment_id, db)
+            await db.commit()
+            return True
+        except HTTPException as e:
+            logger.warning(f"Batch synthesis: segment {segment_id[:8]} failed: {e.detail}")
+            await db.rollback()
+        except Exception:
+            logger.exception(f"Batch synthesis: segment {segment_id[:8]} failed")
+            await db.rollback()
+        return False
 
+    async with AsyncSessionLocal() as db:
+        failed: List[str] = []
+        for i, segment_id in enumerate(segment_ids):
+            if not await _try_one(db, segment_id):
+                failed.append(segment_id)
             # Pacing delay between generations (except after the last one)
             if i < len(segment_ids) - 1:
                 await asyncio.sleep(1.5)
-    logger.info(f"Batch synthesis finished ({len(segment_ids)} segments).")
+
+        if failed:
+            logger.info(
+                f"Batch synthesis: retrying {len(failed)} failed segment(s) "
+                "after a 30s cool-off (rate limits usually clear by then)..."
+            )
+            await asyncio.sleep(30)
+            still_failed = []
+            for i, segment_id in enumerate(failed):
+                if not await _try_one(db, segment_id):
+                    still_failed.append(segment_id)
+                if i < len(failed) - 1:
+                    await asyncio.sleep(5)  # gentler pacing on the retry pass
+            failed = still_failed
+
+    done = len(segment_ids) - len(failed)
+    if failed:
+        logger.warning(
+            f"Batch synthesis finished: {done}/{len(segment_ids)} generated, "
+            f"{len(failed)} failed even after retry: {[s[:8] for s in failed]}"
+        )
+    else:
+        logger.info(f"Batch synthesis finished ({len(segment_ids)} segments).")
 
 
 @router.post("/synthesize/job/{job_id}")
