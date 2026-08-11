@@ -1,191 +1,120 @@
 # Dubify Studio
 
-An AI-powered movie dubbing platform that translates and dubs any films from original languages into another language, e.g. China to Khmer (and other languages). Upload a video, get back a fully translated script with speaker-attributed segments ready for voice synthesis.
+AI movie dubbing in a single window — translate and re-voice a film from its original language into another (built for **Chinese → Khmer**), then export the dubbed `.mp4`.
+
+All AI runs **in the cloud over HTTPS** — Hugging Face Spaces and Google AI Studio. Locally it's just FastAPI, ffmpeg, and a React editor: no GPU, no local models.
 
 ---
 
-## What it does
+## How it works
 
-Dubify Studio automates the most painful parts of movie dubbing:
+The entire app is one CapCut-style editor window. An icon rail on the left switches the dock panel between **Projects · Sessions · Speakers · Elements · Voices · Settings**; the video player, transcript inspector, and timeline stay in place.
 
-1. **Uploads**: a video file (`.mp4`, `.mkv`, etc.)
-2. **Detects**: embedded subtitle tracks automatically, uses them if found (more accurate), falls back to AI speech recognition if subtitle tracks not found. 
-3. **Diarizes**: speakers identifies who is talking at each moment using pyannoteAI
-4. **Transcribes**: speech to text using via pyannoteAI combined diarize+transcribe API
-5. **Translates**: each line to a desire language using any LLMs, e.g. latest google ai models with full conversation context, natural, emotional, dubbing-quality output. 
-6. **Synthesizes**: voice synthesis using VoXCPM2, the latest production grade TTS models, supports zero-shot voice cloing, and cross-lingual-zero-shot voice cloning, which will improve the actor speaking quality like a real native speakers of the desirer language.
+1. **Import** a video into a project. Stage 1 runs automatically: audio extraction → vocal/BGM separation. Embedded subtitle tracks are auto-detected and preferred over speech recognition.
+2. **Analyze** (one click) — Stage 2: speaker diarization + transcription in a single MOSS HF Space call (skipped when subtitles exist), then batched Gemini translation with full scene context.
+3. **Edit** on the timeline: drag, trim, and split clips; fix translations in the transcript; assign voices per speaker or per segment; adjust volume/filter/speed per clip. Timeline and transcript edits are undoable (⌘Z).
+4. **Generate voices** with VoxCPM2 — voice design, cloning, or clip+transcript "ultimate" cloning — per segment, per selection, or per job.
+5. **Export**: ffmpeg mixes the TTS clips with the clean BGM stem, burns in overlays (logo, Khmer subtitles, cover boxes), and saves the `.mp4` to a destination you choose.
+
+```mermaid
+flowchart LR
+    A[Upload] --> B[Extract audio]
+    B --> C[Separate vocals / BGM]
+    C -->|stems_ready| D{Analyze}
+    D -->|no subtitles| E[Diarize + transcribe]
+    D -->|subtitles found| F[Parse SRT/ASS + match speakers]
+    E --> G[Translate]
+    F --> G
+    G --> H[Edit on timeline]
+    H --> I[Synthesize voices]
+    I --> J[Mix + overlays → dubbed .mp4]
+```
+
+Every cloud dependency degrades gracefully (configured backend → free public Space → mock), so the full flow runs end-to-end with **zero API keys** for testing.
 
 ---
 
-### Tech stack
+## Tech stack
 
 | Component | Technology |
 |---|---|
-| Framework | FastAPI (Python 3.11+) |
-| Database |PostgreSQL (production) |
-| ORM | SQLAlchemy async |
-| Speaker diarization | pyannoteAI|
-| ASR | pyannoteAI Whisper large-v3-turbo|
-| Subtitle extraction | ffmpeg |
-| Translation | Google Latest Models with conversation context |
-| TTS | VoxCPM2|
-| Audio mixing | ffmpeg |
+| Backend | FastAPI (Python 3.11+), async SQLAlchemy |
+| Database | SQLite (dev) / PostgreSQL·Neon (production) |
+| Diarization + ASR | MOSS HF Space (`OpenMOSS-Team/MOSS-transcribe-diarize`, combined, one call) |
+| Vocal separation | BS-RoFormer / Mel-RoFormer via HF Space |
+| Translation | Gemini (Google AI Studio), batched with scene context; deep-translator fallback |
+| TTS | VoxCPM2 via Gradio app or public HF Space; Gemini TTS fallback |
+| Audio/video processing | ffmpeg |
+| Frontend | React 19 + TypeScript, Vite, Tailwind CSS, TanStack Query v5, Zustand v5 |
+| Desktop | Tauri 2 (backend bundled as a PyInstaller sidecar) |
 
-### Pipeline
+---
 
-![alt text](image.png)
+## Getting started
 
-### Setup
+### Backend
 
 ```bash
 cd backend
 
-# Create virtual environment
 python3 -m venv venv
 source venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
 
-# Install ffmpeg (required for audio/subtitle extraction)
+# ffmpeg is required for all audio/video processing
 brew install ffmpeg        # macOS
 # apt install ffmpeg       # Ubuntu
 
-# Configure environment
+# Configure environment (all keys optional — mock mode works without any)
 cp .env.example .env
-# Edit .env with your API keys
 
-# Run server
 uvicorn app.main:app --reload
 ```
 
-Open `http://localhost:8000/docs` for the interactive Swagger UI.
+Swagger UI at `http://localhost:8000/docs`. See [backend/README.md](backend/README.md) for the API, services, and environment reference.
 
-
-
-### API endpoints
-
-| Method | Endpoint | Description |
-|---|---|---|
-| GET | `/health` | Service health check |
-| POST | `/api/v1/projects/` | Create project |
-| GET | `/api/v1/projects/` | List all projects |
-| DELETE | `/api/v1/projects/{id}` | Delete project |
-| POST | `/api/v1/jobs/upload/{project_id}` | Upload video (auto-detects subtitles) |
-| POST | `/api/v1/jobs/upload-subtitle/{project_id}` | Upload video + separate subtitle file |
-| GET | `/api/v1/jobs/{job_id}` | Poll job status and progress |
-| GET | `/api/v1/jobs/{job_id}/subtitle-tracks` | List subtitle tracks in video |
-| GET | `/api/v1/jobs/{job_id}/segments` | Get all transcript segments |
-| PATCH | `/api/v1/segments/{id}` | Edit segment text |
-| POST | `/api/v1/segments/{id}/approve` | Approve segment for TTS |
-| POST | `/api/v1/jobs/{job_id}/approve-all` | Approve all segments |
-| GET | `/api/v1/projects/{id}/speakers` | List detected speakers |
-| PATCH | `/api/v1/speakers/{id}` | Edit speaker voice profile |
-| POST | `/api/v1/tts/synthesize/job/{job_id}` | Synthesize all approved segments |
-| POST | `/api/v1/tts/mix/{job_id}` | Mix TTS audio into final video |
-
-### Run tests
-
-```bash
-pytest tests/ -v
-```
-
-### Backend folder structure
-
-```
-backend/
-├── app/
-│   ├── main.py
-│   ├── core/
-│   │   ├── config.py             All settings from .env
-│   │   └── database.py           SQLAlchemy async engine
-│   ├── models/models.py          DB tables: Project, Job, Speaker, Segment
-│   ├── schemas/schemas.py        Pydantic request/response schemas
-│   ├── services/
-│   │   ├── audio_extractor.py    ffmpeg: extract audio + subtitles
-│   │   ├── subtitle_parser.py    SRT/ASS subtitle parser
-│   │   ├── diarizer.py           pyannoteAI diarization + ASR
-│   │   ├── translator.py         Gemini translation with context
-│   │   ├── tts_client.py         VoxCPM2 HTTP client
-│   │   ├── pipeline.py           ASR pipeline orchestrator
-│   │   └── subtitle_pipeline.py  Subtitle pipeline orchestrator
-│   └── api/routes/
-│       ├── health.py
-│       ├── projects.py
-│       ├── jobs.py
-│       ├── segments.py
-│       └── tts.py
-├── tests/test_api.py
-├── requirements.txt
-└── .env.example
-```
-
----
-
-## Frontend
-
-### Tech stack
-
-| Component | Technology |
-|---|---|
-| Framework | React 19 + TypeScript |
-| Build tool | Vite 8 |
-| Styling | Tailwind CSS v3 |
-| Routing | React Router v7 |
-| HTTP client | Axios |
-| Data fetching | TanStack Query v5 |
-| Global state | Zustand v5 |
-
-### Setup
+### Frontend
 
 ```bash
 cd frontend
-
 npm install
-npm run dev
+npm run dev        # http://localhost:5173 — proxies /api, /health, /uploads to the backend
 ```
 
-Open `http://localhost:5173`. Vite proxies all `/api` requests to the backend at `localhost:8000` automatically — run both servers simultaneously.
+Run both servers together; the Vite proxy handles all backend calls. See [frontend/README.md](frontend/README.md) for the editor architecture.
+
+### Desktop (Tauri)
 
 ```bash
-npm run build    # production build
-npm run preview  # preview production build locally
+cd backend && ./build_sidecar.sh    # PyInstaller sidecar → frontend/src-tauri/binaries/
+cd frontend && npm run tauri build  # → .app + .dmg (Apple Silicon)
 ```
 
-### Frontend folder structure
+Rebuild the sidecar after backend **or** frontend changes — it bundles `frontend/dist` and `backend/.env` into the binary.
 
+### Tests
+
+```bash
+cd backend && pytest app/tests/ -v
 ```
-frontend/
-├── src/
-│   ├── api/client.ts       Axios API client — all backend calls
-│   ├── hooks/useApi.ts     TanStack Query hooks for every endpoint
-│   ├── store/index.ts      Zustand global state
-│   ├── types/index.ts      TypeScript types matching backend schemas
-│   ├── components/         Shared UI components
-│   ├── pages/              Page components
-│   ├── lib/                Utility functions
-│   ├── App.tsx             Router setup
-│   └── main.tsx            Entry point
-├── vite.config.ts          Proxy + path aliases
-├── tailwind.config.js
-└── tsconfig.json
-```
-
-### Planned pages
-
-| Route | Page |
-|---|---|
-| `/projects` | Projects dashboard — list, create, delete |
-| `/projects/:id` | Project detail — jobs list, upload video |
-| `/projects/:id/jobs/:jobId` | Script editor — review segments, approve for TTS |
 
 ---
 
-## Supported languages
+## Configuration
 
-Officially supports 30 languages including:
+All settings live in `backend/app/core/config.py`, loaded from `backend/.env`. The key ones:
 
-Arabic, Burmese, Chinese, Danish, Dutch, English, Finnish, French, German, Greek, Hebrew, Hindi, Indonesian, Italian, Japanese, **Khmer**, Korean, Lao, Malay, Norwegian, Polish, Portuguese, Russian, Spanish, Swahili, Swedish, Tagalog, Thai, Turkish, Vietnamese
+| Variable | Description |
+|---|---|
+| `GEMINI_API_KEY` | Google AI Studio key — translation + Gemini TTS fallback (free at aistudio.google.com) |
+| `VOXCPM2_API_URL` | Gradio app URL running VoxCPM (e.g. a Colab `gradio.live` URL); blank → public HF Space |
+| `SEPARATION_HF_MODEL` | `BS-RoFormer` \| `Mel-RoFormer` \| `HTDemucs-FT` |
+| `HF_TOKEN` | Optional — raises HF rate limits for the separation/diarization Spaces |
+| `DATABASE_URL` | Blank → local SQLite; `postgresql+asyncpg://…` for Neon/Postgres |
+
+## Languages
+
+The product targets **Chinese → Khmer** and the UI ships that pair. The translation layer also recognises English, Korean, Japanese, Thai, Vietnamese, French, and German — other pairs work by extending `LANGUAGE_OPTIONS` (frontend) and `LANG_NAMES` (backend translator).
 
 ---
 
@@ -195,11 +124,16 @@ Arabic, Burmese, Chinese, Danish, Dutch, English, Finnish, French, German, Greek
 |---|---|
 | Python | 3.11+ |
 | Node.js | 18+ |
-| ffmpeg | Any recent version |
-| RAM | 8GB|
-| GPU | NVIDIA 8GB+ VRAM (cloud only) |
+| ffmpeg | Any recent version, on `PATH` |
+| RAM | 8 GB |
+| GPU | None — all inference is cloud-hosted |
 
----
+## Known limitations
+
+- The desktop build currently targets **macOS Apple Silicon** only, and the sidecar embeds `backend/.env` (API keys + machine-specific paths) — built binaries are personal; don't distribute them.
+- Burned-in subtitles render with Noto Sans Khmer, which has **no Latin glyphs** — Khmer, digits, and punctuation render; Latin letters inside a line are dropped.
+- Subtitle sizing is deliberately automatic: you set the font size and the text-column width, and each line's block grows upward from a fixed bottom anchor. There's no manual box height — a single hand-drawn rectangle can't fit every segment's translation.
+- The "spk" max-speakers input next to Analyze is accepted but ignored (the MOSS Space has no speaker-count parameter).
 
 ## License
 
