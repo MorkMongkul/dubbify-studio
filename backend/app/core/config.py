@@ -6,6 +6,23 @@ Loaded once at startup via pydantic-settings.
 from pydantic_settings import BaseSettings
 from typing import List
 import os
+import sys
+from pathlib import Path
+
+
+def _env_file_path() -> str:
+    """
+    Dev: repo-relative `.env` next to this file's project root (unchanged
+    behavior — relies on the process being started with cwd=backend/).
+
+    Frozen (PyInstaller sidecar): the working directory Tauri spawns the
+    sidecar with is not backend/, so a bare relative ".env" would never be
+    found — resolve it next to the bundled data under sys._MEIPASS instead.
+    """
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return str(Path(meipass) / ".env")
+    return ".env"
 
 
 class Settings(BaseSettings):
@@ -25,24 +42,14 @@ class Settings(BaseSettings):
             return self.DATABASE_URL
         return "sqlite+aiosqlite:///./khmer_dubber_dev.db"
 
-    # ── Redis ─────────────────────────────────────────────────
-    REDIS_URL: str = "redis://localhost:6379/0"
-
     # ── File storage ──────────────────────────────────────────
     UPLOAD_DIR: str = "./uploads"
     MAX_UPLOAD_SIZE_MB: int = 500
 
-    # ── pyannoteAI — speaker diarization + transcription ──────
-    # Free trial at: dashboard.pyannote.ai
-    PYANNOTEAI_TOKEN: str = ""
-
-    # ── Diarization backend ────────────────────────────────────
-    # "moss"     = OpenMOSS-Team/MOSS-transcribe-diarize HF Space (free, default —
-    #              combined diarization+transcription in one call, up to ~1800s)
-    # "pyannote" = pyannoteAI cloud API (paid beyond free tier, needs PYANNOTEAI_TOKEN)
-    # On failure, "moss" falls back straight to the mock diarizer (never silently
-    # incurs pyannoteAI cost); "pyannote" falls back to mock if no token is set.
-    DIARIZATION_BACKEND: str = "moss"
+    # ── Diarization + transcription (free HF Space) ───────────
+    # OpenMOSS-Team/MOSS-transcribe-diarize — combined diarization +
+    # transcription in one call, no auth, up to ~1800s per call (longer audio
+    # is chunked). Falls back to the mock diarizer on failure.
     DIARIZATION_MOSS_SPACE: str = "OpenMOSS-Team/MOSS-transcribe-diarize"
 
     # ── Google Gemini — translation ───────────────────────────
@@ -56,22 +63,16 @@ class Settings(BaseSettings):
     TRANSLATION_BACKEND: str = "gemini"
 
     # ── VoxCPM2 TTS — voice synthesis ────────────────────────
-    # Deploy on Modal/RunPod (REST), or run the Colab Gradio app and paste its
-    # gradio.live URL here.
+    # A Gradio app URL running VoxCPM (e.g. the Colab notebook's gradio.live
+    # URL). Leave blank to use the free public HF Space below.
     VOXCPM2_API_URL: str = ""
-    VOXCPM2_API_KEY: str = ""
-    # Backend protocol: "rest" (our Modal server) or "gradio" (Colab Gradio app).
-    # Leave blank to auto-detect: a "gradio" in the URL → gradio, else rest.
-    VOXCPM2_BACKEND: str = ""
     # Free public HF Space used automatically when VOXCPM2_API_URL is blank —
     # i.e. whenever the Colab notebook isn't running that session. Real VoxCPM2
     # quality with zero setup; falls back to Gemini TTS if the Space is busy/down.
     VOXCPM2_HF_SPACE_FALLBACK: str = "openbmb/VoxCPM-Demo"
 
-    # ── Source separation (vocals / background) ───────────────
-    # "local" = Demucs on this machine (heavy on 8GB Macs, can freeze)
-    # "hf"    = HuggingFace Space via gradio_client (offloads compute, SOTA models)
-    SEPARATION_BACKEND: str = "local"
+    # ── Source separation (vocals / background, HF Space) ─────
+    # Compute happens in the cloud via gradio_client; no local separation.
     SEPARATION_HF_SPACE: str = "PatPatronus/vocal-separation"
     # Model on the HF space: BS-RoFormer | Mel-RoFormer | HTDemucs-FT
     SEPARATION_HF_MODEL: str = "BS-RoFormer"
@@ -80,10 +81,9 @@ class Settings(BaseSettings):
     GEMINI_TTS_SPEED: float = 1.25
 
     # ── Optional services ─────────────────────────────────────
+    # HF token: raises rate limits / enables private Spaces for the
+    # separation + diarization gradio_client calls.
     HF_TOKEN: str = ""
-    GROQ_API_KEY: str = ""
-    WHISPER_API_URL: str = ""
-    DEEPL_API_KEY: str = ""
 
     # ── CORS ──────────────────────────────────────────────────
     ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:5174,http://localhost:3000"
@@ -94,7 +94,7 @@ class Settings(BaseSettings):
         return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
 
     model_config = {
-        "env_file": ".env",
+        "env_file": _env_file_path(),
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }
@@ -102,5 +102,16 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Ensure upload directory exists at startup
-os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+# Ensure upload directory exists at startup.
+# Never fatal: this runs at import, and a relative UPLOAD_DIR resolved against a
+# read-only working directory (which is what the packaged sidecar can be
+# launched with) would otherwise raise here and take the whole app down before
+# it can serve a single request.
+try:
+    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+except OSError as exc:  # pragma: no cover - depends on launch environment
+    import logging
+    logging.getLogger(__name__).warning(
+        "Could not create UPLOAD_DIR %r (%s) — set an absolute UPLOAD_DIR in .env",
+        settings.UPLOAD_DIR, exc,
+    )
