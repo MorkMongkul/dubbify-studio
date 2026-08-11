@@ -13,7 +13,7 @@ import { useUpdateSegment, useDeleteSegment, useSynthesizeSegment, useAutofitSeg
 import { segments as segmentsApi } from '@/api/client'
 import { PipelineStepper } from '@/features/upload/PipelineStepper'
 import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, hexToRgba, cn, isJobRunning, getJobStatusConfig } from '@/lib/utils'
-import { recordSegmentChange, recordSegmentDelete, recordSegmentsDelete, recordSegmentCreate, recordSegmentSplit } from '@/lib/historyHelpers'
+import { recordSegmentChange, recordSegmentsChange, recordSegmentDelete, recordSegmentsDelete, recordSegmentCreate, recordSegmentSplit } from '@/lib/historyHelpers'
 import { Tooltip } from '@/components/ui/Tooltip'
 
 const PX_PER_SEC = 100 // base pixels per second at zoom=1
@@ -216,6 +216,11 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const handleSegmentHistory = useCallback((id: string, before: SegmentUpdate, after: SegmentUpdate) => {
     if (!jobId) return
     recordSegmentChange(qc, jobId, id, before, after, 'Move clip')
+  }, [jobId, qc])
+
+  const handleSegmentsGroupHistory = useCallback((changes: { id: string; before: SegmentUpdate; after: SegmentUpdate }[]) => {
+    if (!jobId) return
+    recordSegmentsChange(qc, jobId, changes)
   }, [jobId, qc])
 
   const handleSegmentSelect = useCallback((seg: Segment) => {
@@ -1108,6 +1113,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                           updateSegmentPosition={updateSegmentPosition}
                           onUpdateBackend={handleSegmentUpdateBackend}
                           onRecordHistory={handleSegmentHistory}
+                          onRecordGroupHistory={handleSegmentsGroupHistory}
                           onSelect={handleSegmentSelect}
                           onDelete={handleSegmentDelete}
                           onRegenerate={jobId ? handleSegmentRegenerate : undefined}
@@ -1225,6 +1231,8 @@ interface InteractiveSegmentProps {
   ) => void
   onUpdateBackend: (id: string, startTime: number, endTime: number, laneIndex: number) => void
   onRecordHistory: (id: string, before: SegmentUpdate, after: SegmentUpdate) => void
+  /** One undo entry for a whole group drag (see recordSegmentsChange). */
+  onRecordGroupHistory: (changes: { id: string; before: SegmentUpdate; after: SegmentUpdate }[]) => void
   onSelect: (seg: Segment) => void
   onDelete: (id: string) => void
   onRegenerate?: (id: string) => void
@@ -1245,7 +1253,7 @@ interface InteractiveSegmentProps {
 // difference between smooth and stuttering timeline interaction.
 const InteractiveSegment = memo(function InteractiveSegment({
   seg, color, isActive, isSelected, onToggleSelect, isApproved, zoom, duration, laneIndices, allSegments, PX_PER_SEC, scrollRef, lanesRef,
-  updateSegmentPosition, onUpdateBackend, onRecordHistory, onSelect, onDelete, onRegenerate,
+  updateSegmentPosition, onUpdateBackend, onRecordHistory, onRecordGroupHistory, onSelect, onDelete, onRegenerate,
   isPersisting, isRegenerating, isSplitting,
   mutedTrackIds, soloedTrackIds, volume,
   activeTool, snapEnabled, onSplit,
@@ -1341,12 +1349,33 @@ const InteractiveSegment = memo(function InteractiveSegment({
 
     const maxTimelineWidth = timeToPixels(duration || 60, zoom, PX_PER_SEC)
 
+    // Group drag: dragging a clip that's part of the multi-selection moves
+    // EVERY selected clip by the same time delta. Lanes stay unchanged in
+    // group mode — only a solo drag can hop lanes.
+    const selectedIds = useEditorStore.getState().selectedSegmentIds
+    const isGroupDrag = actionType === 'drag' && selectedIds.length > 1 && selectedIds.includes(seg.id)
+    const groupIdSet = new Set(isGroupDrag ? selectedIds : [seg.id])
+    const groupMates = isGroupDrag
+      ? allSegments.filter((s) => s.id !== seg.id && groupIdSet.has(s.id))
+      : []
+    const mateEls = groupMates
+      .map((s) => [s, document.querySelector<HTMLElement>(`[data-seg-id="${s.id}"]`)] as const)
+      .filter((pair): pair is readonly [Segment, HTMLElement] => !!pair[1])
+    // The whole group must stay inside [0, timeline end]
+    const groupMinLeftPx = groupMates.length
+      ? Math.min(...groupMates.map((s) => timeToPixels(s.start_time, zoom, PX_PER_SEC)))
+      : Infinity
+    const groupMaxRightPx = groupMates.length
+      ? Math.max(...groupMates.map((s) => timeToPixels(s.end_time, zoom, PX_PER_SEC)))
+      : -Infinity
+
     // Magnetic snapping — CapCut-style: snap the moving edge(s) to any other
     // segment's start/end edge (any track) or the playhead, within a small
     // pixel threshold. Targets are computed once per gesture (not per-move).
+    // Group members are excluded so the group never snaps to itself.
     const SNAP_THRESHOLD_PX = 8
     const snapTargetsPx = allSegments
-      .filter((s) => s.id !== seg.id)
+      .filter((s) => !groupIdSet.has(s.id))
       .flatMap((s) => [
         timeToPixels(s.start_time, zoom, PX_PER_SEC),
         timeToPixels(s.end_time, zoom, PX_PER_SEC),
@@ -1389,10 +1418,27 @@ const InteractiveSegment = memo(function InteractiveSegment({
           snapped = true
         }
         newLeft = Math.max(0, Math.min(maxTimelineWidth - startWidth, newLeft))
-        lastDragLeft = newLeft
-        // Compositor-only transform — no layout reflow per frame, unlike
-        // mutating `left` directly (was the cause of jumpy/laggy dragging).
-        element.style.transform = `translate(${newLeft - startLeft}px, ${deltaY}px)`
+        if (isGroupDrag) {
+          // Clamp the shared delta so no group member leaves the timeline,
+          // then slide every selected clip by the same amount. Y is locked —
+          // group drags never hop lanes.
+          const minDelta = -Math.min(startLeft, groupMinLeftPx)
+          const maxDelta = maxTimelineWidth - Math.max(startLeft + startWidth, groupMaxRightPx)
+          const delta = Math.max(minDelta, Math.min(maxDelta, newLeft - startLeft))
+          newLeft = startLeft + delta
+          lastDragLeft = newLeft
+          element.style.transform = `translate(${delta}px, 0px)`
+          for (const [, el] of mateEls) {
+            el.style.transform = `translate(${delta}px, 0px)`
+            el.style.opacity = '0.9'
+            el.style.zIndex = '49'
+          }
+        } else {
+          lastDragLeft = newLeft
+          // Compositor-only transform — no layout reflow per frame, unlike
+          // mutating `left` directly (was the cause of jumpy/laggy dragging).
+          element.style.transform = `translate(${newLeft - startLeft}px, ${deltaY}px)`
+        }
       } else if (actionType === 'resize-left') {
         const rightEdge = startLeft + startWidth
         let newLeft = startLeft + deltaX
@@ -1443,6 +1489,11 @@ const InteractiveSegment = memo(function InteractiveSegment({
         element.style.left = `${lastDragLeft}px`
       }
       element.style.transform = ''
+      for (const [, el] of mateEls) {
+        el.style.transform = ''
+        el.style.opacity = ''
+        el.style.zIndex = ''
+      }
 
       const finalLeft = parseFloat(element.style.left)
       const finalWidth = parseFloat(element.style.width)
@@ -1451,7 +1502,7 @@ const InteractiveSegment = memo(function InteractiveSegment({
       let newEndTime = pixelsToTime(finalLeft + finalWidth, zoom, PX_PER_SEC)
 
       let finalLaneIndex = seg.lane_index ?? 0
-      if (actionType === 'drag' && lanesRef.current) {
+      if (actionType === 'drag' && !isGroupDrag && lanesRef.current) {
         // Measure from the lanes container itself (not the outer scroll
         // container) so the BGM/Vocals/Speakers-legend rows above it — whose
         // combined height varies — never throw off which lane a drop lands on.
@@ -1464,8 +1515,10 @@ const InteractiveSegment = memo(function InteractiveSegment({
 
       // Prevent overlap with whatever's already on the destination lane —
       // real editors never let two clips on the same lane share time range.
+      // In group mode, other group members don't count as obstacles: they
+      // are moving by the same delta, so their OLD positions must not block.
       const neighbors = allSegments.filter(
-        (s) => s.id !== seg.id && (s.lane_index ?? 0) === finalLaneIndex
+        (s) => !groupIdSet.has(s.id) && (s.lane_index ?? 0) === finalLaneIndex
       )
       if (actionType === 'drag') {
         const dragDuration = newEndTime - newStartTime
@@ -1490,7 +1543,35 @@ const InteractiveSegment = memo(function InteractiveSegment({
       const changed = afterGesture.start_time !== beforeGesture.start_time
         || afterGesture.end_time !== beforeGesture.end_time
         || afterGesture.lane_index !== beforeGesture.lane_index
-      if (changed) onRecordHistory(seg.id, beforeGesture, afterGesture)
+
+      if (isGroupDrag) {
+        // Shift every other selected clip by the delta the grabbed clip
+        // actually committed to, and record the whole move as ONE undo entry.
+        if (!changed) return
+        const deltaSecs = newStartTime - (beforeGesture.start_time ?? seg.start_time)
+        const changes = [{ id: seg.id, before: beforeGesture, after: afterGesture }]
+        for (const mate of groupMates) {
+          const mateDuration = mate.end_time - mate.start_time
+          const mateLane = mate.lane_index ?? 0
+          const mateNeighbors = allSegments.filter(
+            (s) => !groupIdSet.has(s.id) && (s.lane_index ?? 0) === mateLane
+          )
+          let mateStart = Math.max(0, mate.start_time + deltaSecs)
+          mateStart = resolveDragOverlap(mateStart, mateDuration, mateNeighbors)
+          mateStart = Math.round(mateStart * 1000) / 1000
+          const mateEnd = Math.round((mateStart + mateDuration) * 1000) / 1000
+          updateSegmentPosition(mate.id, mateStart, mateEnd, mateLane)
+          onUpdateBackend(mate.id, mateStart, mateEnd, mateLane)
+          changes.push({
+            id: mate.id,
+            before: { start_time: mate.start_time, end_time: mate.end_time, lane_index: mateLane },
+            after: { start_time: mateStart, end_time: mateEnd, lane_index: mateLane },
+          })
+        }
+        onRecordGroupHistory(changes)
+      } else if (changed) {
+        onRecordHistory(seg.id, beforeGesture, afterGesture)
+      }
     }
 
     window.addEventListener('pointermove', handlePointerMove)
@@ -1500,6 +1581,7 @@ const InteractiveSegment = memo(function InteractiveSegment({
   return (
     <div
       ref={elementRef}
+      data-seg-id={seg.id}
       className={cn(
         'timeline-segment absolute top-[6px] bottom-[6px] select-none overflow-hidden transition-all',
         activeTool === 'blade' ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing',
@@ -1545,7 +1627,11 @@ const InteractiveSegment = memo(function InteractiveSegment({
           return
         }
         handlePointerDown(e, 'drag')
-        onSelect(seg)
+        // Grabbing a clip that's already part of the multi-selection must NOT
+        // collapse the selection (onSelect clears it) — that press is the
+        // start of a group drag. Plain click on an unselected clip keeps the
+        // standard replace-selection behaviour.
+        if (!isSelected) onSelect(seg)
       }}
       onMouseDown={(e) => {
         e.stopPropagation()

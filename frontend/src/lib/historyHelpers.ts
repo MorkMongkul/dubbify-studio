@@ -109,6 +109,27 @@ export function recordSegmentsDelete(
   })
 }
 
+// Moving a multi-selection is ONE history entry: a single undo restores every
+// clip's previous position, a single redo re-applies the whole move.
+export function recordSegmentsChange(
+  qc: QueryClient,
+  jobId: string,
+  changes: { id: string; before: SegmentUpdate; after: SegmentUpdate }[],
+  label?: string
+) {
+  useHistoryStore.getState().push({
+    label: label ?? `Move ${changes.length} clips`,
+    undo: async () => {
+      for (const c of changes) await segmentsApi.update(c.id, c.before)
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    },
+    redo: async () => {
+      for (const c of changes) await segmentsApi.update(c.id, c.after)
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    },
+  })
+}
+
 export function recordSegmentCreate(
   qc: QueryClient,
   jobId: string,
