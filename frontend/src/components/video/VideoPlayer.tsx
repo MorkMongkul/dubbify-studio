@@ -1,9 +1,10 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Maximize2, Minimize2, VolumeX, Play, Pause, SkipBack, SkipForward } from 'lucide-react'
-import type { Segment, Speaker } from '@/types'
+import type { Segment, Speaker, Overlay } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { formatTime, cn } from '@/lib/utils'
+import { OverlayCanvas } from './OverlayCanvas'
 
 interface VideoPlayerProps {
   videoUrl?: string
@@ -13,9 +14,10 @@ interface VideoPlayerProps {
   jobId?: string
   projectId?: string
   jobStatus?: string
+  overlays?: Overlay[]
 }
 
-export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus }: VideoPlayerProps) {
+export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus, overlays }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const bgmAudioRef = useRef<HTMLAudioElement>(null)
   const vocalsAudioRef = useRef<HTMLAudioElement>(null)
@@ -27,17 +29,36 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
   // are known, then size the player to match — a portrait video gets a
   // portrait box instead of shrinking to a sliver inside a landscape frame.
   const [videoAspectRatio, setVideoAspectRatio] = useState(16 / 9)
+  // Intrinsic pixel width of the clip. Subtitle font_size is stored in REAL
+  // video pixels (that's what the ffmpeg export renders at), so the preview
+  // needs this to scale the same size down to the on-screen canvas.
+  const [videoPixelWidth, setVideoPixelWidth] = useState(0)
   const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   // TTS segment playback — one dubbed clip plays at a time in sync with the video
   const ttsAudioRef      = useRef<HTMLAudioElement | null>(null)
   const ttsActiveSegId   = useRef<string | null>(null)
 
-  const {
-    currentTime, isPlaying, volume, playbackRate, activeSegmentId,
-    setCurrentTime, setDuration, setPlaying, setActiveSegment,
-    togglePlaying, setPlaybackRate, mutedTrackIds,
-  } = useEditorStore()
+  // Per-field selectors — this component legitimately re-renders on playhead
+  // ticks (progress bar/time display), but it must not also re-render on every
+  // unrelated store change (selection, zoom, panel sizes, …).
+  const currentTime     = useEditorStore((s) => s.currentTime)
+  // Duration comes from the store (written by onLoadedMetadata below), not from
+  // videoRef.current.duration: reading a ref during render isn't reactive, so
+  // the scrubber and time readout only refreshed when something else happened
+  // to re-render — a paused video sat showing 0:00 until the first tick.
+  const duration        = useEditorStore((s) => s.duration)
+  const isPlaying       = useEditorStore((s) => s.isPlaying)
+  const volume          = useEditorStore((s) => s.volume)
+  const playbackRate    = useEditorStore((s) => s.playbackRate)
+  const activeSegmentId = useEditorStore((s) => s.activeSegmentId)
+  const mutedTrackIds   = useEditorStore((s) => s.mutedTrackIds)
+  const setCurrentTime  = useEditorStore((s) => s.setCurrentTime)
+  const setDuration     = useEditorStore((s) => s.setDuration)
+  const setPlaying      = useEditorStore((s) => s.setPlaying)
+  const setActiveSegment = useEditorStore((s) => s.setActiveSegment)
+  const togglePlaying   = useEditorStore((s) => s.togglePlaying)
+  const setPlaybackRate = useEditorStore((s) => s.setPlaybackRate)
 
   // Stable refs so event callbacks always see the latest values
   const isPlayingRef    = useRef(isPlaying)
@@ -64,7 +85,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
 
   const startTTS = useCallback((seg: Segment, videoTime: number) => {
     stopTTS()
-    const path = seg.tts_audio_path
+    const path = seg.tts_audio_url
     if (!path) return
     // Cache-bust: the backend overwrites the same file path on every
     // re-synthesis, so a version query param is required to avoid the
@@ -138,7 +159,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       const active = segmentsRef.current.find((s) => t >= s.start_time && t < s.end_time)
       setActiveSegment(active?.id ?? null)
 
-      if (active?.tts_audio_path) {
+      if (active?.tts_audio_url) {
         if (active.id !== ttsActiveSegId.current) {
           // Entered a new dubbed segment — start its TTS audio
           startTTS(active, t)
@@ -159,6 +180,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       setDuration(video.duration)
       if (video.videoWidth > 0 && video.videoHeight > 0) {
         setVideoAspectRatio(video.videoWidth / video.videoHeight)
+        setVideoPixelWidth(video.videoWidth)
       }
     }
     const onPlay  = () => { setPlaying(true);  ttsAudioRef.current?.play().catch(() => {}) }
@@ -168,7 +190,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       // After seeking, resync TTS to the new position
       const t      = video.currentTime
       const active = segmentsRef.current.find((s) => t >= s.start_time && t < s.end_time)
-      if (active?.tts_audio_path) {
+      if (active?.tts_audio_url) {
         startTTS(active, t)
         if (!isPlayingRef.current) ttsAudioRef.current?.pause()
       } else {
@@ -217,8 +239,16 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     }
   }, [currentTime, videoUrl])
 
-  const noVocalsUrl = jobId && projectId ? `/uploads/${projectId}/${jobId}/no_vocals.wav` : null
-  const vocalsUrl   = jobId && projectId ? `/uploads/${projectId}/${jobId}/vocals.wav`    : null
+  // Prefer the compressed AAC playback stems (~7% of the WAV bytes); fall back
+  // to the raw WAVs for jobs separated before the .m4a files existed.
+  // Keyed by job id so switching sessions naturally resets to m4a-first.
+  const [wavFallbackJobs, setWavFallbackJobs] = useState<Record<string, boolean>>({})
+  const stemExt: 'm4a' | 'wav' = jobId && wavFallbackJobs[jobId] ? 'wav' : 'm4a'
+  const onStemError = useCallback(() => {
+    if (jobId) setWavFallbackJobs((prev) => (prev[jobId] ? prev : { ...prev, [jobId]: true }))
+  }, [jobId])
+  const noVocalsUrl = jobId && projectId ? `/uploads/${projectId}/${jobId}/no_vocals.${stemExt}` : null
+  const vocalsUrl   = jobId && projectId ? `/uploads/${projectId}/${jobId}/vocals.${stemExt}`    : null
 
   // Separated stems exist from stems_ready onwards (demucs ran in Stage 1)
   const hasStemAudio = !!jobStatus && [
@@ -381,10 +411,13 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
             playsInline
           />
           {hasStemAudio && noVocalsUrl && (
-            <audio ref={bgmAudioRef} src={noVocalsUrl} preload="auto" />
+            <audio ref={bgmAudioRef} src={noVocalsUrl} preload="auto" onError={onStemError} />
           )}
           {hasStemAudio && vocalsUrl && (
-            <audio ref={vocalsAudioRef} src={vocalsUrl} preload="auto" />
+            <audio ref={vocalsAudioRef} src={vocalsUrl} preload="auto" onError={onStemError} />
+          )}
+          {jobId && overlays && overlays.length > 0 && (
+            <OverlayCanvas overlays={overlays} segments={segments} jobId={jobId} currentTime={currentTime} videoPixelWidth={videoPixelWidth} />
           )}
         </>
       ) : (
@@ -418,7 +451,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
                 onClick={(e) => {
                   const rect = e.currentTarget.getBoundingClientRect()
                   const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-                  const t = ratio * (videoRef.current?.duration ?? 0)
+                  const t = ratio * duration
                   setCurrentTime(t)
                   if (videoRef.current) videoRef.current.currentTime = t
                 }}
@@ -426,18 +459,18 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
                   if (e.buttons !== 1) return
                   const rect = e.currentTarget.getBoundingClientRect()
                   const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-                  const t = ratio * (videoRef.current?.duration ?? 0)
+                  const t = ratio * duration
                   setCurrentTime(t)
                   if (videoRef.current) videoRef.current.currentTime = t
                 }}
               >
                 <div
                   className="absolute left-0 top-0 h-full bg-gradient-to-r from-purple-500 to-purple-400 rounded-full transition-all"
-                  style={{ width: `${videoRef.current?.duration ? (currentTime / videoRef.current.duration) * 100 : 0}%` }}
+                  style={{ width: `${duration ? (currentTime / duration) * 100 : 0}%` }}
                 />
                 <div
                   className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white shadow opacity-0 group-hover/prog:opacity-100 transition-opacity"
-                  style={{ left: `calc(${videoRef.current?.duration ? (currentTime / videoRef.current.duration) * 100 : 0}% - 6px)` }}
+                  style={{ left: `calc(${duration ? (currentTime / duration) * 100 : 0}% - 6px)` }}
                 />
               </div>
 
@@ -477,7 +510,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
                 <div className="text-[11px] text-white/60 font-mono ml-1">
                   <span className="text-white">{formatTime(currentTime)}</span>
                   <span className="mx-1 opacity-40">/</span>
-                  <span>{formatTime(videoRef.current?.duration ?? 0)}</span>
+                  <span>{formatTime(duration)}</span>
                 </div>
 
                 <div className="flex-1" />
