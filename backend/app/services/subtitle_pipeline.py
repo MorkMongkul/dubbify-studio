@@ -72,6 +72,12 @@ async def run_subtitle_pipeline(job_id: str, subtitle_path: str) -> None:
             vocals_path, _bgm = await separate_vocals_bgm(audio_path, str(job_dir))
             logger.info(f"Separation complete — vocals: {vocals_path}")
 
+            # The extracted full-mix WAV (~10MB/min) is only needed as a
+            # diarization fallback for jobs where separation produced nothing —
+            # once real stems exist, reclaim it.
+            if vocals_path != audio_path and Path(vocals_path).exists():
+                Path(audio_path).unlink(missing_ok=True)
+
             # Store subtitle text as Segments without speakers so the
             # user can see the script while the stems play on the timeline.
             # Speakers are assigned in Stage 2 after diarization.

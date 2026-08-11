@@ -6,7 +6,7 @@ Gemini sees the ENTIRE conversation before translating each line —
 this produces natural, emotional, dubbing-quality translations instead
 of robotic literal ones.
 
-Also fixes the pyannoteAI spacing issue:
+Also fixes the ASR spacing issue:
   "我 回 来了" → "我回来了" before translating
 
 Backends (set TRANSLATION_BACKEND in .env):
@@ -21,6 +21,17 @@ import httpx
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# One shared client for all Gemini calls — reusing the connection pool saves a
+# TCP+TLS handshake per request. Timeouts are passed per-request.
+_http_client: httpx.AsyncClient | None = None
+
+
+def _get_http() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient()
+    return _http_client
 
 def _gemini_url() -> str:
     """Build Gemini API URL using model from settings (configurable via GEMINI_MODEL in .env)."""
@@ -65,7 +76,7 @@ def _is_billing_error(err_str: str) -> bool:
 
 def _clean_chinese(text: str) -> str:
     """
-    Remove spaces between Chinese characters added by pyannoteAI ASR.
+    Remove spaces between Chinese characters added by the ASR output.
     "我 回 来了" → "我回来了"
     Preserves spaces between Latin words if mixed content.
     """
@@ -174,8 +185,10 @@ async def _translate_with_gemini(
         },
     }
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
-        resp = await client.post(_gemini_url(), json=payload, headers=headers)
+    resp = await _get_http().post(
+        _gemini_url(), json=payload, headers=headers,
+        timeout=httpx.Timeout(30.0, connect=10.0),
+    )
 
     if resp.status_code == 429:
         error_body = resp.text[:500]
@@ -346,8 +359,10 @@ LINES TO TRANSLATE:
     }
 
     # Single API call for all lines
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0)) as client:
-        resp = await client.post(_gemini_url(), json=payload, headers=headers)
+    resp = await _get_http().post(
+        _gemini_url(), json=payload, headers=headers,
+        timeout=httpx.Timeout(120.0, connect=15.0),
+    )
 
     if resp.status_code == 429:
         error_body = resp.text[:500]
@@ -378,11 +393,14 @@ LINES TO TRANSLATE:
             if 0 <= idx < len(results):
                 results[idx] = translation
 
-    # Fill any missed lines with deep-translator fallback
+    # Fill any missed lines with deep-translator fallback (deep-translator is
+    # blocking `requests` under the hood — keep it off the event loop)
     for i, (result, original) in enumerate(zip(results, texts)):
         if not result and original.strip():
             logger.warning(f"Line {i+1} missing from batch response — using deep-translator")
-            results[i] = _translate_with_deep(original, source_lang, target_lang)
+            results[i] = await asyncio.to_thread(
+                _translate_with_deep, original, source_lang, target_lang
+            )
 
     return results
 
@@ -450,9 +468,9 @@ async def translate_batch(
                     except Exception:
                         logger.warning(f"Chunk {chunk_idx+1} failed again — using deep-translator")
                         for text in chunk:
-                            all_results.append(
-                                _translate_with_deep(text, source_lang, target_lang)
-                            )
+                            all_results.append(await asyncio.to_thread(
+                                _translate_with_deep, text, source_lang, target_lang
+                            ))
                 else:
                     if _is_billing_error(err_str):
                         logger.error(
@@ -462,9 +480,9 @@ async def translate_batch(
                     else:
                         logger.error(f"Gemini batch failed: {e} — using deep-translator")
                     for text in chunk:
-                        all_results.append(
-                            _translate_with_deep(text, source_lang, target_lang)
-                        )
+                        all_results.append(await asyncio.to_thread(
+                            _translate_with_deep, text, source_lang, target_lang
+                        ))
 
         return all_results
 
