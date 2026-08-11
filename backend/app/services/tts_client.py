@@ -2,14 +2,15 @@
 app/services/tts_client.py
 TTS client — tries VoxCPM2 first, falls back to Gemini TTS, then mock silence.
 
-VoxCPM2 itself has 3 possible backends, picked in VoxCPM2Client.__init__:
-  - VOXCPM2_API_URL set, "rest"   -> our own Modal/RunPod server
-  - VOXCPM2_API_URL set, "gradio" -> a Colab notebook's gradio.live URL
-  - VOXCPM2_API_URL blank         -> free public HF Space (openbmb/VoxCPM-Demo),
-                                      automatic, no setup — used whenever the
-                                      Colab notebook isn't running that session
+VoxCPM2 has 2 possible backends, picked in VoxCPM2Client.__init__:
+  - VOXCPM2_API_URL set   -> a Gradio app (e.g. a Colab notebook's gradio.live
+                             URL running the VoxCPM HF model)
+  - VOXCPM2_API_URL blank -> free public HF Space (openbmb/VoxCPM-Demo),
+                             automatic, no setup — used whenever the Gradio
+                             app isn't running that session
 """
 import logging
+import time
 import wave
 import httpx
 import asyncio
@@ -82,21 +83,14 @@ class VoxCPM2Client:
 
     def __init__(self):
         configured_url = settings.VOXCPM2_API_URL.rstrip("/")
-        self.api_key  = settings.VOXCPM2_API_KEY
-        # Generous timeout: serverless GPU hosts (Modal etc.) cold-start the
-        # container + load the model on the first call after idle, which can
-        # take 2–3 minutes before any audio is returned.
+        # Generous timeout: hosted GPU backends cold-start / queue on the
+        # first call after idle, which can take minutes before audio returns.
         self.timeout  = 300.0
 
         if configured_url:
+            # A Gradio app URL (e.g. Colab gradio.live running VoxCPM)
             self.base_url = configured_url
-            # Backend protocol: "rest" (our Modal server) or "gradio" (Colab
-            # Gradio app). Auto-detect from the URL when not explicitly configured.
-            configured_backend = (settings.VOXCPM2_BACKEND or "").lower().strip()
-            if configured_backend in ("gradio", "rest"):
-                self.backend = configured_backend
-            else:
-                self.backend = "gradio" if "gradio" in self.base_url else "rest"
+            self.backend = "gradio"
         else:
             # No VOXCPM2_API_URL configured (e.g. the Colab notebook isn't
             # running this session) — use the free public HF Space instead of
@@ -109,31 +103,28 @@ class VoxCPM2Client:
         # (recreated if the URL changes).
         self._gradio_client = None
         self._gradio_url = None
+        # Shared HTTP client (Gemini TTS) — reuses connections across calls
+        # instead of a TCP+TLS handshake per segment.
+        self._http: httpx.AsyncClient | None = None
         # Separate cached client specifically for the HF Space fallback, so
-        # that falling back to it while the primary backend is Colab/Modal
-        # doesn't thrash the primary cache slot on every call.
+        # that falling back to it while the primary backend is a Colab Gradio
+        # app doesn't thrash the primary cache slot on every call.
         self._hf_fallback_client = None
         self._hf_fallback_url = None
+        # When the configured Gradio URL is unreachable (Colab gradio.live
+        # links expire after ~72h), skip it for a while instead of paying the
+        # connect-and-fail cost on EVERY segment of a batch.
+        self._primary_down_until = 0.0
 
-    def _headers(self) -> dict:
-        h = {"Content-Type": "application/json"}
-        if self.api_key:
-            h["Authorization"] = f"Bearer {self.api_key}"
-        return h
+    def _get_http(self) -> httpx.AsyncClient:
+        if self._http is None or self._http.is_closed:
+            self._http = httpx.AsyncClient(follow_redirects=True)
+        return self._http
 
     async def health_check(self) -> bool:
-        if not self.base_url:
-            return False
         # Gradio apps have no /health route — treat a configured URL as available
         # (the real connection is validated on the first synthesis call).
-        if self.backend in ("gradio", "hf_space"):
-            return True
-        try:
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-                resp = await client.get(f"{self.base_url}/health")
-                return resp.status_code == 200
-        except Exception:
-            return False
+        return bool(self.base_url)
 
     async def synthesize(
         self,
@@ -145,15 +136,14 @@ class VoxCPM2Client:
         reference_audio_path: str = "",
         reference_transcript: str = "",
         seed: int = -1,
-        max_retries: int = 3,
     ) -> dict:
         """
         Synthesize speech.  Fallback chain:
-          1. VoxCPM2 — configured backend if VOXCPM2_API_URL is set (Modal/Colab),
+          1. VoxCPM2 — the configured Gradio app if VOXCPM2_API_URL is set,
              else the free HF Space directly
           2. Free HF Space (VOXCPM2_HF_SPACE_FALLBACK) — only tried here if step 1
-             was a *configured* backend that failed (e.g. Colab URL is stale/dead);
-             skipped if step 1 already *was* the HF Space, to avoid a pointless retry
+             was a *configured* Gradio app that failed (e.g. Colab URL is stale/
+             dead); skipped if step 1 already *was* the HF Space
           3. Gemini TTS (if GEMINI_API_KEY is set)
           4. Mock silence
 
@@ -163,28 +153,36 @@ class VoxCPM2Client:
           - reference_audio_path + transcript       -> Ultimate Cloning
         """
         if self.backend == "gradio":
-            result = await self._gradio_synthesize(
-                text, voice_design, output_path, cfg_value, inference_timesteps,
-                reference_audio_path, reference_transcript, seed,
-            )
-        elif self.backend == "hf_space":
+            if time.monotonic() < self._primary_down_until:
+                # Known-dead Colab URL — don't burn ~5s failing on it again.
+                result = {"success": False, "audio_path": "", "duration_secs": 0,
+                          "error": "primary Gradio URL unreachable (cooling down)"}
+            else:
+                result = await self._gradio_synthesize(
+                    text, voice_design, output_path, cfg_value, inference_timesteps,
+                    reference_audio_path, reference_transcript, seed,
+                )
+                if not result["success"] and self._is_connect_error(result["error"]):
+                    self._primary_down_until = time.monotonic() + 300
+                    self._gradio_client = None  # force a fresh connect after cooldown
+                    logger.warning(
+                        f"Primary Gradio URL {self.base_url} unreachable — the "
+                        "gradio.live link has likely expired. Skipping it for 5 "
+                        "minutes; update VOXCPM2_API_URL with a fresh URL."
+                    )
+        else:  # hf_space
             result = await self._hf_space_synthesize(
                 text, voice_design, output_path, cfg_value,
                 reference_audio_path, reference_transcript,
-            )
-        else:
-            result = await self._voxcpm2_synthesize(
-                text, voice_design, output_path, cfg_value, inference_timesteps,
-                reference_audio_path, reference_transcript, max_retries,
             )
 
         if result["success"]:
             return result
         logger.warning(f"VoxCPM2 ({self.backend}) failed: {result['error']}")
 
-        # The configured backend (Colab/Modal) didn't work — before giving up
-        # on VoxCPM2 quality entirely, try the free HF Space. Skip this if that
-        # backend WAS already the HF Space (no point retrying the same thing).
+        # The configured Gradio app didn't work — before giving up on VoxCPM2
+        # quality entirely, try the free HF Space. Skip this if that backend
+        # WAS already the HF Space (no point retrying the same thing).
         if self.backend != "hf_space":
             logger.warning("Trying free HF Space fallback before Gemini TTS...")
             fallback = await self._hf_space_synthesize(
@@ -197,6 +195,15 @@ class VoxCPM2Client:
 
         logger.warning("Falling back to Gemini TTS")
         return await self._gemini_synthesize(text, output_path, voice_design=voice_design)
+
+    @staticmethod
+    def _is_connect_error(error: str) -> bool:
+        """Failure to REACH the app (vs a generation error on a live app)."""
+        e = (error or "").lower()
+        return any(s in e for s in (
+            "could not fetch config", "connect", "connection",
+            "name or service not known", "timed out", "404",
+        ))
 
     # ── Gradio (Colab gradio.live app) ───────────────────────────────────
 
@@ -228,8 +235,10 @@ class VoxCPM2Client:
         import shutil
         from gradio_client import handle_file
 
+        from app.core.paths import resolve_media_path
         client = self._get_gradio_client()
         steps = int(inference_timesteps)
+        reference_audio_path = resolve_media_path(reference_audio_path)
         has_ref = bool(reference_audio_path) and Path(reference_audio_path).exists()
 
         # A fixed seed (>= 0) locks the voice identity for consistency across
@@ -303,7 +312,9 @@ class VoxCPM2Client:
         # Always connect to the fallback Space explicitly — self.base_url may
         # currently be a different (failed) primary backend's URL if this is
         # being called as a secondary fallback, not the configured backend.
+        from app.core.paths import resolve_media_path
         client = self._get_gradio_client(settings.VOXCPM2_HF_SPACE_FALLBACK)
+        reference_audio_path = resolve_media_path(reference_audio_path)
         has_ref = bool(reference_audio_path) and Path(reference_audio_path).exists()
         use_prompt_text = has_ref and bool(reference_transcript)
 
@@ -342,66 +353,6 @@ class VoxCPM2Client:
         except Exception as e:
             logger.warning(f"HF Space VoxCPM2 failed: {e}")
             return {"success": False, "audio_path": "", "duration_secs": 0, "error": str(e)}
-
-    # ── VoxCPM2 ──────────────────────────────────────────────────────────
-
-    async def _voxcpm2_synthesize(
-        self,
-        text: str,
-        voice_design: str,
-        output_path: str,
-        cfg_value: float,
-        inference_timesteps: int,
-        reference_audio_path: str,
-        reference_transcript: str,
-        max_retries: int,
-    ) -> dict:
-        # voice_design becomes the "(...)" prefix (works for both Voice Design
-        # and as style guidance in Controllable Cloning).
-        full_text = f"({voice_design}){text}" if voice_design else text
-        payload = {
-            "text": full_text,
-            "cfg_value": cfg_value,
-            "inference_timesteps": inference_timesteps,
-        }
-
-        # Attach reference audio (base64) for cloning modes.
-        if reference_audio_path and Path(reference_audio_path).exists():
-            import base64
-            payload["reference_audio_b64"] = base64.b64encode(
-                Path(reference_audio_path).read_bytes()
-            ).decode("ascii")
-            if reference_transcript:
-                payload["reference_transcript"] = reference_transcript
-
-        for attempt in range(1, max_retries + 1):
-            try:
-                logger.info(f"VoxCPM2 TTS (attempt {attempt}): {text[:50]}...")
-                # follow_redirects: serverless hosts (Modal) return a 303 to
-                # reconnect after a long cold start — httpx must follow it,
-                # otherwise we'd treat the redirect as success and save 0 bytes.
-                async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-                    resp = await client.post(
-                        f"{self.base_url}/tts",
-                        json=payload,
-                        headers=self._headers(),
-                    )
-                    resp.raise_for_status()
-
-                out_path = Path(output_path)
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                out_path.write_bytes(resp.content)
-
-                duration = _get_wav_duration(str(out_path))
-                logger.info(f"VoxCPM2 saved: {out_path.name} ({duration:.1f}s)")
-                return {"success": True, "audio_path": str(out_path), "duration_secs": duration, "error": ""}
-
-            except Exception as e:
-                logger.warning(f"VoxCPM2 attempt {attempt} failed: {e}")
-                if attempt < max_retries:
-                    await asyncio.sleep(2 ** attempt)
-
-        return {"success": False, "audio_path": "", "duration_secs": 0, "error": "VoxCPM2 unreachable"}
 
     # ── Gemini TTS ────────────────────────────────────────────────────────
 
@@ -455,8 +406,7 @@ class VoxCPM2Client:
 
         try:
             logger.info(f"Gemini TTS ({GEMINI_TTS_MODEL}, voice={voice_name}): {text[:60]}...")
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(url, json=payload, headers=headers)
+            resp = await self._get_http().post(url, json=payload, headers=headers, timeout=60.0)
 
             if resp.status_code == 429:
                 logger.warning("Gemini TTS rate-limited — falling back to mock")
@@ -519,7 +469,10 @@ class VoxCPM2Client:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         sf.write(str(out_path), silence, sample_rate)
 
-        return {"success": True, "audio_path": str(out_path), "duration_secs": duration, "error": ""}
+        # "mock" lets callers with real backends configured treat this as a
+        # failure (rate-limited end of the chain) instead of silently saving
+        # a silent clip that LOOKS like a finished voice in the editor.
+        return {"success": True, "audio_path": str(out_path), "duration_secs": duration, "error": "", "mock": True}
 
     async def synthesize_batch(self, segments: list, output_dir: str, max_concurrent: int = 3) -> list:
         sem = asyncio.Semaphore(max_concurrent)

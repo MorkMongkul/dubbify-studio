@@ -21,6 +21,7 @@ from app.schemas.schemas import JobResponse, PipelineStartResponse
 from app.services.pipeline import run_pipeline, run_analysis_pipeline
 from app.services.subtitle_pipeline import run_subtitle_pipeline, run_subtitle_analysis_pipeline
 from app.services.audio_extractor import extract_subtitle, list_subtitle_tracks
+from app.api.routes.overlays import apply_default_overlay_template
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -60,7 +61,7 @@ async def upload_and_start(
 
     Auto-detects embedded subtitles in the video:
     - If subtitles found → extracts them → uses subtitle pipeline (faster, more accurate)
-    - If no subtitles    → uses ASR pipeline (pyannoteAI diarize + transcribe)
+    - If no subtitles    → uses ASR pipeline (MOSS HF Space diarize + transcribe)
 
     Supports: .mp4, .mkv, .avi, .mov, .webm
     """
@@ -96,6 +97,10 @@ async def upload_and_start(
 
     job.video_path = str(video_path)
     await db.commit()
+
+    # Stamp the default overlay template (logo/brand kit) so every new
+    # episode starts with the same layout — no per-episode logo placement.
+    await apply_default_overlay_template(job, db)
 
     # Auto-detect embedded subtitles
     subtitle_path = await extract_subtitle(
@@ -194,6 +199,10 @@ async def upload_with_subtitle(
     job.video_path = str(video_path)
     job.subtitle_path = str(subtitle_path)
     await db.commit()
+
+    # Stamp the default overlay template (logo/brand kit) so every new
+    # episode starts with the same layout — no per-episode logo placement.
+    await apply_default_overlay_template(job, db)
 
     # Launch subtitle pipeline in background
     background_tasks.add_task(
@@ -298,7 +307,8 @@ async def delete_job(job_id: str, db: AsyncSession = Depends(get_db)):
 
     job_dir = Path(settings.UPLOAD_DIR) / job.project_id / job_id
     if job_dir.exists():
-        shutil.rmtree(job_dir)
+        # A job dir can hold gigabytes of media — keep the delete off the event loop
+        await asyncio.to_thread(shutil.rmtree, job_dir)
 
     # Delete child segments explicitly first (avoids relying on async ORM
     # cascade and any FK ordering issues), then the job.

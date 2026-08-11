@@ -4,6 +4,9 @@
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 
+// Which panel the left icon rail has open in the dynamic dock.
+export type RailTab = 'projects' | 'sessions' | 'speakers' | 'elements' | 'voices' | 'settings'
+
 export interface VoicePreset {
   id: string
   name: string // e.g., "Main Character (Male)", "Narrator (Female)"
@@ -23,12 +26,25 @@ interface EditorStore {
   zoom: number
   timelineScrollLeft: number
   timelineHeight: number
+  // Active timeline tool — 'select' drags/trims clips, 'blade' splits the clip
+  // at the click position (CapCut-style).
+  activeTool: 'select' | 'blade'
+  // Magnetic snapping of clip edges to other clips + the playhead
+  snapEnabled: boolean
 
   // Selection / active
   activeSegmentId: string | null
+  selectedOverlayId: string | null
   editingSegmentId: string | null
   selectedSpeakerId: string | null
   selectedSegmentIds: string[]
+  // Segment ids queued in a running batch voice generation, plus the job
+  // they belong to. Lives OUTSIDE DEFAULT_STATE (like railTab): the backend
+  // batch keeps running wherever the user navigates, and resetEditor() fires
+  // on every session switch — these must survive it so badges/banner and
+  // polling resume when the user returns to that episode.
+  batchGeneratingIds: string[]
+  batchGeneratingJobId: string | null
   availableVoices: VoicePreset[]
   inspectorMode: 'global_synthesis' | 'audio_clip_settings' | 'subtitle_settings'
   focusedTimelineItemId: string | null
@@ -51,6 +67,7 @@ interface EditorStore {
     tts_audio_path?: string
   ) => void
   updateSegmentText: (id: string, text: string) => void
+  clearSegmentTextOverride: (id: string) => void
   clearSegmentPositions: () => void
 
   // Mute & Solo States
@@ -59,6 +76,13 @@ interface EditorStore {
 
   toggleMuteTrack: (speakerId: string | null) => void
   toggleSoloTrack: (speakerId: string | null) => void
+
+  // Left icon rail → dynamic dock panel. Lives OUTSIDE DEFAULT_STATE on
+  // purpose: resetEditor() fires on every session switch, and the user's
+  // chosen tab (e.g. Voices) must survive it — EditorPage re-derives the tab
+  // on real context changes instead.
+  railTab: RailTab
+  setRailTab: (t: RailTab) => void
 
   // Panel visibility
   leftPanelCollapsed: boolean
@@ -79,15 +103,20 @@ interface EditorStore {
   resetZoom: () => void
   setTimelineScrollLeft: (x: number) => void
   setTimelineHeight: (h: number) => void
+  setActiveTool: (t: 'select' | 'blade') => void
+  toggleSnap: () => void
   speakerPanelWidth: number
   setSpeakerPanelWidth: (w: number) => void
 
   // Actions — selection
   setActiveSegment: (id: string | null) => void
+  setSelectedOverlay: (id: string | null) => void
   setEditingSegment: (id: string | null) => void
   setSelectedSpeaker: (id: string | null) => void
   toggleSelectSegment: (id: string) => void
   toggleSelectAllSegments: (ids: string[]) => void
+  /** Replace the multi-selection wholesale — used by the timeline marquee. */
+  setSelectedSegments: (ids: string[]) => void
   setInspectorMode: (mode: 'global_synthesis' | 'audio_clip_settings' | 'subtitle_settings') => void
   setFocusedTimelineItemId: (id: string | null) => void
 
@@ -109,9 +138,14 @@ const DEFAULT_STATE = {
   playbackRate: 1,
   zoom: 1,
   timelineScrollLeft: 0,
-  timelineHeight: 300,
+  // Taller default than the old 300 so the same number of lanes stay visible
+  // now that rows are 64px instead of 48px.
+  timelineHeight: 380,
+  activeTool: 'select' as 'select' | 'blade',
+  snapEnabled: true,
   speakerPanelWidth: 228,
   activeSegmentId: null,
+  selectedOverlayId: null,
   editingSegmentId: null,
   selectedSpeakerId: null,
   leftPanelCollapsed: false,
@@ -132,6 +166,20 @@ const DEFAULT_STATE = {
 export const useEditorStore = create<EditorStore>()(
   subscribeWithSelector((set, get) => ({
     ...DEFAULT_STATE,
+
+    // ── Rail (not part of DEFAULT_STATE — see interface note) ──
+    railTab: 'projects' as RailTab,
+    setRailTab: (t) => {
+      if (get().railTab !== t) set({ railTab: t })
+    },
+
+    // ── Batch voice generation (not part of DEFAULT_STATE) ─────
+    // The backend batch keeps running no matter where the user navigates;
+    // resetEditor() fires on every session switch, so keeping these outside
+    // DEFAULT_STATE is what lets the progress tracking survive a hop to
+    // another project and greet the user with live badges on return.
+    batchGeneratingIds: [] as string[],
+    batchGeneratingJobId: null as string | null,
 
     // ── Playback ──────────────────────────────────────────────
     setCurrentTime: (t) => {
@@ -158,7 +206,9 @@ export const useEditorStore = create<EditorStore>()(
     zoomOut: () => set((s) => ({ zoom: Math.max(0.25, s.zoom * 0.8) })),
     resetZoom: () => set({ zoom: 1 }),
     setTimelineScrollLeft: (x) => set({ timelineScrollLeft: x }),
-    setTimelineHeight: (h) => set({ timelineHeight: Math.max(200, Math.min(500, h)) }),
+    setTimelineHeight: (h) => set({ timelineHeight: Math.max(220, Math.min(560, h)) }),
+    setActiveTool: (t) => set({ activeTool: t }),
+    toggleSnap: () => set((s) => ({ snapEnabled: !s.snapEnabled })),
     setSpeakerPanelWidth: (w) => set({ speakerPanelWidth: Math.max(160, Math.min(300, w)) }),
 
     // ── Selection ─────────────────────────────────────────────
@@ -166,6 +216,7 @@ export const useEditorStore = create<EditorStore>()(
       const current = get().activeSegmentId
       if (current !== id) set({ activeSegmentId: id })
     },
+    setSelectedOverlay: (id) => set({ selectedOverlayId: id }),
     setEditingSegment: (id) => set({ editingSegmentId: id }),
     setSelectedSpeaker: (id) => set({ selectedSpeakerId: id }),
     toggleSelectSegment: (id) => set((s) => ({
@@ -181,6 +232,7 @@ export const useEditorStore = create<EditorStore>()(
           : Array.from(new Set([...s.selectedSegmentIds, ...ids]))
       }
     }),
+    setSelectedSegments: (ids) => set({ selectedSegmentIds: ids }),
     setInspectorMode: (mode) => set({ inspectorMode: mode }),
     setFocusedTimelineItemId: (id) => set({ focusedTimelineItemId: id }),
 
@@ -211,6 +263,18 @@ export const useEditorStore = create<EditorStore>()(
             },
           },
         }
+      }),
+    // Drop the local text override once the edit is persisted, handing the
+    // segment's text back to server state. Without this the override outlives
+    // the edit and keeps winning in EditorPage's merge — so undoing a text
+    // change updated the server but the old text never reappeared on screen.
+    clearSegmentTextOverride: (id) =>
+      set((s) => {
+        const existing = s.segmentPositions[id]
+        if (!existing || existing.khmer_text === undefined) return s
+        const next = { ...existing }
+        delete next.khmer_text
+        return { segmentPositions: { ...s.segmentPositions, [id]: next } }
       }),
     clearSegmentPositions: () => set({ segmentPositions: {} }),
 

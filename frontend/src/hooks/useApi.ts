@@ -2,9 +2,9 @@
 // React Query hooks — data fetching, caching, polling
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { projects, jobs, speakers, segments, tts, health, voices } from '@/api/client'
+import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions } from '@/api/client'
 import type { VoiceCreateInput } from '@/api/client'
-import type { ProjectCreate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice } from '@/types'
+import type { Segment, ProjectCreate, ProjectUpdate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice, OverlayUpdate } from '@/types'
 
 // ── Health ────────────────────────────────────────────────────
 export function useHealth() {
@@ -41,11 +41,46 @@ export function useCreateProject() {
   })
 }
 
+export function useUpdateProject() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: ProjectUpdate }) =>
+      projects.update(id, data),
+    onSuccess: (updated) => {
+      qc.invalidateQueries({ queryKey: ['project', updated.id] })
+      qc.invalidateQueries({ queryKey: ['projects'] })
+    },
+  })
+}
+
 export function useDeleteProject() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => projects.delete(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['projects'] }),
+  })
+}
+
+export function useUploadProjectLogo() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ projectId, file }: { projectId: string; file: File }) =>
+      projects.uploadLogo(projectId, file),
+    onSuccess: (updated) => {
+      qc.invalidateQueries({ queryKey: ['project', updated.id] })
+      qc.invalidateQueries({ queryKey: ['projects'] })
+    },
+  })
+}
+
+export function useDeleteProjectLogo() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (projectId: string) => projects.deleteLogo(projectId),
+    onSuccess: (updated) => {
+      qc.invalidateQueries({ queryKey: ['project', updated.id] })
+      qc.invalidateQueries({ queryKey: ['projects'] })
+    },
   })
 }
 
@@ -175,7 +210,12 @@ export function useUpdateSegment() {
     mutationFn: ({ segmentId, data }: { segmentId: string; data: SegmentUpdate }) =>
       segments.update(segmentId, data),
     onSuccess: (updated) => {
-      qc.invalidateQueries({ queryKey: ['segments', updated.job_id] })
+      // Write the PATCH response straight into the cache instead of
+      // invalidating — this fires after every drag/trim/edit, and refetching
+      // the full segment list each time is a large, needless round trip.
+      qc.setQueryData<Segment[]>(['segments', updated.job_id], (old) =>
+        old ? old.map((s) => (s.id === updated.id ? updated : s)) : old
+      )
     },
   })
 }
@@ -270,11 +310,130 @@ export function useSynthesizeBatch() {
 export function useMixFinalAudio() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ jobId, muteOriginal }: { jobId: string; muteOriginal?: boolean }) =>
-      tts.mixFinalAudio(jobId, muteOriginal),
+    mutationFn: ({ jobId, muteOriginal, exportPath }: { jobId: string; muteOriginal?: boolean; exportPath?: string }) =>
+      tts.mixFinalAudio(jobId, muteOriginal, exportPath),
     onSuccess: (_, { jobId }) => {
       qc.invalidateQueries({ queryKey: ['job', jobId] })
     },
+  })
+}
+
+// ── Bulk timeline actions ───────────────────────────────────────
+export function useAutofitSegments() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (jobId: string) => timelineActions.autofit(jobId),
+    onSuccess: (_, jobId) => qc.invalidateQueries({ queryKey: ['segments', jobId] }),
+  })
+}
+
+export function useTidyLanes() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (jobId: string) => timelineActions.tidyLanes(jobId),
+    onSuccess: (_, jobId) => qc.invalidateQueries({ queryKey: ['segments', jobId] }),
+  })
+}
+
+// ── Overlays (draggable/resizable canvas layers) ────────────────
+export function useOverlays(jobId: string | null) {
+  return useQuery({
+    queryKey: ['overlays', jobId],
+    queryFn: () => overlays.listByJob(jobId!),
+    enabled: !!jobId,
+  })
+}
+
+export function useCreateImageOverlay() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ jobId, file }: { jobId: string; file: File }) =>
+      overlays.createImage(jobId, file),
+    onSuccess: (created) => qc.invalidateQueries({ queryKey: ['overlays', created.job_id] }),
+  })
+}
+
+export function useCreateOverlayFromLogo() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (jobId: string) => overlays.createFromProjectLogo(jobId),
+    onSuccess: (created) => qc.invalidateQueries({ queryKey: ['overlays', created.job_id] }),
+  })
+}
+
+export function useCreateSubtitleOverlay() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (jobId: string) => overlays.createSubtitle(jobId),
+    onSuccess: (created) => qc.invalidateQueries({ queryKey: ['overlays', created.job_id] }),
+  })
+}
+
+export function useCreateShapeOverlay() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ jobId, blur }: { jobId: string; blur?: boolean }) => overlays.createShape(jobId, { blur }),
+    onSuccess: (created) => qc.invalidateQueries({ queryKey: ['overlays', created.job_id] }),
+  })
+}
+
+export function useUpdateOverlay() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; jobId: string; data: OverlayUpdate }) =>
+      overlays.update(id, data),
+    onSuccess: (_, { jobId }) => qc.invalidateQueries({ queryKey: ['overlays', jobId] }),
+  })
+}
+
+export function useDeleteOverlay() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id }: { id: string; jobId: string }) => overlays.delete(id),
+    onSuccess: (_, { jobId }) => qc.invalidateQueries({ queryKey: ['overlays', jobId] }),
+  })
+}
+
+// ── Overlay templates (global "brand kit") ──────────────────────
+export function useOverlayTemplates() {
+  return useQuery({
+    queryKey: ['overlay-templates'],
+    queryFn: () => overlayTemplates.list(),
+  })
+}
+
+export function useCreateOverlayTemplate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ name, fromJobId, setDefault }: { name: string; fromJobId: string; setDefault?: boolean }) =>
+      overlayTemplates.create(name, fromJobId, setDefault),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['overlay-templates'] }),
+  })
+}
+
+export function useUpdateOverlayTemplate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { name?: string; is_default?: boolean } }) =>
+      overlayTemplates.update(id, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['overlay-templates'] }),
+  })
+}
+
+export function useDeleteOverlayTemplate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => overlayTemplates.delete(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['overlay-templates'] }),
+  })
+}
+
+export function useApplyOverlayTemplate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, jobId }: { id: string; jobId: string }) =>
+      overlayTemplates.applyToJob(id, jobId),
+    onSuccess: (_, { jobId }) => qc.invalidateQueries({ queryKey: ['overlays', jobId] }),
   })
 }
 

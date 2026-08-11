@@ -24,7 +24,8 @@ async def health_check():
         services={
             "database":    "ok",
             "voxcpm2_tts": "ok" if voxcpm2_ok else "unavailable (mock mode)",
-            "whisper_asr": "remote" if settings.WHISPER_API_URL else "local",
+            "diarization": f"hf-space ({settings.DIARIZATION_MOSS_SPACE})",
+            "separation":  f"hf-space ({settings.SEPARATION_HF_SPACE})",
             "translation": settings.TRANSLATION_BACKEND,
         },
     )

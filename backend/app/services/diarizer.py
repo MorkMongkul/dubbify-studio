@@ -1,54 +1,26 @@
 """
 app/services/diarizer.py
-Speaker diarization + transcription — two backends, selected by
-DIARIZATION_BACKEND (see app/core/config.py):
-
-  "moss"     (default) — OpenMOSS-Team/MOSS-transcribe-diarize, a free HF
-             Space via gradio_client. One call returns diarization + ASR
-             together, no auth, up to ~1800s. Falls back to the mock
-             diarizer on any failure (never silently falls through to the
-             paid pyannoteAI path).
-  "pyannote" — pyannoteAI cloud API (paid beyond its free tier). Handles any
-             video length via automatic chunking:
-               - Audio ≤ CHUNK_THRESHOLD_MINUTES → single API call
-               - Audio >  CHUNK_THRESHOLD_MINUTES → split into chunks →
-                 process each → merge results with correct timestamps
-             Falls back to mock if PYANNOTEAI_TOKEN is unset.
-
-pyannoteAI flow per chunk:
-  Step 1 → POST /v1/media/input   get pre-signed PUT URL
-  Step 2 → PUT audio chunk        upload WAV slice to S3
-  Step 3 → POST /v1/diarize       submit job with transcription:true
-  Step 4 → Poll /v1/jobs/{id}     wait for "succeeded"
-  Step 5 → Parse output           extract speaker + text segments
-  Step 6 → Offset timestamps      add chunk start_time to all segment times
-  Step 7 → Merge all chunks       normalise speaker labels across chunks
+Speaker diarization + transcription via the free MOSS HF Space
+(OpenMOSS-Team/MOSS-transcribe-diarize, gradio_client). One call returns
+diarization + ASR together, no auth, up to ~1800s per call; longer audio is
+chunked with overlap and speaker labels are normalised across chunks.
+Falls back to a mock diarizer on any failure.
 """
 import asyncio
 import logging
 import re
-import uuid
-import httpx
 import tempfile
 import os
-from pathlib import Path
 from typing import List
 from dataclasses import dataclass
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-PYANNOTEAI_BASE = "https://api.pyannote.ai/v1"
-
 # The Space's own documented cap is ~1800s; small safety margin under that.
 MOSS_MAX_DURATION_SECONDS = 1750
 
-# Audio shorter than this is sent as a single chunk
-CHUNK_THRESHOLD_MINUTES = 10
-
-# Each chunk is this long (with overlap to avoid cutting mid-sentence)
-CHUNK_DURATION_MINUTES  = 9
-CHUNK_OVERLAP_SECONDS   = 10   # overlap between chunks to catch cross-boundary speech
+CHUNK_OVERLAP_SECONDS = 10   # overlap between chunks to catch cross-boundary speech
 
 
 @dataclass
@@ -56,15 +28,15 @@ class DiarizedSegment:
     speaker_label: str      # e.g. "SPEAKER_00"
     start_time: float       # seconds (absolute, from start of full audio)
     end_time: float         # seconds
-    gender: str             # always "unknown" — pyannoteAI doesn't return gender
+    gender: str             # always "unknown" — MOSS doesn't return gender
     age_group: str          # always "adult" — user edits in UI
-    source_text: str = ""   # transcribed text from pyannoteAI STT
+    source_text: str = ""   # transcribed text
 
 
 # ── Mock fallback ─────────────────────────────────────────────
 
 def _mock_diarize(audio_path: str) -> List[DiarizedSegment]:
-    """Mock fallback — used when PYANNOTEAI_TOKEN is not set."""
+    """Mock fallback — used when the MOSS Space is unreachable."""
     import soundfile as sf
     try:
         duration = sf.info(audio_path).duration
@@ -87,7 +59,7 @@ def _mock_diarize(audio_path: str) -> List[DiarizedSegment]:
         ))
         t, i = end, i + 1
 
-    logger.warning("Using MOCK diarizer — set PYANNOTEAI_TOKEN in .env for real results")
+    logger.warning("Using MOCK diarizer — the MOSS HF Space call did not succeed")
     return segments
 
 
@@ -261,7 +233,7 @@ async def _diarize_via_moss(audio_path: str) -> List[DiarizedSegment]:
 
     A single call handles up to ~MOSS_MAX_DURATION_SECONDS and keeps speaker
     labels consistent throughout (no cross-chunk speaker-drift). Longer audio
-    reuses the same chunk-and-merge infrastructure as the pyannoteAI path.
+    is chunked with overlap and merged with speaker-label normalisation.
     """
     duration = _get_audio_duration(audio_path)
 
@@ -295,198 +267,6 @@ async def _diarize_via_moss(audio_path: str) -> List[DiarizedSegment]:
 
         all_segments.sort(key=lambda s: s.start_time)
         return _normalise_speakers(all_segments, CHUNK_OVERLAP_SECONDS)
-
-
-# ── pyannoteAI API helpers ────────────────────────────────────
-
-def _auth_headers() -> dict:
-    return {
-        "Authorization": f"Bearer {settings.PYANNOTEAI_TOKEN}",
-        "Content-Type": "application/json",
-    }
-
-
-async def _upload_audio(audio_path: str, object_key: str) -> str:
-    """
-    Get pre-signed PUT URL then upload audio chunk.
-    Uses streaming upload — does NOT load entire file into memory.
-    Returns media:// URI.
-    """
-    media_uri = f"media://{object_key}"
-
-    # Step 1 — get pre-signed URL
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            f"{PYANNOTEAI_BASE}/media/input",
-            json={"url": media_uri},
-            headers=_auth_headers(),
-        )
-
-    if resp.status_code not in (200, 201):
-        raise RuntimeError(f"media/input error {resp.status_code}: {resp.text}")
-
-    presigned_url = resp.json().get("url")
-    if not presigned_url:
-        raise RuntimeError(f"No presigned URL in response: {resp.text}")
-
-    # Step 2 — read file bytes then upload (AsyncClient requires bytes, not a file handle)
-    audio_bytes = Path(audio_path).read_bytes()
-    file_size = len(audio_bytes)
-    logger.info(f"Uploading {file_size / 1e6:.1f}MB to pyannoteAI S3...")
-
-    async with httpx.AsyncClient(timeout=600.0) as client:
-        put_resp = await client.put(
-            presigned_url,
-            content=audio_bytes,
-            headers={
-                "Content-Type": "audio/wav",
-                "Content-Length": str(file_size),
-            },
-        )
-
-    if put_resp.status_code not in (200, 201, 204):
-        raise RuntimeError(f"Upload failed {put_resp.status_code}: {put_resp.text}")
-
-    logger.info(f"Audio uploaded: {media_uri}")
-    return media_uri
-
-
-async def _start_diarization_with_transcription(
-    media_uri: str,
-    num_speakers: int | None = None,
-    max_speakers: int | None = None,
-) -> str:
-    """Submit diarization + transcription job. Returns job_id.
-
-    Optional speaker-count hints curb pyannote over-clustering:
-      - num_speakers: exact count (use only when known)
-      - max_speakers: upper bound (model may use fewer)
-    """
-    payload = {
-        "url": media_uri,
-        "model": "precision-2",
-        "transcription": True,
-        "transcriptionConfig": {
-            "model": "faster-whisper-large-v3-turbo"
-        },
-    }
-    if num_speakers and num_speakers > 0:
-        payload["numSpeakers"] = int(num_speakers)
-    elif max_speakers and max_speakers > 0:
-        payload["maxSpeakers"] = int(max_speakers)
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            f"{PYANNOTEAI_BASE}/diarize",
-            json=payload,
-            headers=_auth_headers(),
-        )
-
-    if resp.status_code not in (200, 201):
-        raise RuntimeError(f"diarize error {resp.status_code}: {resp.text}")
-
-    data   = resp.json()
-    job_id = data.get("jobId") or data.get("job_id") or data.get("id")
-    if not job_id:
-        raise RuntimeError(f"No job_id in response: {resp.text}")
-
-    logger.info(f"pyannoteAI job started: {job_id}")
-    return job_id
-
-
-async def _poll_job(job_id: str, max_wait: int = 900) -> dict:
-    """
-    Poll until succeeded or failed.
-    max_wait=900 allows 15 minutes — enough for a 10-min chunk with transcription.
-    """
-    elapsed = 0
-    poll_interval = 5
-
-    while elapsed < max_wait:
-        await asyncio.sleep(poll_interval)
-        elapsed += poll_interval
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(
-                f"{PYANNOTEAI_BASE}/jobs/{job_id}",
-                headers=_auth_headers(),
-            )
-
-        if resp.status_code != 200:
-            logger.warning(f"Poll error {resp.status_code}: {resp.text}")
-            continue
-
-        data   = resp.json()
-        status = data.get("status", "").lower()
-
-        if elapsed % 30 == 0:   # log every 30s to avoid spam
-            logger.info(f"Job {job_id[:8]}: {status} ({elapsed}s elapsed)")
-
-        if status in ("succeeded", "completed"):
-            return data
-        if status in ("failed", "error", "cancelled"):
-            raise RuntimeError(f"Job {job_id} failed: {data}")
-
-    raise RuntimeError(f"Job {job_id} timed out after {max_wait}s")
-
-
-def _parse_response(data: dict, time_offset: float = 0.0) -> List[DiarizedSegment]:
-    """
-    Parse pyannoteAI response into DiarizedSegment list.
-
-    time_offset: add this many seconds to all timestamps.
-    Used when processing chunks — each chunk's segments need their
-    timestamps shifted back to absolute time in the full audio.
-    """
-    output = data.get("output", {})
-
-    # Primary: turn-level transcription (speaker + text + timestamps)
-    turns = output.get("turnLevelTranscription", [])
-
-    if turns:
-        segments = []
-        for turn in turns:
-            start   = float(turn.get("start", 0)) + time_offset
-            end     = float(turn.get("end",   0)) + time_offset
-            speaker = turn.get("speaker", "SPEAKER_00")
-            text    = turn.get("text", "").strip()
-
-            if end <= start:
-                continue
-
-            segments.append(DiarizedSegment(
-                speaker_label=speaker,
-                start_time=round(start, 3),
-                end_time=round(end, 3),
-                gender="unknown",
-                age_group="adult",
-                source_text=text,
-            ))
-
-        segments.sort(key=lambda s: s.start_time)
-        return segments
-
-    # Fallback: diarization only (no text)
-    logger.warning("No turnLevelTranscription — falling back to diarization only")
-    raw = output.get("diarization", [])
-    segments = []
-    for seg in raw:
-        start   = float(seg.get("start", 0)) + time_offset
-        end     = float(seg.get("end",   0)) + time_offset
-        speaker = seg.get("speaker", "SPEAKER_00")
-        if end <= start:
-            continue
-        segments.append(DiarizedSegment(
-            speaker_label=speaker,
-            start_time=round(start, 3),
-            end_time=round(end, 3),
-            gender="unknown",
-            age_group="adult",
-            source_text="",
-        ))
-
-    segments.sort(key=lambda s: s.start_time)
-    return segments
 
 
 # ── Speaker normalisation across chunks ───────────────────────
@@ -551,101 +331,7 @@ def _normalise_speakers(
     return deduped
 
 
-# ── Single chunk processing ───────────────────────────────────
-
-async def _process_single_chunk(
-    audio_path: str,
-    time_offset: float = 0.0,
-    chunk_label: str = "",
-    num_speakers: int | None = None,
-    max_speakers: int | None = None,
-) -> List[DiarizedSegment]:
-    """Upload one audio chunk to pyannoteAI and return segments."""
-    object_key = f"dubber_{uuid.uuid4().hex[:12]}"
-    label      = chunk_label or Path(audio_path).name
-
-    logger.info(f"Processing chunk: {label} (offset={time_offset:.0f}s)")
-
-    media_uri = await _upload_audio(audio_path, object_key)
-    job_id    = await _start_diarization_with_transcription(media_uri, num_speakers, max_speakers)
-    result    = await _poll_job(job_id)
-    segments  = _parse_response(result, time_offset=time_offset)
-
-    logger.info(f"Chunk {label}: {len(segments)} segments returned")
-    return segments
-
-
-# ── Main diarization entry points ─────────────────────────────
-
-async def _diarize_and_transcribe(
-    audio_path: str,
-    num_speakers: int | None = None,
-    max_speakers: int | None = None,
-) -> List[DiarizedSegment]:
-    """
-    Full diarization + transcription with automatic chunking.
-
-    Short audio (≤ CHUNK_THRESHOLD_MINUTES):
-      → single pyannoteAI call
-
-    Long audio (> CHUNK_THRESHOLD_MINUTES):
-      → split into CHUNK_DURATION_MINUTES chunks
-      → process each sequentially (avoid hammering the API)
-      → merge and normalise speaker labels
-      → clean up chunk files
-    """
-    duration = _get_audio_duration(audio_path)
-    threshold = CHUNK_THRESHOLD_MINUTES * 60
-
-    if duration <= threshold:
-        # Fast path — single call
-        logger.info(f"Audio {duration:.0f}s ≤ {threshold:.0f}s — single chunk")
-        return await _process_single_chunk(
-            audio_path, time_offset=0.0,
-            num_speakers=num_speakers, max_speakers=max_speakers,
-        )
-
-    # Chunked path
-    logger.info(
-        f"Audio {duration:.0f}s ({duration/60:.1f}min) > {CHUNK_THRESHOLD_MINUTES}min "
-        f"— splitting into {CHUNK_DURATION_MINUTES}min chunks"
-    )
-
-    chunk_duration = CHUNK_DURATION_MINUTES * 60
-
-    with tempfile.TemporaryDirectory(prefix="dubber_chunks_") as chunk_dir:
-        # Split audio into overlapping chunks
-        chunks = await _split_audio_into_chunks(
-            audio_path=audio_path,
-            chunk_dir=chunk_dir,
-            chunk_duration_secs=chunk_duration,
-            overlap_secs=CHUNK_OVERLAP_SECONDS,
-        )
-
-        # Process each chunk sequentially
-        all_segments: List[DiarizedSegment] = []
-        for i, chunk in enumerate(chunks):
-            logger.info(
-                f"Processing chunk {i+1}/{len(chunks)} "
-                f"(offset={chunk['offset']:.0f}s)"
-            )
-            try:
-                segments = await _process_single_chunk(
-                    audio_path=chunk["path"],
-                    time_offset=chunk["offset"],
-                    chunk_label=f"chunk_{chunk['index']:03d}",
-                    num_speakers=num_speakers,
-                    max_speakers=max_speakers,
-                )
-                all_segments.extend(segments)
-            except Exception as e:
-                logger.error(f"Chunk {i+1} failed: {e} — skipping")
-                continue
-
-        # Sort by absolute time then normalise speaker labels
-        all_segments.sort(key=lambda s: s.start_time)
-        return _normalise_speakers(all_segments, CHUNK_OVERLAP_SECONDS)
-
+# ── Main entry point ──────────────────────────────────────────
 
 async def diarize_audio(
     audio_path: str,
@@ -653,32 +339,15 @@ async def diarize_audio(
     max_speakers: int | None = None,
 ) -> List[DiarizedSegment]:
     """
-    Main entry point for diarization. Routes to DIARIZATION_BACKEND ("moss" or
-    "pyannote"). Automatically handles any video length via chunking.
+    Main entry point for diarization — MOSS HF Space, mock on failure.
 
-    Optional speaker-count hints (curb over-clustering) — pyannoteAI only;
-    MOSS's API has no speaker-count parameter, so these are ignored on that path.
-      - num_speakers: exact count
-      - max_speakers: upper bound
+    num_speakers / max_speakers are accepted for API compatibility but the
+    MOSS Space has no speaker-count parameter, so they are ignored.
     """
-    backend = (settings.DIARIZATION_BACKEND or "moss").lower()
-
-    if backend == "moss":
-        try:
-            return await _diarize_via_moss(audio_path)
-        except Exception as e:
-            logger.error(f"MOSS diarization failed: {e} — falling back to mock")
-            return _mock_diarize(audio_path)
-
-    # backend == "pyannote"
-    if not settings.PYANNOTEAI_TOKEN:
-        logger.warning("PYANNOTEAI_TOKEN not set — using mock diarizer")
-        return _mock_diarize(audio_path)
-
     try:
-        return await _diarize_and_transcribe(audio_path, num_speakers, max_speakers)
+        return await _diarize_via_moss(audio_path)
     except Exception as e:
-        logger.error(f"pyannoteAI failed: {e} — falling back to mock")
+        logger.error(f"MOSS diarization failed: {e} — falling back to mock")
         return _mock_diarize(audio_path)
 
 

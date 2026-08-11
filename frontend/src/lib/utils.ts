@@ -105,7 +105,9 @@ export function isJobRunning(status: string): boolean {
 export function getLanguageName(code: string | null | undefined): string {
   if (!code) return '—'
   const map: Record<string, string> = {
-    zh: 'Chinese', kh: 'Khmer',
+    // "kh" is not a real Khmer code — kept only so projects created before the
+    // CreateProjectModal typo was fixed still render a name instead of "KH".
+    zh: 'Chinese', km: 'Khmer', kh: 'Khmer',
     en: 'English', th: 'Thai', ja: 'Japanese', ko: 'Korean',
     es: 'Spanish', fr: 'French', de: 'German', it: 'Italian', pt: 'Portuguese',
     ru: 'Russian', ar: 'Arabic', hi: 'Hindi', vi: 'Vietnamese', id: 'Indonesian',

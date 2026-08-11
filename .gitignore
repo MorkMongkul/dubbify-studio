@@ -21,6 +21,7 @@ __pycache__/
 
 # Virtual environments
 venv/
+venv_clean/
 .venv/
 env/
 ENV/
@@ -89,3 +90,4 @@ node_modules/
 *.env
 !.env.example
 backend/.env
+frontend/src-tauri/binaries/

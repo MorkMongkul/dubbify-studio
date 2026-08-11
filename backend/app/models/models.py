@@ -21,7 +21,7 @@ def generate_uuid():
 class JobStatus(str, enum.Enum):
     PENDING      = "pending"
     EXTRACTING   = "extracting"    # ffmpeg audio extraction
-    SEPARATING   = "separating"    # demucs vocal / BGM split
+    SEPARATING   = "separating"    # vocal / BGM split (HF Space)
     STEMS_READY  = "stems_ready"   # paused — waiting for user to click Analyze
     DIARIZING    = "diarizing"     # speaker diarization
     TRANSCRIBING = "transcribing"  # ASR
@@ -93,6 +93,7 @@ class Project(Base):
     description = Column(Text, default="")
     source_lang = Column(String(10), default="zh")   # ISO code
     target_lang = Column(String(10), default="km")   # Khmer
+    logo_path   = Column(String, default="")         # watermark, reused across exports
     created_at  = Column(DateTime, server_default=func.now())
     updated_at  = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -124,6 +125,8 @@ class Job(Base):
     project  = relationship("Project", back_populates="jobs")
     segments = relationship("Segment", back_populates="job", cascade="all, delete",
                             order_by="Segment.start_time")
+    overlays = relationship("Overlay", back_populates="job", cascade="all, delete",
+                            order_by="Overlay.z_index")
 
 
 # ── Speaker ───────────────────────────────────────────────────
@@ -190,3 +193,67 @@ class Segment(Base):
 
     job     = relationship("Job", back_populates="segments")
     speaker = relationship("Speaker", back_populates="segments")
+
+
+# ── Overlay ───────────────────────────────────────────────────
+# A positioned layer on the video canvas — either a dropped image (logo,
+# sticker, etc.) or the burned-in subtitle box. Position/size are stored as
+# fractions of the video's own width/height (0-1), so the same values map
+# identically onto the live editor preview and the full-resolution export.
+# ── Overlay template (workspace-global "brand kit") ───────────
+class OverlayTemplate(Base):
+    """
+    A saved snapshot of one job's full overlay layout (logo, boxes, subtitle
+    style), reusable across every episode. Workspace-global like Voice, since
+    episodes live in separate projects. `items` holds the overlay dicts
+    (same fields as Overlay minus id/job_id); image items' media_path points
+    into uploads/templates/<template_id>/, owned by the template — applying
+    copies the file into the target job so deleting either side is safe.
+    Positions are fractions of video dimensions, so a template maps
+    identically onto every (vertical) episode.
+    """
+    __tablename__ = "overlay_templates"
+
+    id         = Column(String, primary_key=True, default=generate_uuid)
+    name       = Column(String(120), nullable=False)
+    is_default = Column(Boolean, default=False)  # auto-applied to newly uploaded episodes
+    items      = Column(JSON, default=list)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class Overlay(Base):
+    __tablename__ = "overlays"
+
+    id         = Column(String, primary_key=True, default=generate_uuid)
+    job_id     = Column(String, ForeignKey("jobs.id"), nullable=False)
+    type       = Column(String(20), default="image")   # "image" | "subtitle" | "shape"
+    media_path = Column(String, default="")             # image overlays only
+
+    # Shape overlays only — a plain box used to cover something in the
+    # source video (e.g. a burned-in original-language subtitle) so a new
+    # subtitle overlay reads cleanly on top of it. `color`/`opacity` above
+    # double as the shape's fill when not blurring.
+    blur = Column(Boolean, default=False)   # True = blur the video underneath instead of filling with color
+
+    # Box — top-left corner + size, all fractions of video width/height.
+    x      = Column(Float, default=0.7)
+    y      = Column(Float, default=0.05)
+    width  = Column(Float, default=0.2)
+    height = Column(Float, default=0.15)
+
+    opacity = Column(Float, default=1.0)
+    z_index = Column(Integer, default=0)
+
+    # Visibility window — null on both means visible for the whole video.
+    start_time = Column(Float, nullable=True)
+    end_time   = Column(Float, nullable=True)
+
+    # Subtitle overlays only.
+    font_size        = Column(Integer, default=42)
+    color            = Column(String(20), default="white")   # text fill
+    outline_color    = Column(String(20), default="black")   # text stroke
+    background_color = Column(String(20), default="")        # box fill behind text; "" = none
+
+    created_at = Column(DateTime, server_default=func.now())
+
+    job = relationship("Job", back_populates="overlays")

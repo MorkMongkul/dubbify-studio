@@ -2,7 +2,7 @@
 app/services/pipeline.py
 ASR pipeline orchestrator — two user-controlled stages.
 
-Stage 1  run_pipeline()           → extract audio + demucs separation → STEMS_READY
+Stage 1  run_pipeline()           → extract audio + stem separation (HF Space) → STEMS_READY
 Stage 2  run_analysis_pipeline()  → diarize + transcribe + translate  → COMPLETED
 
 TTS synthesis and final mix are triggered separately per-segment / on demand.
@@ -62,6 +62,12 @@ async def run_pipeline(job_id: str) -> None:
             await _update_job(db, job, JobStatus.SEPARATING, 20)
             vocals_path, _bgm = await separate_vocals_bgm(audio_path, str(job_dir))
             logger.info(f"Separation complete — vocals: {vocals_path}")
+
+            # The extracted full-mix WAV (~10MB/min) is only needed as a
+            # diarization fallback for jobs where separation produced nothing —
+            # once real stems exist, reclaim it.
+            if vocals_path != audio_path and Path(vocals_path).exists():
+                Path(audio_path).unlink(missing_ok=True)
 
             # Stage 1 done — hand off to user
             await _update_job(db, job, JobStatus.STEMS_READY, 30)

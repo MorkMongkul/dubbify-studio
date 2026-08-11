@@ -25,12 +25,69 @@ export type SegmentStatus = 'pending' | 'approved' | 'editing'
 export interface Project {
   id: string
   name: string
+  description?: string
   source_lang: string
   target_lang: string
   status: ProjectStatus
   created_at: string
   updated_at: string
   job_count?: number
+  logo_path?: string
+  logo_url?: string | null
+}
+
+export interface ProjectUpdate {
+  name?: string
+  description?: string
+}
+
+export type OverlayType = 'image' | 'subtitle' | 'shape'
+
+export interface Overlay {
+  id: string
+  job_id: string
+  type: OverlayType
+  media_path: string
+  media_url?: string | null
+  x: number       // fraction (0-1) of video width — top-left corner
+  y: number       // fraction (0-1) of video height
+  width: number   // fraction (0-1) of video width
+  height: number  // fraction (0-1) of video height
+  opacity: number
+  z_index: number
+  start_time?: number | null
+  end_time?: number | null
+  font_size: number         // subtitle overlays only
+  color: string             // subtitle text fill, or shape fill color
+  outline_color: string     // subtitle overlays only — text stroke
+  background_color: string  // subtitle overlays only — box fill behind text; "" = none
+  blur: boolean              // shape overlays only — blur the video underneath instead of filling with `color`
+}
+
+export interface OverlayUpdate {
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  opacity?: number
+  z_index?: number
+  start_time?: number | null
+  end_time?: number | null
+  font_size?: number
+  color?: string
+  outline_color?: string
+  background_color?: string
+  blur?: boolean
+}
+
+// Workspace-global saved overlay layout ("brand kit") — snapshot of one
+// episode's overlays, re-applicable to any other episode. When is_default,
+// it's stamped automatically onto every newly uploaded episode.
+export interface OverlayTemplate {
+  id: string
+  name: string
+  is_default: boolean
+  item_count: number
 }
 
 export interface ProjectCreate {
@@ -81,7 +138,7 @@ export interface Speaker {
 export interface SpeakerUpdate {
   display_name?: string
   color?: string
-  voice_id?: string
+  voice_id?: string | null
   voice_design_prompt?: string
   gender?: string
   age_group?: string
@@ -116,7 +173,8 @@ export interface Segment {
   source_text: string     // original language (e.g. Chinese)
   english_text: string    // intermediate English
   khmer_text: string      // final translated text (target language)
-  tts_audio_path: string  // path to synthesised .wav (empty if not yet done)
+  tts_audio_path: string  // absolute filesystem path (server-internal, not fetchable)
+  tts_audio_url?: string | null  // /uploads/... URL — use this for playback/waveform fetches
   tts_duration_secs: number
   is_approved: boolean
   notes: string
@@ -170,10 +228,14 @@ export interface PipelineStartResponse {
   message?: string
 }
 
+// Mirrors backend schemas.TTSResponse — the previous shape
+// ({ audio_url, duration }) matched no field the API actually returns.
 export interface TTSResponse {
   segment_id: string
-  audio_url: string
-  duration: number
+  audio_path: string
+  duration_secs: number
+  success: boolean
+  error: string
 }
 
 export interface HealthResponse {

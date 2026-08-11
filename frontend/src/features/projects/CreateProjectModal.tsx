@@ -17,10 +17,14 @@ export function CreateProjectModal({ open, onClose }: CreateProjectModalProps) {
   const navigate = useNavigate()
   const { mutate: createProject, isPending } = useCreateProject()
 
+  // Khmer is "km" — the code the backend's LANG_NAMES/GOOGLE_LANG_MAP and
+  // LANGUAGE_OPTIONS all use. A "kh" here matched no <option>, so the select
+  // silently displayed Chinese while the project was created with an unknown
+  // target language that the translator could not resolve.
   const [form, setForm] = useState({
     name: '',
     source_lang: 'zh',
-    target_lang: 'kh',
+    target_lang: 'km',
   })
   const [errors, setErrors] = useState<Record<string, string>>({})
 
@@ -42,7 +46,7 @@ export function CreateProjectModal({ open, onClose }: CreateProjectModalProps) {
       onSuccess: (project) => {
         toast.success(`Project "${project.name}" created`)
         onClose()
-        setForm({ name: '', source_lang: 'zh', target_lang: 'kh' })
+        setForm({ name: '', source_lang: 'zh', target_lang: 'km' })
         navigate(`/projects/${project.id}`)
       },
       onError: () => toast.error('Failed to create project'),

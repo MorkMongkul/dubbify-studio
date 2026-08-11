@@ -1,13 +1,13 @@
 // src/App.tsx
+// Single-window app: the editor IS the application. Projects, Voices and
+// Settings live in the editor's icon-rail dock — the old standalone pages
+// and grey nav sidebar are gone.
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { AnimatePresence } from 'framer-motion'
-import { AppShell } from '@/components/layout/AppShell'
+import { Toaster } from 'sonner'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
-import ProjectsPage from '@/pages/ProjectsPage'
+import { BackendGate } from '@/components/layout/BackendGate'
 import EditorPage from '@/pages/EditorPage'
-import SettingsPage from '@/pages/SettingsPage'
-import VoiceCreatorPage from '@/pages/VoiceCreatorPage'
 import { initTheme } from '@/store/themeStore'
 
 // Restore persisted theme before first render
@@ -23,20 +23,25 @@ const queryClient = new QueryClient({
   },
 })
 
-function AnimatedRoutes() {
+const toasterStyle = {
+  background: 'var(--toast-bg)',
+  border: '1px solid var(--toast-border)',
+  color: 'var(--toast-color)',
+  fontFamily: 'var(--font-sans)',
+}
+
+// Routes stay keyed by pathname so every navigation remounts the editor —
+// the VideoPlayer/Timeline lifecycles and the per-session store reset rely
+// on that remount, so don't remove the key.
+function AppRoutes() {
   const location = useLocation()
   return (
-    <AnimatePresence mode="wait" initial={false}>
-      <Routes location={location} key={location.pathname}>
-        <Route path="/"                                  element={<Navigate to="/projects" replace />} />
-        <Route path="/projects"                          element={<ProjectsPage />} />
-        <Route path="/projects/:projectId"               element={<EditorPage />} />
-        <Route path="/projects/:projectId/jobs/:jobId"   element={<EditorPage />} />
-        <Route path="/voices"                            element={<VoiceCreatorPage />} />
-        <Route path="/settings"                          element={<SettingsPage />} />
-        <Route path="*"                                  element={<Navigate to="/projects" replace />} />
-      </Routes>
-    </AnimatePresence>
+    <Routes location={location} key={location.pathname}>
+      <Route path="/"                                  element={<EditorPage />} />
+      <Route path="/projects/:projectId"               element={<EditorPage />} />
+      <Route path="/projects/:projectId/jobs/:jobId"   element={<EditorPage />} />
+      <Route path="*"                                  element={<Navigate to="/" replace />} />
+    </Routes>
   )
 }
 
@@ -45,9 +50,11 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <ErrorBoundary>
         <BrowserRouter>
-          <AppShell>
-            <AnimatedRoutes />
-          </AppShell>
+          {/* Nothing renders (and no query fires) until the API really answers */}
+          <BackendGate>
+            <AppRoutes />
+          </BackendGate>
+          <Toaster position="bottom-right" toastOptions={{ style: toasterStyle }} />
         </BrowserRouter>
       </ErrorBoundary>
     </QueryClientProvider>

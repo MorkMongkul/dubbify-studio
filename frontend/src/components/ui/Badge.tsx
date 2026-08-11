@@ -55,6 +55,7 @@ const statusVariantMap: Record<JobStatus, BadgeVariant> = {
   pending:      'gray',
   extracting:   'violet',
   separating:   'violet',
+  stems_ready:  'violet',
   diarizing:    'violet',
   transcribing: 'violet',
   translating:  'blue',

@@ -5,6 +5,7 @@ Extracts audio and subtitles from a video file using ffmpeg.
 import asyncio
 import json
 import os
+import sys
 import logging
 from pathlib import Path
 
@@ -235,18 +236,47 @@ async def mix_dubbed_audio(
     output_path: str,
     mute_original: bool = True,
     bgm_path: str | None = None,
+    video_layers: list | None = None,
+    video_width: int | None = None,
+    video_height: int | None = None,
 ) -> str:
     """
-    Mix TTS audio segments back onto the video timeline using ffmpeg.
+    Mix TTS audio segments back onto the video timeline using ffmpeg, and
+    optionally composite video layers (dropped images, burned-in subtitle
+    lines, plain color/blur boxes) on top of the video.
 
     Args:
         video_path:    Original video file
-        tts_segments:  List of dicts: {start_time, audio_path, duration}
+        tts_segments:  List of dicts: {start_time, audio_path, duration,
+                       fit_rate?}. `fit_rate` > 1 speeds the clip up via
+                       atempo so it fits its segment window — it must match
+                       the editor's auto-fit playback rate, or the export
+                       sounds slower than the preview.
         output_path:   Where to save the dubbed video
         mute_original: Whether to silence the original audio track
         bgm_path:      Optional path to a separated BGM/no_vocals WAV file.
                        When provided, uses clean BGM instead of the original
                        mixed audio, eliminating any original voice bleed-through.
+        video_layers:  Optional list of positioned layers, composited in list
+                       order — **the caller must pass them in real z-index
+                       order**, since e.g. a "shape" meant to cover something
+                       and a subtitle meant to read on top of it only work
+                       correctly if they're interleaved in the right order,
+                       not grouped by kind. Each entry has a `kind`:
+                         - kind="image": {media_path, x, y, width, height,
+                           opacity, start_time, end_time} — a positioned
+                           image (dropped logo, or one pre-rendered subtitle
+                           line PNG).
+                         - kind="shape": {x, y, width, height, color, opacity,
+                           blur, start_time, end_time} — a plain box, no
+                           media file. `blur=True` blurs the video underneath
+                           instead of filling it with `color`; typically used
+                           to cover something already burned into the source
+                           video (e.g. an original-language subtitle) so a
+                           new subtitle overlay reads cleanly on top of it.
+                       x/y/width/height are fractions (0-1) of the video's
+                       own dimensions; start_time/end_time may be None for
+                       "visible the whole video".
 
     Returns:
         Path to output dubbed video file
@@ -268,19 +298,57 @@ async def mix_dubbed_audio(
 
     tts_offset = 2 if bgm_input_idx is not None else 1
 
+    # Each clip stream stays FINITE (adelay only — no per-stream apad): a clip
+    # is processed for start_time + duration instead of the whole movie, so the
+    # mixing cost scales with total speech, not segments × film length. The
+    # single apad AFTER the mix (below) restores the infinite tail that
+    # -shortest needs so the video is never truncated at the last dubbed line.
     for i, seg in enumerate(tts_segments):
         inputs += ["-i", seg["audio_path"]]
         delay_ms = int(seg["start_time"] * 1000)
         label = f"[a{i}]"
+        # A single atempo filter caps at 2.0× — chain filters for higher rates.
+        # adelay fed by atempo emits AV_NOPTS timestamps (ffmpeg 8.x), which
+        # corrupts the mux (near-zero audio duration) — asetpts regenerates
+        # sample-accurate pts after the delay silence is inserted.
+        fit_rate = seg.get("fit_rate") or 1.0
+        tempo, setpts = "", ""
+        if fit_rate > 1.001:
+            r = fit_rate
+            steps = []
+            while r > 2.0:
+                steps.append("atempo=2.0")
+                r /= 2.0
+            steps.append(f"atempo={r:.4f}")
+            tempo = ",".join(steps) + ","
+            setpts = ",asetpts=N/SR/TB"
         filter_parts.append(
-            f"[{tts_offset + i}:a]adelay={delay_ms}|{delay_ms},apad{label}"
+            f"[{tts_offset + i}:a]{tempo}adelay={delay_ms}|{delay_ms}{setpts}{label}"
         )
         mix_labels.append(label)
 
-    # Mix all delayed TTS streams together
-    mix_inputs = "".join(mix_labels)
     n = len(tts_segments)
-    filter_parts.append(f"{mix_inputs}amix=inputs={n}:normalize=0[dubbed]")
+
+    # amix in groups: hundreds of inputs in a single amix make an enormous
+    # filter node and can brush up against argv/filter-graph limits — submix
+    # in chunks, then mix the submixes.
+    AMIX_GROUP = 32
+    if n <= AMIX_GROUP:
+        filter_parts.append(f"{''.join(mix_labels)}amix=inputs={n}:normalize=0[dubmix]")
+    else:
+        group_labels = []
+        for g in range(0, n, AMIX_GROUP):
+            chunk = mix_labels[g:g + AMIX_GROUP]
+            glabel = f"[g{g // AMIX_GROUP}]"
+            filter_parts.append(f"{''.join(chunk)}amix=inputs={len(chunk)}:normalize=0{glabel}")
+            group_labels.append(glabel)
+        filter_parts.append(
+            f"{''.join(group_labels)}amix=inputs={len(group_labels)}:normalize=0[dubmix]"
+        )
+
+    # Pad the combined dub track once so -shortest cuts at the VIDEO's end,
+    # not at the last TTS clip's end.
+    filter_parts.append("[dubmix]apad[dubbed]")
 
     # Determine final audio:
     #   bgm_path provided  → BGM (full volume) + dubbed TTS (full volume)
@@ -289,39 +357,122 @@ async def mix_dubbed_audio(
     if bgm_input_idx is not None:
         filter_parts.append(f"[{bgm_input_idx}:a][dubbed]amix=inputs=2:normalize=0[final]")
         audio_map = "[final]"
-        filter_complex = ";".join(filter_parts)
     elif mute_original:
         audio_map = "[dubbed]"
-        filter_complex = ";".join(filter_parts)
     else:
         filter_parts.append(f"[0:a]volume=0.15[orig];[orig][dubbed]amix=inputs=2[final]")
         audio_map = "[final]"
-        filter_complex = ";".join(filter_parts)
 
-    cmd = [
-        "ffmpeg", "-y",
-        *inputs,
-        "-filter_complex", filter_complex,
-        "-map", "0:v",           # original video track
-        "-map", audio_map,       # dubbed audio
-        "-c:v", "copy",          # don't re-encode video
-        "-c:a", "aac",           # encode audio as AAC
-        "-b:a", "192k",
-        "-shortest",
-        output_path,
-    ]
+    # ── Optional video layers (dropped images, burned-in subtitle lines,
+    # plain color/blur boxes) — composited in the given list order, which
+    # must already be true z-index order so e.g. a "cover the original
+    # subtitle" shape and the new subtitle text interleave correctly rather
+    # than one kind always landing above the other regardless of z-index.
+    # Stream-copying the video (-c:v copy) is only possible when no video
+    # filter is applied — adding any layer means decoding/re-encoding.
+    next_input_idx = tts_offset + n
+    video_map = "0:v"
+    needs_video_encode = False
+    video_chain_label = "0:v"
+
+    if video_layers:
+        if not video_width or not video_height:
+            raise ValueError("video_width/video_height are required when video_layers is set")
+        for i, layer in enumerate(video_layers):
+            target_w = max(1, round(video_width * layer["width"]))
+            target_h = max(1, round(video_height * layer["height"]))
+            px = round(video_width * layer["x"])
+            py = round(video_height * layer["y"])
+            enable = ""
+            start, end = layer.get("start_time"), layer.get("end_time")
+            if start is not None and end is not None:
+                enable = f":enable='between(t,{start},{end})'"
+
+            out_label = f"v{i}"
+
+            if layer["kind"] == "shape":
+                if layer.get("blur"):
+                    # Split the current frame in two: one copy stays
+                    # untouched as the base, the other gets cropped to just
+                    # this box, blurred, then overlaid back at the same
+                    # position it was cropped from.
+                    base_label = f"shbase{i}"
+                    crop_label = f"shcrop{i}"
+                    blurred_label = f"shblur{i}"
+                    filter_parts.append(f"[{video_chain_label}]split=2[{base_label}][{crop_label}]")
+                    filter_parts.append(f"[{crop_label}]crop={target_w}:{target_h}:{px}:{py},boxblur=20:5[{blurred_label}]")
+                    filter_parts.append(f"[{base_label}][{blurred_label}]overlay=x={px}:y={py}{enable}[{out_label}]")
+                else:
+                    color = layer.get("color") or "black"
+                    opacity = layer.get("opacity", 0.85)
+                    filter_parts.append(
+                        f"[{video_chain_label}]drawbox=x={px}:y={py}:w={target_w}:h={target_h}:"
+                        f"color={color}@{opacity}:t=fill{enable}[{out_label}]"
+                    )
+            else:  # kind == "image"
+                inputs += ["-i", layer["media_path"]]
+                layer_idx = next_input_idx
+                next_input_idx += 1
+                opacity = layer.get("opacity", 1.0)
+
+                scaled_label = f"ov{i}"
+                filter_parts.append(
+                    f"[{layer_idx}:v]scale={target_w}:{target_h},"
+                    f"format=rgba,colorchannelmixer=aa={opacity}[{scaled_label}]"
+                )
+                filter_parts.append(
+                    f"[{video_chain_label}][{scaled_label}]overlay=x={px}:y={py}{enable}[{out_label}]"
+                )
+
+            video_chain_label = out_label
+        needs_video_encode = True
+
+    if needs_video_encode:
+        video_map = f"[{video_chain_label}]"
+
+    filter_complex = ";".join(filter_parts)
+
+    def _build_cmd(video_codec_args: list[str]) -> list[str]:
+        return [
+            "ffmpeg", "-y",
+            *inputs,
+            "-filter_complex", filter_complex,
+            "-map", video_map,       # original or overlaid video track
+            "-map", audio_map,       # dubbed audio
+            *video_codec_args,
+            "-c:a", "aac",           # encode audio as AAC
+            "-b:a", "192k",
+            "-shortest",
+            output_path,
+        ]
+
+    async def _run(cmd: list[str]) -> tuple[int, str]:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await process.communicate()
+        return process.returncode, stderr.decode()
 
     logger.info(f"Mixing {n} dubbed segments into final video...")
 
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await process.communicate()
+    if not needs_video_encode:
+        rc, err = await _run(_build_cmd(["-c:v", "copy"]))
+    else:
+        # Prefer the hardware encoder on macOS (several times faster than
+        # software x264 for a full film); fall back to libx264 if this ffmpeg
+        # build lacks it or the hardware session fails.
+        rc, err = -1, ""
+        if sys.platform == "darwin":
+            rc, err = await _run(_build_cmd(["-c:v", "h264_videotoolbox", "-b:v", "6000k"]))
+            if rc != 0:
+                logger.warning(f"h264_videotoolbox failed (falling back to libx264): {err[-300:]}")
+        if rc != 0:
+            rc, err = await _run(_build_cmd(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]))
 
-    if process.returncode != 0:
-        raise RuntimeError(f"Audio mixing failed: {stderr.decode()}")
+    if rc != 0:
+        raise RuntimeError(f"Audio mixing failed: {err}")
 
     logger.info(f"Dubbed video saved: {output_path}")
     return output_path
@@ -361,9 +512,9 @@ async def apply_audio_effects(
         filters.append(f"atempo={speed}")
 
     if not filters:
-        # Just copy file if no effects are selected
+        # Just copy file if no effects are selected (off the event loop)
         import shutil
-        shutil.copy2(input_path, output_path)
+        await asyncio.to_thread(shutil.copy2, input_path, output_path)
     else:
         filter_str = ",".join(filters)
         cmd = [

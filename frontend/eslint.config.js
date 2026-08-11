@@ -6,7 +6,10 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  // src-tauri/target holds Rust build output, including generated asset .js
+  // blobs that aren't valid source — linting them failed `npm run lint`
+  // outright with a parse error unrelated to any code in this repo.
+  globalIgnores(['dist', 'src-tauri/target']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

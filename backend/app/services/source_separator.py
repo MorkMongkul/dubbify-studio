@@ -1,34 +1,26 @@
 """
 app/services/source_separator.py
 
-Splits audio into Vocals and Background (BGM + SFX) stems using Demucs.
+Splits audio into Vocals and Background (BGM + SFX) stems via a HuggingFace
+Space (BS-RoFormer etc., see SEPARATION_HF_SPACE/SEPARATION_HF_MODEL) — the
+compute happens in the cloud, nothing runs locally.
 
-Demucs --two-stems=vocals produces exactly two files:
+Produces in the job dir:
   vocals.wav      — isolated human voice (used for diarization / ASR)
   no_vocals.wav   — everything else: music, drums, bass, SFX (BGM track)
+  *.preview.wav   — 8kHz mono copies for fast waveform rendering
+  *.m4a           — AAC copies for in-editor playback
 
-Both demucs and demucs-mlx (Apple Silicon MLX accelerated) are tried.
-Falls back to no-op (returns original audio path) when neither is available.
-
-Install (already in requirements):
-  pip install demucs          # CPU / CUDA
-  pip install demucs-mlx      # Apple Silicon MLX (faster on M-series Macs)
+Falls back to no-op (returns the original audio path) if the Space fails.
 """
 import asyncio
 import logging
-import shutil
-import sys
 from pathlib import Path
 from typing import Tuple
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
-
-# Output path templates
-# demucs (CPU):      <output_dir>/htdemucs/<track_name>/vocals.wav
-# demucs-mlx (MLX): <output_dir>/<track_name>/vocals.wav
-_DEMUCS_SUBDIRS = ["htdemucs", ""]   # try htdemucs subdir first, then root
 
 
 async def separate_vocals_bgm(audio_path: str, output_dir: str) -> Tuple[str, str]:
@@ -37,7 +29,7 @@ async def separate_vocals_bgm(audio_path: str, output_dir: str) -> Tuple[str, st
 
     Returns:
         (vocals_wav_path, bgm_wav_path)
-        Returns (audio_path, audio_path) if no separator is available.
+        Returns (audio_path, audio_path) if separation fails.
     """
     audio_path_obj = Path(audio_path)
     output_dir_obj = Path(output_dir)
@@ -50,61 +42,11 @@ async def separate_vocals_bgm(audio_path: str, output_dir: str) -> Tuple[str, st
         logger.info("Stem files already present — skipping separation")
         return str(vocals_target), str(bgm_target)
 
-    # Cloud (HuggingFace) path — offloads compute off this machine. Tried first
-    # when configured; falls back to local Demucs if it fails (rate limit/down).
-    if (settings.SEPARATION_BACKEND or "local").lower() == "hf":
-        result = await _separate_via_hf(audio_path_obj, output_dir_obj, vocals_target, bgm_target)
-        if result:
-            return result
-        logger.warning("HF separation failed — falling back to local Demucs")
-
-    # Use the same venv's executables so we don't need demucs on system PATH
-    venv_bin = Path(sys.executable).parent
-    demucs_mlx_bin = venv_bin / "demucs-mlx"
-    demucs_bin     = venv_bin / "demucs"
-
-    # 1. Try demucs-mlx (Apple Silicon MLX — fast GPU-accelerated)
-    # Uses -n htdemucs_2stems model which natively produces vocals/no_vocals
-    # Note: demucs-mlx does NOT support --two-stems flag (different CLI from cpu demucs)
-    if demucs_mlx_bin.exists():
-        result = await _run_demucs(
-            executable=[str(demucs_mlx_bin), "-n", "htdemucs_2stems"],
-            audio_path=audio_path_obj,
-            output_dir=output_dir_obj,
-            vocals_target=vocals_target,
-            bgm_target=bgm_target,
-            model_subdir="htdemucs_2stems",
-        )
-        if result:
-            return result
-
-    # 2. Try demucs via venv binary (CPU — universal fallback)
-    # Uses --two-stems vocals which outputs to output_dir/htdemucs/{track}/
-    if demucs_bin.exists():
-        result = await _run_demucs(
-            executable=[str(demucs_bin), "--two-stems", "vocals"],
-            audio_path=audio_path_obj,
-            output_dir=output_dir_obj,
-            vocals_target=vocals_target,
-            bgm_target=bgm_target,
-            model_subdir="htdemucs",
-        )
-        if result:
-            return result
-
-    # 3. Module invocation fallback (python -m demucs)
-    result = await _run_demucs(
-        executable=[sys.executable, "-m", "demucs", "--two-stems", "vocals"],
-        audio_path=audio_path_obj,
-        output_dir=output_dir_obj,
-        vocals_target=vocals_target,
-        bgm_target=bgm_target,
-        model_subdir="htdemucs",
-    )
+    result = await _separate_via_hf(audio_path_obj, output_dir_obj, vocals_target, bgm_target)
     if result:
         return result
 
-    logger.warning("No source separator succeeded — pipeline will use original mixed audio")
+    logger.warning("HF separation failed — pipeline will use original mixed audio")
     return audio_path, audio_path
 
 
@@ -179,85 +121,38 @@ async def _separate_via_hf(
 
     await _create_preview(vocals_target, output_dir / "vocals.preview.wav")
     await _create_preview(bgm_target,    output_dir / "no_vocals.preview.wav")
+    await _create_playback_m4a(vocals_target, output_dir / "vocals.m4a")
+    await _create_playback_m4a(bgm_target,    output_dir / "no_vocals.m4a")
     logger.info(f"HF separation done: {vocals_target.name} + {bgm_target.name}")
     return str(vocals_target), str(bgm_target)
 
 
-async def _run_demucs(
-    executable: list,
-    audio_path: Path,
-    output_dir: Path,
-    vocals_target: Path,
-    bgm_target: Path,
-    model_subdir: str | None,
-) -> Tuple[str, str] | None:
+async def _create_playback_m4a(source: Path, dest: Path) -> None:
     """
-    Run a demucs or demucs-mlx command.
-    The caller builds the full executable+flags list.
-
-    model_subdir: name of the model subfolder demucs creates inside output_dir,
-                  e.g. "htdemucs" for cpu demucs, "htdemucs_2stems" for mlx.
-                  None means output goes directly to output_dir/{track_name}/.
-
-    Returns (vocals_path, bgm_path) on success, None on failure.
+    Encode a stem to AAC for in-editor playback. The editor's <audio> tags
+    stream these instead of the raw WAVs — same audibility at ~7% of the bytes.
+    The WAV stems remain the source of truth for diarization and the final mix.
     """
     cmd = [
-        *executable,
-        "-o", str(output_dir),
-        str(audio_path),
+        "ffmpeg", "-y",
+        "-i", str(source),
+        "-c:a", "aac",
+        "-b:a", "192k",
+        str(dest),
     ]
-
-    logger.info(f"Running: {' '.join(str(x) for x in cmd[:4])} ... {audio_path.name}")
-
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            logger.warning(
-                f"{executable[0]} exited {proc.returncode}: {stderr.decode()[:300]}"
-            )
-            return None
-
-        # Locate output files
-        track_name = audio_path.stem
-        if model_subdir:
-            stem_dir = output_dir / model_subdir / track_name
+        await proc.communicate()
+        if proc.returncode == 0:
+            logger.info(f"Playback stem created: {dest.name}")
         else:
-            stem_dir = output_dir / track_name
-
-        vocals_out   = stem_dir / "vocals.wav"
-        no_vocals_out = stem_dir / "no_vocals.wav"
-
-        if not vocals_out.exists():
-            logger.warning(f"Expected vocals at {vocals_out} — not found")
-            return None
-
-        shutil.copy(vocals_out, vocals_target)
-
-        if no_vocals_out.exists():
-            shutil.copy(no_vocals_out, bgm_target)
-        else:
-            logger.warning(f"no_vocals.wav not found at {no_vocals_out} — BGM will be silent")
-            shutil.copy(vocals_target, bgm_target)
-
-        # Create tiny 8kHz mono preview WAVs for fast waveform visualization.
-        # Full stems are ~19MB; previews are ~1.7MB — Web Audio API decodes instantly.
-        await _create_preview(vocals_target, output_dir / "vocals.preview.wav")
-        await _create_preview(bgm_target,    output_dir / "no_vocals.preview.wav")
-
-        logger.info(
-            f"Separation done: {vocals_target.name} + {bgm_target.name} (+ .preview.wav files)"
-        )
-        return str(vocals_target), str(bgm_target)
-
-    except Exception:
-        logger.exception(f"Demucs subprocess failed")
-        return None
+            logger.warning(f"ffmpeg playback encode failed for {source.name} — editor will stream the WAV")
+    except Exception as e:
+        logger.warning(f"Could not create playback stem for {source.name}: {e}")
 
 
 async def _create_preview(source: Path, dest: Path) -> None:
