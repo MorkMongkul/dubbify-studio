@@ -18,14 +18,30 @@ class ProjectCreate(BaseModel):
     target_lang: str = "km"
 
 
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+
+
 class ProjectResponse(BaseModel):
     id: str
     name: str
     description: str
     source_lang: str
     target_lang: str
+    logo_path: str = ""
     created_at: datetime
     updated_at: datetime
+
+    @computed_field
+    def logo_url(self) -> Optional[str]:
+        if not self.logo_path:
+            return None
+        parts = Path(self.logo_path).parts
+        if "uploads" in parts:
+            idx = parts.index("uploads")
+            return "/" + "/".join(parts[idx:])
+        return None
 
     model_config = {"from_attributes": True}
 
@@ -160,6 +176,115 @@ class SegmentResponse(BaseModel):
     volume_db: float
     voice_filter: str
     voice_speed: float
+
+    @computed_field
+    def tts_audio_url(self) -> Optional[str]:
+        if not self.tts_audio_path:
+            return None
+        p = Path(self.tts_audio_path)
+        try:
+            parts = p.parts
+            if "uploads" in parts:
+                idx = parts.index("uploads")
+                return "/" + "/".join(parts[idx:])
+            return f"/uploads/{p.name}"
+        except Exception:
+            return None
+
+    model_config = {"from_attributes": True}
+
+
+# ── Overlay schemas ─────────────────────────────────────────────
+class OverlayUpdate(BaseModel):
+    x: Optional[float] = None
+    y: Optional[float] = None
+    width: Optional[float] = None
+    height: Optional[float] = None
+    opacity: Optional[float] = None
+    z_index: Optional[int] = None
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    font_size: Optional[int] = None
+    color: Optional[str] = None
+    outline_color: Optional[str] = None
+    background_color: Optional[str] = None
+    blur: Optional[bool] = None
+
+
+class OverlaySubtitleCreate(BaseModel):
+    x: float = 0.05
+    y: float = 0.8
+    width: float = 0.9
+    height: float = 0.15
+    font_size: int = 42
+    color: str = "white"
+    outline_color: str = "black"
+    background_color: str = ""
+
+
+class OverlayShapeCreate(BaseModel):
+    x: float = 0.1
+    y: float = 0.85
+    width: float = 0.8
+    height: float = 0.1
+    color: str = "black"
+    opacity: float = 0.85
+    blur: bool = False
+
+
+class OverlayResponse(BaseModel):
+    id: str
+    job_id: str
+    type: str
+    media_path: str
+    x: float
+    y: float
+    width: float
+    height: float
+    opacity: float
+    z_index: int
+    start_time: Optional[float]
+    end_time: Optional[float]
+    font_size: int
+    color: str
+    outline_color: str
+    background_color: str
+    blur: bool
+
+    @computed_field
+    def media_url(self) -> Optional[str]:
+        if not self.media_path:
+            return None
+        parts = Path(self.media_path).parts
+        if "uploads" in parts:
+            idx = parts.index("uploads")
+            return "/" + "/".join(parts[idx:])
+        return None
+
+    model_config = {"from_attributes": True}
+
+
+# ── Overlay template ("brand kit") schemas ──────────────────────
+class OverlayTemplateCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    from_job_id: str
+    set_default: bool = False
+
+
+class OverlayTemplateUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=120)
+    is_default: Optional[bool] = None
+
+
+class OverlayTemplateResponse(BaseModel):
+    id: str
+    name: str
+    is_default: bool
+    items: List[dict]
+
+    @computed_field
+    def item_count(self) -> int:
+        return len(self.items)
 
     model_config = {"from_attributes": True}
 

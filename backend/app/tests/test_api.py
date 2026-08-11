@@ -1,56 +1,11 @@
 """
 tests/test_api.py
 Full API integration tests using FastAPI TestClient + in-memory SQLite.
-All heavy ML models (Whisper, pyannote, NLLB) are mocked automatically
-because no HF_TOKEN or GPU is present in the test environment.
+All cloud AI services (MOSS diarization, VoxCPM2 TTS, Gemini) fall back to
+mocks automatically because no API keys are present in the test environment.
+Test DB engine, `client`, and `setup_db` fixtures live in conftest.py.
 """
 import pytest
-import pytest_asyncio
-from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from sqlalchemy.orm import DeclarativeBase
-
-from app.main import app
-from app.core.database import get_db, Base
-
-
-# ── Test database (in-memory SQLite) ─────────────────────────
-TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
-
-test_engine = create_async_engine(TEST_DB_URL, connect_args={"check_same_thread": False})
-TestSessionLocal = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
-
-
-async def override_get_db():
-    async with TestSessionLocal() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
-
-
-app.dependency_overrides[get_db] = override_get_db
-
-
-@pytest_asyncio.fixture(autouse=True)
-async def setup_db():
-    """Create all tables before each test, drop after."""
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-
-
-@pytest_asyncio.fixture
-async def client():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
 
 
 # ── Health ────────────────────────────────────────────────────
@@ -90,6 +45,30 @@ async def test_list_projects_empty(client):
 @pytest.mark.asyncio
 async def test_get_project_not_found(client):
     resp = await client.get("/api/v1/projects/nonexistent-id")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_project(client):
+    create = await client.post("/api/v1/projects/", json={
+        "name": "Before", "description": "keep me",
+    })
+    project_id = create.json()["id"]
+
+    resp = await client.patch(f"/api/v1/projects/{project_id}", json={"name": "After"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "After"
+    # exclude_unset semantics: fields not sent must remain untouched
+    assert data["description"] == "keep me"
+
+    get = await client.get(f"/api/v1/projects/{project_id}")
+    assert get.json()["name"] == "After"
+
+
+@pytest.mark.asyncio
+async def test_update_project_not_found(client):
+    resp = await client.patch("/api/v1/projects/nonexistent-id", json={"name": "X"})
     assert resp.status_code == 404
 
 
@@ -167,7 +146,17 @@ async def test_tts_segment_not_found(client):
 # ── Root ──────────────────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_root(client):
+    """
+    `/` serves the built SPA whenever frontend/dist exists (packaged builds, and
+    any dev checkout where `npm run build` has been run) and the JSON info
+    payload otherwise. Asserting only the JSON shape made this test fail purely
+    because a frontend build was present.
+    """
+    from app.main import FRONTEND_DIST
+
     resp = await client.get("/")
     assert resp.status_code == 200
-    data = resp.json()
-    assert "docs" in data
+    if FRONTEND_DIST:
+        assert "text/html" in resp.headers["content-type"]
+    else:
+        assert "docs" in resp.json()
