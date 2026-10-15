@@ -36,6 +36,7 @@ rm -rf build dist dubify-backend.spec
   --hidden-import sqlalchemy.dialects.postgresql.psycopg2 \
   --hidden-import sqlalchemy.dialects.sqlite.aiosqlite \
   --hidden-import aiosqlite \
+  --collect-data opencc \
   sidecar_entry.py
 
 mkdir -p "$OUT_DIR"

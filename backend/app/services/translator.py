@@ -17,6 +17,9 @@ Get your Gemini API key at: aistudio.google.com
 """
 import logging
 import asyncio
+import re
+from dataclasses import dataclass
+
 import httpx
 from app.core.config import settings
 
@@ -208,17 +211,33 @@ async def _translate_with_gemini(
         raise RuntimeError(f"Unexpected Gemini response: {data}")
 
 
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _looks_untranslated(text: str, source_lang: str) -> bool:
+    """A Chinese → other-language result that still contains Chinese characters wasn't translated."""
+    return source_lang == "zh" and bool(_CJK_RE.search(text or ""))
+
+
 def _translate_with_deep(text: str, source_lang: str, target_lang: str) -> str:
-    """Fallback: Google Translate via deep-translator. Fast but no context."""
+    """
+    Fallback: Google Translate via deep-translator. Fast but no context.
+    Returns "" when it fails — never the source text, which would otherwise
+    be stored as the "translation" and voiced by TTS in the source language.
+    """
     try:
         from deep_translator import GoogleTranslator
         clean = _clean_chinese(text)
         src = GOOGLE_LANG_MAP.get(source_lang, source_lang)
         tgt = GOOGLE_LANG_MAP.get(target_lang, target_lang)
-        return GoogleTranslator(source=src, target=tgt).translate(clean) or text
+        result = (GoogleTranslator(source=src, target=tgt).translate(clean) or "").strip()
     except Exception as e:
         logger.error(f"deep-translator failed: {e}")
-        return text
+        return ""
+    if _looks_untranslated(result, source_lang):
+        logger.warning("deep-translator returned untranslated text — leaving the line empty")
+        return ""
+    return result
 
 
 # ── Main entry points ──────────────────────────────────────────
@@ -393,47 +412,81 @@ LINES TO TRANSLATE:
             if 0 <= idx < len(results):
                 results[idx] = translation
 
-    # Fill any missed lines with deep-translator fallback (deep-translator is
-    # blocking `requests` under the hood — keep it off the event loop)
-    for i, (result, original) in enumerate(zip(results, texts)):
-        if not result and original.strip():
-            logger.warning(f"Line {i+1} missing from batch response — using deep-translator")
-            results[i] = await asyncio.to_thread(
-                _translate_with_deep, original, source_lang, target_lang
-            )
-
+    # Lines the model skipped stay "" here — translate_batch_with_report fills
+    # them with the fallback and counts them, so the job can say so.
     return results
 
 
-async def translate_batch(
+@dataclass
+class TranslationReport:
+    """How a batch was translated: lines the no-context fallback had to do, and lines left empty."""
+    fallback: int = 0
+    failed: int = 0
+
+    def warning(self) -> str:
+        parts = []
+        if self.failed:
+            parts.append(
+                f"{self.failed} line(s) couldn't be translated and were left empty — "
+                "translate them by hand or Re-analyze."
+            )
+        if self.fallback:
+            parts.append(
+                f"{self.fallback} line(s) were translated by the basic fallback (no scene "
+                "context) because Gemini was unavailable — review them before generating voices."
+            )
+        return " ".join(parts)
+
+
+async def _finish_lines(
+    texts: list[str], results: list[str], source_lang: str, target_lang: str,
+    report: TranslationReport, count_fallback: bool,
+) -> list[str]:
+    """Run the fallback for every line that came back empty or untranslated, and count the outcome."""
+    finished = []
+    for original, result in zip(texts, results):
+        if not original.strip():
+            finished.append("")
+            continue
+        if result and not _looks_untranslated(result, source_lang):
+            finished.append(result)
+            continue
+        # deep-translator is blocking `requests` — keep it off the event loop
+        fixed = await asyncio.to_thread(_translate_with_deep, original, source_lang, target_lang)
+        if fixed:
+            report.fallback += int(count_fallback)
+        else:
+            report.failed += 1
+        finished.append(fixed)
+    return finished
+
+
+async def translate_batch_with_report(
     texts: list[str],
     source_lang: str = "zh",
     target_lang: str = "km",
     segments_context: list = None,
-) -> list[str]:
+) -> tuple[list[str], TranslationReport]:
     """
-    Translate a batch of texts using a single Gemini API call.
-
-    Uses batch processing — all lines sent in one request.
-    This uses only 1 RPM credit regardless of how many lines.
-    For very large batches (>200 lines), splits into chunks of 150.
+    Translate a batch (one Gemini call per chunk of up to 150 lines) and report
+    how it went. Lines Gemini skipped or returned untranslated go through the
+    no-context fallback; lines nothing could translate are left "" — never the
+    source text.
     """
+    report = TranslationReport()
     if not texts:
-        return []
+        return [], report
 
     backend = settings.TRANSLATION_BACKEND.lower()
 
     if backend == "gemini" and settings.GEMINI_API_KEY:
-        # Split large batches into chunks of 150 lines
-        # Each chunk = 1 API call, so 500 lines = 4 calls total
         CHUNK_SIZE = 150
-        all_results = []
-
-        chunks = [texts[i:i+CHUNK_SIZE] for i in range(0, len(texts), CHUNK_SIZE)]
+        all_results: list[str] = []
+        chunks = [texts[i:i + CHUNK_SIZE] for i in range(0, len(texts), CHUNK_SIZE)]
         context_chunks = []
         if segments_context:
             context_chunks = [
-                segments_context[i:i+CHUNK_SIZE]
+                segments_context[i:i + CHUNK_SIZE]
                 for i in range(0, len(segments_context), CHUNK_SIZE)
             ]
 
@@ -444,56 +497,58 @@ async def translate_batch(
                 f"({len(chunk)} lines → {target_lang}) — 1 API call"
             )
             try:
-                chunk_results = await _translate_batch_with_gemini(
-                    chunk, source_lang, target_lang, ctx
-                )
-                all_results.extend(chunk_results)
-
-                # Small delay between chunks to be safe
+                chunk_results = await _translate_batch_with_gemini(chunk, source_lang, target_lang, ctx)
                 if chunk_idx < len(chunks) - 1:
-                    await asyncio.sleep(2.0)
-
+                    await asyncio.sleep(2.0)   # small gap between chunks to be safe
             except Exception as e:
                 err_str = str(e)
+                chunk_results = [""] * len(chunk)
                 # A 429 that's actually depleted credits / billing will NEVER
                 # succeed on retry — fall back immediately instead of waiting 60s.
                 if "429" in err_str and not _is_billing_error(err_str):
                     logger.warning(f"429 (rate limit) on chunk {chunk_idx+1} — waiting 60s then retrying...")
                     await asyncio.sleep(60)
                     try:
-                        chunk_results = await _translate_batch_with_gemini(
-                            chunk, source_lang, target_lang, ctx
-                        )
-                        all_results.extend(chunk_results)
+                        chunk_results = await _translate_batch_with_gemini(chunk, source_lang, target_lang, ctx)
                     except Exception:
                         logger.warning(f"Chunk {chunk_idx+1} failed again — using deep-translator")
-                        for text in chunk:
-                            all_results.append(await asyncio.to_thread(
-                                _translate_with_deep, text, source_lang, target_lang
-                            ))
+                elif _is_billing_error(err_str):
+                    logger.error(
+                        "Gemini credits depleted — falling back to Google Translate. "
+                        "Top up at https://ai.studio/projects to restore Gemini quality."
+                    )
                 else:
-                    if _is_billing_error(err_str):
-                        logger.error(
-                            "Gemini credits depleted — falling back to Google Translate. "
-                            "Top up at https://ai.studio/projects to restore Gemini quality."
-                        )
-                    else:
-                        logger.error(f"Gemini batch failed: {e} — using deep-translator")
-                    for text in chunk:
-                        all_results.append(await asyncio.to_thread(
-                            _translate_with_deep, text, source_lang, target_lang
-                        ))
+                    logger.error(f"Gemini batch failed: {e} — using deep-translator")
+            all_results.extend(await _finish_lines(
+                chunk, list(chunk_results) + [""] * (len(chunk) - len(chunk_results)),
+                source_lang, target_lang, report, count_fallback=True,
+            ))
+        return all_results, report
 
-        return all_results
-
-    # Fallback: deep-translator
+    # deep-translator as the configured backend (or Gemini configured without a key)
     sem = asyncio.Semaphore(4)
 
     async def translate_one_deep(text: str) -> str:
+        if not text.strip():
+            return ""
         async with sem:
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(
-                None, _translate_with_deep, text, source_lang, target_lang
-            )
+            return await asyncio.to_thread(_translate_with_deep, text, source_lang, target_lang)
 
-    return await asyncio.gather(*[translate_one_deep(t) for t in texts])
+    results = await asyncio.gather(*[translate_one_deep(t) for t in texts])
+    for original, result in zip(texts, results):
+        if original.strip() and not result:
+            report.failed += 1
+    if backend == "gemini":
+        report.fallback = sum(1 for r in results if r)   # Gemini wanted, but no key configured
+    return list(results), report
+
+
+async def translate_batch(
+    texts: list[str],
+    source_lang: str = "zh",
+    target_lang: str = "km",
+    segments_context: list = None,
+) -> list[str]:
+    """Translate a batch; see translate_batch_with_report for the details and the counts."""
+    results, _report = await translate_batch_with_report(texts, source_lang, target_lang, segments_context)
+    return results

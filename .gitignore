@@ -91,3 +91,13 @@ node_modules/
 !.env.example
 backend/.env
 frontend/src-tauri/binaries/
+
+# ── Tauri / Rust build cache ─────────────────────────────────
+frontend/src-tauri/target/
+frontend/src-tauri/gen/schemas/
+
+# ── Local-only files ─────────────────────────────────────────
+# Production data dumps and personal tool settings never go to git.
+backend/backups/
+.claude/settings.local.json
+.playwright-mcp/

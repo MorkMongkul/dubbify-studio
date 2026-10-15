@@ -5,7 +5,7 @@ import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 
 // Which panel the left icon rail has open in the dynamic dock.
-export type RailTab = 'projects' | 'sessions' | 'speakers' | 'elements' | 'voices' | 'settings'
+export type RailTab = 'projects' | 'speakers' | 'elements' | 'voices' | 'assistant' | 'settings'
 
 export interface VoicePreset {
   id: string

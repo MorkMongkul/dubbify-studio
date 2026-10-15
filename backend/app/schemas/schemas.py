@@ -2,7 +2,18 @@
 app/schemas/schemas.py
 Pydantic v2 schemas for all API request bodies and responses.
 """
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
+import re as _re
+
+# Overlay colours end up inside an ffmpeg filter graph — allow only a plain
+# colour name or a hex value, never filter syntax (',', ';', ':', '[', '=').
+_COLOR_RE = _re.compile(r"^(|[A-Za-z]{1,20}|#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?|0x[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?)$")
+
+
+def _check_color(value):
+    if value is not None and not _COLOR_RE.match(value):
+        raise ValueError("Use a colour name (e.g. white) or a hex value (e.g. #ff0000)")
+    return value
 from typing import Optional, List
 from datetime import datetime
 from app.models.models import JobStatus, Gender, AgeGroup, VoiceMode
@@ -21,6 +32,7 @@ class ProjectCreate(BaseModel):
 class ProjectUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
+    chat_edit_mode: Optional[str] = Field(None, pattern="^(manual|auto)$")
 
 
 class ProjectResponse(BaseModel):
@@ -30,6 +42,7 @@ class ProjectResponse(BaseModel):
     source_lang: str
     target_lang: str
     logo_path: str = ""
+    chat_edit_mode: str = "manual"
     created_at: datetime
     updated_at: datetime
 
@@ -53,10 +66,12 @@ class JobResponse(BaseModel):
     status: JobStatus
     progress: int
     error_msg: str
+    title: str = ""
     video_path: str
     audio_path: str
     output_path: str
     duration_secs: float
+    bgm_volume_db: float
     created_at: datetime
     completed_at: Optional[datetime]
 
@@ -95,6 +110,14 @@ class JobStatusUpdate(BaseModel):
     status: JobStatus
     progress: int = 0
     error_msg: str = ""
+
+
+class BgmVolumeUpdate(BaseModel):
+    volume_db: float = Field(..., ge=-60, le=24)
+
+
+class JobTitleUpdate(BaseModel):
+    title: str = Field(..., max_length=255)
 
 
 # ── Speaker schemas ───────────────────────────────────────────
@@ -210,6 +233,11 @@ class OverlayUpdate(BaseModel):
     background_color: Optional[str] = None
     blur: Optional[bool] = None
 
+    @field_validator("color", "outline_color", "background_color")
+    @classmethod
+    def _valid_colors(cls, value):
+        return _check_color(value)
+
 
 class OverlaySubtitleCreate(BaseModel):
     x: float = 0.05
@@ -221,6 +249,11 @@ class OverlaySubtitleCreate(BaseModel):
     outline_color: str = "black"
     background_color: str = ""
 
+    @field_validator("color", "outline_color", "background_color")
+    @classmethod
+    def _valid_colors(cls, value):
+        return _check_color(value)
+
 
 class OverlayShapeCreate(BaseModel):
     x: float = 0.1
@@ -230,6 +263,11 @@ class OverlayShapeCreate(BaseModel):
     color: str = "black"
     opacity: float = 0.85
     blur: bool = False
+
+    @field_validator("color")
+    @classmethod
+    def _valid_color(cls, value):
+        return _check_color(value)
 
 
 class OverlayResponse(BaseModel):
@@ -363,3 +401,39 @@ class VoiceResponse(BaseModel):
 
 class VoicePreviewRequest(BaseModel):
     text: str = Field(..., min_length=1)
+
+
+# ── Assistant chat ─────────────────────────────────────────────
+class ChatMessageResponse(BaseModel):
+    id: str
+    project_id: str
+    role: str
+    text: str
+    function_call: Optional[dict] = None
+    function_response: Optional[dict] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ChatSendRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=4000)
+
+
+class ChatSendResponse(BaseModel):
+    messages: List[ChatMessageResponse]   # every new row this turn produced (user msg + any tool steps + final reply)
+
+
+class ChatProposedEditResponse(BaseModel):
+    id: str
+    project_id: str
+    segment_id: str
+    message_id: Optional[str]
+    old_khmer_text: str
+    new_khmer_text: str
+    reason: str
+    status: str
+    created_at: datetime
+    resolved_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}

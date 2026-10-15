@@ -78,7 +78,7 @@ Source of truth: `app/core/config.py`. All optional — every service has a free
 | `GEMINI_API_KEY` | Google AI Studio — translation + Gemini TTS fallback |
 | `GEMINI_MODEL` | Translation model (default `gemini-2.5-flash-lite`) |
 | `VOXCPM2_API_URL` | Gradio app URL running VoxCPM; blank → public HF Space |
-| `SEPARATION_HF_SPACE` / `SEPARATION_HF_MODEL` | Vocal separation Space + model |
+| `SEPARATION_HF_SPACE` | Vocal separation Space |
 | `DIARIZATION_MOSS_SPACE` | Combined diarization+ASR Space |
 | `HF_TOKEN` | Optional — raises HF rate limits |
 | `DATABASE_URL` | Blank → SQLite (dev); `postgresql+asyncpg://…` for Neon |

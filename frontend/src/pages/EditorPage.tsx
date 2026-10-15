@@ -34,10 +34,10 @@ import { TimelineEditor } from '@/components/timeline/TimelineEditor'
 import { TranscriptPanel } from '@/components/transcript/TranscriptPanel'
 import { OverlaysPanel } from '@/components/overlays/OverlaysPanel'
 import { EditorRail } from '@/components/layout/EditorRail'
-import { SessionsPanel } from '@/components/panels/SessionsPanel'
 import { SpeakersPanel } from '@/components/panels/SpeakersPanel'
 import { ProjectsPanel } from '@/components/panels/ProjectsPanel'
 import { VoicesPanel } from '@/components/panels/VoicesPanel'
+import { AssistantPanel } from '@/components/panels/AssistantPanel'
 import { SettingsPanel } from '@/components/panels/SettingsPanel'
 import { PanelHeader, PanelEmptyState } from '@/components/panels/PanelShell'
 import { Button } from '@/components/ui/Button'
@@ -108,9 +108,7 @@ export default function EditorPage() {
   // survives for as long as the URL stays put. railTab itself lives outside
   // resetEditor's wipe (see editorStore).
   useEffect(() => {
-    if (jobId) setRailTab('speakers')
-    else if (projectId) setRailTab('sessions')
-    else setRailTab('projects')
+    setRailTab(jobId ? 'speakers' : 'projects')
   }, [projectId, jobId, setRailTab])
 
   // Space toggles play/pause, like every video editor — skipped while typing
@@ -141,12 +139,15 @@ export default function EditorPage() {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'AUDIO' || (e.target as HTMLElement)?.isContentEditable) return
       e.preventDefault()
       const { past, future, undo, redo } = useHistoryStore.getState()
+      if (e.repeat) return   // holding the key down must not fire a burst of steps
+      const failed = (verb: string, label: string) => (err: unknown) =>
+        toast.error(`Couldn't ${verb} "${label}" — ${(err as Error)?.message || 'request failed'}. It was removed from history.`)
       if (key === 'y' || (key === 'z' && e.shiftKey)) {
         const label = future[future.length - 1]?.label
-        if (label) redo().then(() => toast.message(`Redid: ${label}`))
+        if (label) redo().then(() => toast.message(`Redid: ${label}`), failed('redo', label))
       } else {
         const label = past[past.length - 1]?.label
-        if (label) undo().then(() => toast.message(`Undid: ${label}`))
+        if (label) undo().then(() => toast.message(`Undid: ${label}`), failed('undo', label))
       }
     }
     window.addEventListener('keydown', onKey)
@@ -460,6 +461,28 @@ export default function EditorPage() {
     }
   }, [job, job?.status])
 
+  // Surface non-fatal pipeline-quality warnings — e.g. vocal/BGM separation
+  // or speaker detection falling back to degraded placeholder data because
+  // the backing service was unavailable. The job still completes/reaches
+  // stems_ready (so it stays usable and the user can retry that stage), but
+  // previously this failure mode was completely silent: the job just looked
+  // like a normal success. Guarded on `prev !== undefined` so reopening an
+  // old session doesn't replay a stale warning from a past run as if it
+  // just happened.
+  const prevQualityStatusRef = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    const prev = prevQualityStatusRef.current
+    prevQualityStatusRef.current = job?.status
+    if (prev === undefined || !job?.error_msg) return
+    const stemsReadyFromStage1 = job.status === 'stems_ready'
+      && (prev === 'pending' || prev === 'extracting' || prev === 'separating')
+    const completedFromStage2 = job.status === 'completed'
+      && (prev === 'diarizing' || prev === 'transcribing' || prev === 'translating')
+    if (stemsReadyFromStage1 || completedFromStage2) {
+      toast.error(job.error_msg, { duration: 12000 })
+    }
+  }, [job?.status, job?.error_msg])
+
   const handleLogoFileChange = (file: File | null) => {
     if (!file || !projectId) return
     setLogoUploading(true)
@@ -498,8 +521,11 @@ export default function EditorPage() {
   const hasTtsAudio  = segs.some(s => s.tts_audio_path !== '')
   const canExport    = hasTtsAudio && !exporting
   const videoUrl     = job?.video_url ?? undefined
-  const showTimeline = !!jobId && !loadingJob && !!job && !isStage1 && job.status !== 'failed'
-  const showTranscript = !!jobId && !isStage1 && job?.status !== 'failed'
+  // A failed job that still has segments (e.g. an interrupted re-run) stays
+  // editable; only a session with nothing to show hides the editor.
+  const hasEditableContent = job?.status !== 'failed' || segs.length > 0
+  const showTimeline = !!jobId && !loadingJob && !!job && !isStage1 && hasEditableContent
+  const showTranscript = !!jobId && !isStage1 && hasEditableContent
 
   // ── Center content renderers ───────────────────────────────────────────────
   const renderUploadArea = () => {
@@ -667,9 +693,9 @@ export default function EditorPage() {
                 )}
                 {jobId && (
                   <button
-                    onClick={() => setRailTab('sessions')}
+                    onClick={() => setRailTab('projects')}
                     className="text-[9.5px] font-mono text-text-muted hover:text-white px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 transition-colors shrink-0"
-                    title="Current session — click to browse sessions"
+                    title="Current episode — click to browse episodes"
                   >
                     {jobId.slice(0, 8)}
                   </button>
@@ -716,14 +742,7 @@ export default function EditorPage() {
             {/* 1. Dynamic dock — content driven by the icon rail's selected tab */}
             <div className="shrink-0 bg-zinc-900 rounded-lg border border-zinc-800/50 flex flex-col min-w-0 overflow-hidden" style={{ width: leftPanelWidth }}>
               {railTab === 'projects' ? (
-                <ProjectsPanel activeProjectId={projectId} />
-              ) : railTab === 'sessions' ? (
-                <SessionsPanel
-                  projectId={projectId}
-                  activeJobId={jobId}
-                  onImportFile={onDropVideo}
-                  onShowProjects={() => setRailTab('projects')}
-                />
+                <ProjectsPanel activeProjectId={projectId} activeJobId={jobId} onImportFile={onDropVideo} />
               ) : railTab === 'speakers' ? (
                 <SpeakersPanel projectId={projectId} jobId={jobId} />
               ) : railTab === 'elements' ? (
@@ -752,6 +771,8 @@ export default function EditorPage() {
                 )
               ) : railTab === 'voices' ? (
                 <VoicesPanel />
+              ) : railTab === 'assistant' ? (
+                <AssistantPanel projectId={projectId} />
               ) : (
                 <SettingsPanel />
               )}
@@ -767,9 +788,10 @@ export default function EditorPage() {
               <div className="absolute inset-0 flex items-center justify-center p-6">
                 {videoFile ? (
                   // A newly staged import always wins the center pane — the
-                  // Sessions tab can stage a file while a session is open,
-                  // and the staged card must not be invisible behind the
-                  // player. Cancelling (X) returns to whatever was below.
+                  // Projects panel's inline "Import new video" can stage a
+                  // file while a session is open, and the staged card must
+                  // not be invisible behind the player. Cancelling (X)
+                  // returns to whatever was below.
                   renderUploadArea()
                 ) : loadingJob && jobId ? (
                   <div className="flex flex-col items-center gap-3 text-text-muted">
@@ -794,7 +816,7 @@ export default function EditorPage() {
                   // No fixed aspect-ratio wrapper here: VideoPlayer sizes itself
                   // to the clip's real dimensions (landscape or portrait/Reel),
                   // bounded by the available pane space via max-w/max-h.
-                  <VideoPlayer videoUrl={videoUrl} segments={displaySegs} speakers={spks} className="max-w-full max-h-full" jobId={jobId} projectId={projectId} jobStatus={job.status} overlays={jobOverlays} />
+                  <VideoPlayer videoUrl={videoUrl} segments={displaySegs} speakers={spks} className="max-w-full max-h-full" jobId={jobId} projectId={projectId} jobStatus={job.status} overlays={jobOverlays} bgmVolumeDb={job.bgm_volume_db} />
                 ) : jobId && job && !videoUrl ? (
                   <div className="flex flex-col items-center gap-4 text-center max-w-xs">
                     <Loader2 size={20} className="animate-spin text-brand-300" />

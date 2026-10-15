@@ -1,5 +1,5 @@
 // src/components/transcript/TranscriptPanel.tsx
-import { useRef, useEffect, useState } from 'react'
+import { useRef, useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { AlignLeft, Loader2, ChevronRight, Sliders, Volume2, Type, RefreshCw, Mic, Plus } from 'lucide-react'
 import type { Segment, Speaker, Job } from '@/types'
@@ -13,7 +13,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { segments as segmentsApi } from '@/api/client'
 import { useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker } from '@/hooks/useApi'
 import { PipelineStepper } from '@/features/upload/PipelineStepper'
-import { recordSegmentChange, recordSegmentCreate } from '@/lib/historyHelpers'
+import { recordSegmentChange, recordSegmentsChange, recordSegmentCreate } from '@/lib/historyHelpers'
 
 interface TranscriptPanelProps {
   segments: Segment[]
@@ -98,6 +98,21 @@ export function TranscriptPanel({
 
   const getSpeaker = (seg: Segment) => speakers.find((sp) => sp.id === seg.speaker_id)
   const getSpeakerIndex = (seg: Segment) => speakers.findIndex((sp) => sp.id === seg.speaker_id)
+
+  // `speakers` is every speaker in the whole PROJECT (workspace-level fetch —
+  // see useSpeakers(projectId) in EditorPage), not just this episode. That's
+  // fine for color/index lookups above, but the per-row reassignment dropdown
+  // below must only offer speakers who actually appear in THIS job — assigning
+  // a line to a speaker who only exists in some other episode is meaningless.
+  // With one episode per project this was invisible (the two lists matched);
+  // once a project holds many episodes (e.g. after consolidating episodes
+  // into one project) the unfiltered list balloons to every speaker across
+  // every episode, mostly duplicate "SPEAKER_00"/"SPEAKER_01" entries that
+  // were never renamed. Mirrors the identical filter in SpeakersPanel.
+  const jobSpeakers = useMemo(() => {
+    const idsInThisJob = new Set(segments.map((s) => s.speaker_id).filter(Boolean))
+    return speakers.filter((sp) => idsInThisJob.has(sp.id))
+  }, [segments, speakers])
 
   const handleResetInspector = () => {
     setInspectorMode('global_synthesis')
@@ -209,6 +224,18 @@ export function TranscriptPanel({
         old ? old.map((s) => (s.id === updated.id ? updated : s)) : old
       )
       clearSegmentTextOverride(segmentId)
+      // An edited segment leaves batch tracking: its audio was just cleared
+      // as stale, and a batch that already finished it will never redo it —
+      // keeping it tracked left the progress spinner stuck short of complete
+      // and its "Generating…" badge hid the row's own Regenerate button.
+      const st = useEditorStore.getState()
+      if (st.batchGeneratingIds.includes(segmentId)) {
+        const rest = st.batchGeneratingIds.filter((id) => id !== segmentId)
+        useEditorStore.setState({
+          batchGeneratingIds: rest,
+          batchGeneratingJobId: rest.length ? st.batchGeneratingJobId : null,
+        })
+      }
       // Restores the old text and its old audio pointer — correct as long as
       // the clip hasn't been regenerated since (that would've overwritten
       // the file at the same path; there's no audio versioning to recover it).
@@ -235,47 +262,59 @@ export function TranscriptPanel({
     }
   }
 
-  // Only segments without audio yet (never synthesized, or marked stale by a
-  // text edit in handleTextBlur) actually need generating — segments that
-  // already have a clip are skipped so "select all → generate" doesn't waste
-  // API calls/time redoing work that's already done. To force a specific
-  // already-generated segment to redo, use its own Regenerate button instead.
+  // Batch runs as a backend background task (202). Tracking/polling is
+  // handled by the batchGeneratingIds effect below — storing the ids is what
+  // kicks it off, and clearing the selection right away lets the per-row
+  // "Generating…" badges and the progress banner take over. The backend
+  // endpoint itself has no "skip if already has audio" logic — it (re)does
+  // whatever ids it's given — so passing already-generated ids through here
+  // is a real, working force-regenerate, not a no-op.
+  const runBatchSynthesize = async (segmentIds: string[], verb: 'Generating' | 'Regenerating', detail = '') => {
+    try {
+      const res = await synthesizeBatch.mutateAsync({ segmentIds, jobId })
+      const ids: string[] = res.segment_ids ?? segmentIds
+      useEditorStore.setState({ batchGeneratingIds: ids, batchGeneratingJobId: jobId, selectedSegmentIds: [] })
+      toast.info(`${verb} ${ids.length} voice${ids.length === 1 ? '' : 's'}…${detail}`)
+    } catch (err) {
+      toast.error(`Failed to start voice ${verb.toLowerCase()}`)
+      console.error(err)
+    }
+  }
+
+  // Segments without audio yet (never synthesized, or marked stale by a text
+  // edit in handleTextBlur) are what "Generate" fills in — already-generated
+  // ones in a MIXED selection are left alone, so a big "select all" doesn't
+  // waste API calls/time redoing work that's already done. But when EVERY
+  // selected segment already has audio, skipping all of them would leave the
+  // button doing nothing at all when clicked — "Generate" can then only
+  // sensibly mean "regenerate everything I selected", so that's what it does.
   const handleBatchSynthesize = async () => {
     const pendingIds = selectedSegmentIds.filter((id) => {
       const seg = segments.find((s) => s.id === id)
       return seg && !seg.tts_audio_path
     })
-    const skipped = selectedSegmentIds.length - pendingIds.length
+    const allAlreadyDone = pendingIds.length === 0
 
-    if (pendingIds.length === 0) {
-      toast.info('All selected segments already have generated audio')
-      useEditorStore.setState({ selectedSegmentIds: [] })
+    if (allAlreadyDone) {
+      if (selectedSegmentIds.length === 0) return
+      if (selectedSegmentIds.length === 1) {
+        await handleSingleSynthesize(selectedSegmentIds[0])
+        useEditorStore.setState({ selectedSegmentIds: [] })
+        return
+      }
+      await runBatchSynthesize(selectedSegmentIds, 'Regenerating')
       return
     }
 
-    if (pendingIds.length === 1) {
+    const skipped = selectedSegmentIds.length - pendingIds.length
+
+    if (pendingIds.length === 1 && skipped === 0) {
       await handleSingleSynthesize(pendingIds[0])
       useEditorStore.setState({ selectedSegmentIds: [] })
       return
     }
 
-    try {
-      // Batch runs as a backend background task (202). Tracking/polling is
-      // handled by the batchGeneratingIds effect below — storing the ids is
-      // what kicks it off, and clearing the selection right away lets the
-      // per-row "Generating…" badges and the progress banner take over.
-      const res = await synthesizeBatch.mutateAsync({ segmentIds: pendingIds, jobId })
-      const ids: string[] = res.segment_ids ?? pendingIds
-      useEditorStore.setState({ batchGeneratingIds: ids, batchGeneratingJobId: jobId, selectedSegmentIds: [] })
-      toast.info(
-        skipped > 0
-          ? `Generating ${ids.length} voices… (${skipped} already done, skipped)`
-          : `Generating ${ids.length} voices…`
-      )
-    } catch (err) {
-      toast.error('Failed to start voice generation')
-      console.error(err)
-    }
+    await runBatchSynthesize(pendingIds, 'Generating', skipped > 0 ? ` (${skipped} already done, skipped)` : '')
   }
 
   // Poll the segment list while a batch is running. Effect-driven (keyed on
@@ -289,14 +328,18 @@ export function TranscriptPanel({
     const batchJobId = batchGeneratingJobId
     if (batchGeneratingIds.length === 0 || !batchJobId) return
     let cancelled = false
-    const ids = new Set(batchGeneratingIds)
     // Generous ceiling: cold start + ~1 min per line, capped at 30 min
-    const deadline = Date.now() + Math.min(30 * 60_000, 300_000 + ids.size * 60_000)
+    const deadline = Date.now() + Math.min(30 * 60_000, 300_000 + batchGeneratingIds.length * 60_000)
 
     ;(async () => {
       while (!cancelled) {
         await new Promise((r) => setTimeout(r, 3000))
         if (cancelled) return
+        // Re-read the tracked set EVERY pass — a text edit removes its
+        // segment from tracking mid-run (its cleared audio would otherwise
+        // keep "remaining" non-zero forever and the spinner never resolves).
+        const ids = new Set(useEditorStore.getState().batchGeneratingIds)
+        if (ids.size === 0) return
         // A transient poll failure (backend busy with a TTS call, network
         // blip) must not abort tracking — skip the pass and poll again.
         let fresh: Segment[]
@@ -331,57 +374,78 @@ export function TranscriptPanel({
   const activeSpeaker = activeSeg ? getSpeaker(activeSeg) : null
   const activeSpeakerName = activeSpeaker?.display_name || activeSpeaker?.label || (activeSeg ? `Speaker ${getSpeakerIndex(activeSeg) + 1}` : 'Audio Clip')
 
-  // Sync local states to the active segment parameters
-  useEffect(() => {
-    if (activeSeg) {
-      setClipVolume(activeSeg.volume_db ?? 0)
-      setClipFilter(activeSeg.voice_filter ?? null)
-      setClipSpeed(activeSeg.voice_speed ?? 1.0)
-    }
-  }, [activeSeg?.id])
+  // Sync the inspector to the active clip's SAVED effects — on clip change and
+  // whenever those values change underneath (undo, another tab), not only on
+  // clip change. Adjusted during render rather than in an effect; while a
+  // slider is being dragged the saved values don't move, so it isn't fought.
+  const savedEffects = activeSeg ? {
+    id: activeSeg.id,
+    volume: activeSeg.volume_db ?? 0,
+    filter: activeSeg.voice_filter ?? null,
+    speed: activeSeg.voice_speed ?? 1.0,
+  } : null
+  // Starts empty so the first render with a clip also syncs (the local
+  // states above start at neutral defaults).
+  const [syncedEffects, setSyncedEffects] = useState<typeof savedEffects>(null)
+  if (savedEffects && (
+    savedEffects.id !== syncedEffects?.id || savedEffects.volume !== syncedEffects.volume
+    || savedEffects.filter !== syncedEffects.filter || savedEffects.speed !== syncedEffects.speed
+  )) {
+    setSyncedEffects(savedEffects)
+    setClipVolume(savedEffects.volume)
+    setClipFilter(savedEffects.filter)
+    setClipSpeed(savedEffects.speed)
+  }
 
-  const handleVolumeChange = async (segmentId: string, val: number) => {
-    const before = activeSeg?.volume_db ?? 0
+  // Clip effects target the WHOLE multi-selection when the edited clip is
+  // part of it — select-all → set Volume/Filter/Speed must hit every clip,
+  // not just the active one. Falls back to the single clip otherwise.
+  const effectTargetIds = (segmentId: string): string[] => {
+    const sel = useEditorStore.getState().selectedSegmentIds
+    return sel.length > 1 && sel.includes(segmentId) ? sel : [segmentId]
+  }
+
+  const applyClipEffect = async (
+    segmentId: string,
+    patch: { volume_db?: number; voice_filter?: string; voice_speed?: number },
+    label: string,
+    errorMsg: string,
+  ) => {
+    const targets = effectTargetIds(segmentId)
+    const field = Object.keys(patch)[0] as keyof typeof patch
+    const changes = targets
+      .map((id) => {
+        const seg = segments.find((s) => s.id === id)
+        if (!seg) return null
+        const beforeValue = field === 'volume_db' ? (seg.volume_db ?? 0)
+          : field === 'voice_filter' ? (seg.voice_filter ?? '')
+          : (seg.voice_speed ?? 1.0)
+        return { id, before: { [field]: beforeValue }, after: { ...patch } }
+      })
+      .filter((c): c is NonNullable<typeof c> => !!c && c.before[field] !== patch[field])
     try {
-      await segmentsApi.update(segmentId, { volume_db: val })
+      await Promise.all(targets.map((id) => segmentsApi.update(id, patch)))
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
-      if (before !== val) {
-        recordSegmentChange(qc, jobId, segmentId, { volume_db: before }, { volume_db: val }, 'Change volume')
+      if (changes.length === 1) {
+        recordSegmentChange(qc, jobId, changes[0].id, changes[0].before, changes[0].after, label)
+      } else if (changes.length > 1) {
+        recordSegmentsChange(qc, jobId, changes, `${label} (${changes.length} clips)`)
       }
+      if (targets.length > 1) toast.success(`${label} applied to ${targets.length} clips`)
     } catch (err) {
-      toast.error('Failed to update volume')
+      toast.error(errorMsg)
       console.error(err)
     }
   }
 
-  const handleFilterChange = async (segmentId: string, val: string | null) => {
-    const before = activeSeg?.voice_filter ?? ''
-    const after = val || ''
-    try {
-      await segmentsApi.update(segmentId, { voice_filter: after })
-      qc.invalidateQueries({ queryKey: ['segments', jobId] })
-      if (before !== after) {
-        recordSegmentChange(qc, jobId, segmentId, { voice_filter: before }, { voice_filter: after }, 'Change voice filter')
-      }
-    } catch (err) {
-      toast.error('Failed to update voice filter')
-      console.error(err)
-    }
-  }
+  const handleVolumeChange = (segmentId: string, val: number) =>
+    applyClipEffect(segmentId, { volume_db: val }, 'Change volume', 'Failed to update volume')
 
-  const handleSpeedChange = async (segmentId: string, val: number) => {
-    const before = activeSeg?.voice_speed ?? 1.0
-    try {
-      await segmentsApi.update(segmentId, { voice_speed: val })
-      qc.invalidateQueries({ queryKey: ['segments', jobId] })
-      if (before !== val) {
-        recordSegmentChange(qc, jobId, segmentId, { voice_speed: before }, { voice_speed: val }, 'Change voice speed')
-      }
-    } catch (err) {
-      toast.error('Failed to update voice speed')
-      console.error(err)
-    }
-  }
+  const handleFilterChange = (segmentId: string, val: string | null) =>
+    applyClipEffect(segmentId, { voice_filter: val || '' }, 'Change voice filter', 'Failed to update voice filter')
+
+  const handleSpeedChange = (segmentId: string, val: number) =>
+    applyClipEffect(segmentId, { voice_speed: val }, 'Change voice speed', 'Failed to update voice speed')
 
   return (
     <div
@@ -492,13 +556,19 @@ export function TranscriptPanel({
                 disabled={anyBatchRunning}
                 title={anyBatchRunning && !batchSynthesizing
                   ? 'Another episode is still generating voices — wait for it to finish'
-                  : 'Only segments without generated audio yet are actually synthesized — already-done ones are skipped'}
+                  : pendingSelectedCount === 0
+                  ? 'Every selected segment already has audio — this redoes all of them'
+                  : pendingSelectedCount !== selectedSegmentIds.length
+                  ? 'Only segments without generated audio yet are synthesized — already-done ones are left as-is'
+                  : undefined}
                 className="text-[10px] bg-purple-600 hover:bg-purple-500 text-white px-2.5 py-1 rounded font-semibold transition-all flex items-center gap-1 disabled:opacity-50 cursor-pointer"
               >
                 {batchSynthesizing ? <Loader2 size={10} className="animate-spin" /> : <Mic size={10} />}
                 <span>
                   {batchSynthesizing
                     ? `Generating ${batchDoneCount}/${batchGeneratingIds.length}…`
+                    : pendingSelectedCount === 0
+                    ? `Regenerate ${selectedSegmentIds.length} Selected`
                     : <>Generate Voice{pendingSelectedCount !== selectedSegmentIds.length && ` (${pendingSelectedCount} pending)`}</>}
                 </span>
               </button>
@@ -648,7 +718,7 @@ export function TranscriptPanel({
                           onChange={(e) => handleSpeakerSelectChange(seg.id, e.target.value)}
                         >
                           <option value="">Unassigned</option>
-                          {speakers.map((sp) => (
+                          {jobSpeakers.map((sp) => (
                             <option key={sp.id} value={sp.id}>
                               {sp.display_name || sp.label}
                             </option>
@@ -776,6 +846,12 @@ export function TranscriptPanel({
           </table>
         ) : inspectorMode === 'audio_clip_settings' ? (
           <div className="p-4 flex flex-col gap-4 text-xs bg-transparent h-full text-zinc-300 select-none">
+            {/* Multi-selection notice — effects below hit every selected clip */}
+            {activeSeg && selectedSegmentIds.length > 1 && selectedSegmentIds.includes(activeSeg.id) && (
+              <div className="flex items-center gap-1.5 px-2 py-1.5 rounded border border-purple-500/30 bg-purple-500/10 text-[10px] font-semibold text-purple-300">
+                Changes apply to all {selectedSegmentIds.length} selected clips
+              </div>
+            )}
             {/* Horizontal Sub-tabs */}
             <div className="flex border-b border-zinc-800 pb-1 gap-4">
               {(['basic', 'filter', 'speed'] as const).map((tab) => (

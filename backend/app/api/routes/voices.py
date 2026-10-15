@@ -10,7 +10,9 @@ A Voice is one of three VoxCPM2 modes:
 Created once here, then selected per speaker / per segment in the editor.
 """
 import shutil
+import os
 import random
+from uuid import uuid4
 import logging
 from pathlib import Path
 
@@ -37,32 +39,62 @@ _REF_EXTS = {".wav", ".mp3", ".m4a", ".flac", ".ogg"}
 BAKE_TEXT = "សួស្តី ខ្ញុំជាសំឡេងដែលបង្កើតឡើងសម្រាប់ការដាប់ភាសាខ្មែរ។"
 
 
+# Engines whose output can serve as a clone reference. A Gemini prebuilt voice
+# or silent mock audio as the reference would make every line of the voice
+# sound wrong, so those results never get baked.
+_VOXCPM_BACKENDS = {"voxcpm_gradio", "voxcpm_hf_space"}
+
+
 async def _bake_design_voice(voice: Voice, db: AsyncSession) -> bool:
     """
     Generate ONE reference clip from a design voice (description + seed) and
     store it on the voice. All later synthesis then CLONES from this clip, so
     every line of the voice has an identical timbre — voice design alone is not
     consistent across different text, but cloning from a fixed reference is.
+
+    Called on create and whenever the voice's identity changes. On failure the
+    voice stops cloning any earlier reference (it belonged to the old identity)
+    and falls back to design generation until it is baked again; the earlier
+    file itself is never overwritten by a failed attempt.
     """
     voice_dir = VOICES_DIR / voice.id
     voice_dir.mkdir(parents=True, exist_ok=True)
     ref_path = voice_dir / "reference.wav"
-    result = await tts_client.synthesize(
-        text=BAKE_TEXT,
-        voice_design=voice.description,
-        output_path=str(ref_path),
-        cfg_value=voice.cfg_value,
-        inference_timesteps=voice.inference_timesteps,
-        seed=voice.seed,
-        reference_audio_path="",   # force pure design generation (no cloning)
-    )
-    if result["success"]:
+    tmp_path = voice_dir / f".reference_{uuid4().hex}.wav"
+    try:
+        result = await tts_client.synthesize(
+            text=BAKE_TEXT,
+            voice_design=voice.description,
+            output_path=str(tmp_path),
+            cfg_value=voice.cfg_value,
+            inference_timesteps=voice.inference_timesteps,
+            seed=voice.seed,
+            reference_audio_path="",   # force pure design generation (no cloning)
+        )
+        baked = (
+            bool(result.get("success"))
+            and not result.get("mock")
+            and result.get("backend") in _VOXCPM_BACKENDS
+        )
+        if baked:
+            os.replace(tmp_path, ref_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    if baked:
         voice.reference_audio_path = str(ref_path)
         voice.reference_transcript = BAKE_TEXT
         await db.flush()
         logger.info(f"Baked reference for design voice {voice.name} ({voice.id[:8]})")
         return True
-    logger.warning(f"Bake failed for voice {voice.id[:8]}: {result.get('error')}")
+
+    voice.reference_audio_path = ""
+    voice.reference_transcript = ""
+    await db.flush()
+    logger.warning(
+        f"Bake failed for voice {voice.id[:8]} (backend={result.get('backend')}, "
+        f"error={result.get('error')}) — using design generation until re-baked"
+    )
     return False
 
 
@@ -82,7 +114,7 @@ def _save_reference(voice_id: str, file: UploadFile) -> str:
 
 
 @router.get("/", response_model=List[VoiceResponse])
-async def list_voices(db: AsyncSession = Depends(get_db)):
+async def list_voices(db: AsyncSession = Depends(get_db, scope="function")):
     """List all voices in the workspace library."""
     result = await db.execute(select(Voice).order_by(Voice.created_at.desc()))
     return result.scalars().all()
@@ -98,7 +130,7 @@ async def create_voice(
     inference_timesteps: int = Form(10),
     seed: int = Form(-1),
     reference_audio: Optional[UploadFile] = File(None),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """
     Create a named voice. Send multipart/form-data; include `reference_audio`
@@ -148,7 +180,7 @@ async def create_voice(
 
 @router.patch("/{voice_id}", response_model=VoiceResponse)
 async def update_voice(
-    voice_id: str, payload: VoiceUpdate, db: AsyncSession = Depends(get_db)
+    voice_id: str, payload: VoiceUpdate, db: AsyncSession = Depends(get_db, scope="function")
 ):
     """Update a voice's metadata (name, description, transcript, params, mode)."""
     result = await db.execute(select(Voice).where(Voice.id == voice_id))
@@ -179,7 +211,7 @@ async def update_voice(
 async def upload_reference(
     voice_id: str,
     reference_audio: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """Upload or replace a voice's reference audio clip."""
     result = await db.execute(select(Voice).where(Voice.id == voice_id))
@@ -194,7 +226,7 @@ async def upload_reference(
 
 
 @router.delete("/{voice_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_voice(voice_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_voice(voice_id: str, db: AsyncSession = Depends(get_db, scope="function")):
     """Delete a voice and its reference audio."""
     result = await db.execute(select(Voice).where(Voice.id == voice_id))
     voice = result.scalar_one_or_none()
@@ -215,7 +247,7 @@ async def delete_voice(voice_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/{voice_id}/preview")
 async def preview_voice(
-    voice_id: str, payload: VoicePreviewRequest, db: AsyncSession = Depends(get_db)
+    voice_id: str, payload: VoicePreviewRequest, db: AsyncSession = Depends(get_db, scope="function")
 ):
     """
     Generate a short sample with this voice and return the WAV directly.

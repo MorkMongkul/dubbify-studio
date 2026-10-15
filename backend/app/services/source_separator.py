@@ -2,8 +2,8 @@
 app/services/source_separator.py
 
 Splits audio into Vocals and Background (BGM + SFX) stems via a HuggingFace
-Space (BS-RoFormer etc., see SEPARATION_HF_SPACE/SEPARATION_HF_MODEL) — the
-compute happens in the cloud, nothing runs locally.
+Space (see SEPARATION_HF_SPACE) — the compute happens in the cloud, nothing
+runs locally.
 
 Produces in the job dir:
   vocals.wav      — isolated human voice (used for diarization / ASR)
@@ -22,14 +22,23 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Overall wall-clock cap on the blocking HF call. gradio_client's own httpx
+# timeout only bounds individual connect/read/write operations — Gradio's job
+# queue streams periodic SSE keepalives while queued/processing, so a Space
+# that's alive but slow (not dead) can hold the connection open indefinitely
+# without ever tripping a per-phase timeout, hanging the pipeline forever with
+# the no-op fallback below never getting a chance to run.
+HF_CALL_TIMEOUT_SECONDS = 300
 
-async def separate_vocals_bgm(audio_path: str, output_dir: str) -> Tuple[str, str]:
+
+async def separate_vocals_bgm(audio_path: str, output_dir: str) -> Tuple[str, str, bool]:
     """
     Separate audio into vocals.wav and no_vocals.wav in output_dir.
 
     Returns:
-        (vocals_wav_path, bgm_wav_path)
-        Returns (audio_path, audio_path) if separation fails.
+        (vocals_wav_path, bgm_wav_path, degraded)
+        degraded=True means separation failed and both paths are fallback
+        copies of the original mixed audio — see _write_fallback_stems.
     """
     audio_path_obj = Path(audio_path)
     output_dir_obj = Path(output_dir)
@@ -40,14 +49,55 @@ async def separate_vocals_bgm(audio_path: str, output_dir: str) -> Tuple[str, st
     # Skip if stems already exist (e.g. re-running a failed job)
     if vocals_target.exists() and bgm_target.exists():
         logger.info("Stem files already present — skipping separation")
-        return str(vocals_target), str(bgm_target)
+        return str(vocals_target), str(bgm_target), False
 
     result = await _separate_via_hf(audio_path_obj, output_dir_obj, vocals_target, bgm_target)
     if result:
-        return result
+        return result[0], result[1], False
 
-    logger.warning("HF separation failed — pipeline will use original mixed audio")
-    return audio_path, audio_path
+    logger.warning("HF separation failed — using original mixed audio as both stems")
+    vocals_path, bgm_path = await _write_fallback_stems(
+        audio_path_obj, output_dir_obj, vocals_target, bgm_target
+    )
+    return vocals_path, bgm_path, True
+
+
+async def _write_fallback_stems(
+    audio_path: Path,
+    output_dir: Path,
+    vocals_target: Path,
+    bgm_target: Path,
+) -> Tuple[str, str]:
+    """
+    Separation is unavailable — persist the original mixed audio as BOTH
+    stems instead of only returning audio_path in memory.
+
+    Previously this path wrote nothing to disk: no_vocals.wav never existed,
+    so (a) the editor's Vocals/BGM waveform tracks were simply empty, and
+    (b) the final mix only includes a BGM bed when no_vocals.wav is present
+    — with mute_original=True (the default), that meant a separation
+    failure silently produced a dubbed export with NO music or sound
+    effects at all, dead silence behind every line, and no warning that it
+    happened. A same-file copy isn't a real separation (dialogue still
+    bleeds into the "BGM" bed) but it's far closer to correct than dropping
+    the score entirely.
+    """
+    import shutil
+
+    try:
+        if not vocals_target.exists():
+            await asyncio.to_thread(shutil.copy2, audio_path, vocals_target)
+        if not bgm_target.exists():
+            await asyncio.to_thread(shutil.copy2, audio_path, bgm_target)
+    except OSError as e:
+        logger.warning(f"Could not persist fallback stems to disk: {e}")
+        return str(audio_path), str(audio_path)
+
+    await _create_preview(vocals_target, output_dir / "vocals.preview.wav")
+    await _create_preview(bgm_target,    output_dir / "no_vocals.preview.wav")
+    await _create_playback_m4a(vocals_target, output_dir / "vocals.m4a")
+    await _create_playback_m4a(bgm_target,    output_dir / "no_vocals.m4a")
+    return str(vocals_target), str(bgm_target)
 
 
 # ── HuggingFace Space separation (gradio_client) ──────────────
@@ -72,11 +122,10 @@ def _hf_separate_call(audio_path: str) -> Tuple[str, str]:
         token=token,
         httpx_kwargs={"timeout": httpx.Timeout(180.0, connect=30.0)},
     )
-    # /separate → (vocals_filepath, background_filepath)
+    # /process_uploaded_file → (vocals_filepath, accompaniment_filepath, info_html)
     result = client.predict(
         handle_file(audio_path),
-        settings.SEPARATION_HF_MODEL,
-        api_name="/separate",
+        api_name="/process_uploaded_file",
     )
     return result[0], result[1]
 
@@ -104,13 +153,16 @@ async def _separate_via_hf(
     vocals_target: Path,
     bgm_target: Path,
 ) -> Tuple[str, str] | None:
-    """Separate via the HF Space (BS-RoFormer etc.) — compute happens in the cloud."""
-    logger.info(
-        f"Separating via HF Space '{settings.SEPARATION_HF_SPACE}' "
-        f"(model={settings.SEPARATION_HF_MODEL}): {audio_path.name}"
-    )
+    """Separate via the HF Space — compute happens in the cloud."""
+    logger.info(f"Separating via HF Space '{settings.SEPARATION_HF_SPACE}': {audio_path.name}")
     try:
-        vocals_src, bgm_src = await asyncio.to_thread(_hf_separate_call, str(audio_path))
+        vocals_src, bgm_src = await asyncio.wait_for(
+            asyncio.to_thread(_hf_separate_call, str(audio_path)),
+            timeout=HF_CALL_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"HF separation timed out after {HF_CALL_TIMEOUT_SECONDS}s — Space is unresponsive")
+        return None
     except Exception as e:
         logger.warning(f"HF separation failed: {e}")
         return None

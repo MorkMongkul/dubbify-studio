@@ -22,6 +22,8 @@ export type SegmentStatus = 'pending' | 'approved' | 'editing'
 
 // ── Domain Models ─────────────────────────────────────────────────
 
+export type ChatEditMode = 'manual' | 'auto'
+
 export interface Project {
   id: string
   name: string
@@ -34,11 +36,13 @@ export interface Project {
   job_count?: number
   logo_path?: string
   logo_url?: string | null
+  chat_edit_mode: ChatEditMode
 }
 
 export interface ProjectUpdate {
   name?: string
   description?: string
+  chat_edit_mode?: ChatEditMode
 }
 
 export type OverlayType = 'image' | 'subtitle' | 'shape'
@@ -102,10 +106,12 @@ export interface Job {
   status: JobStatus
   progress: number
   error_msg: string
+  title?: string
   video_path: string
   audio_path: string
   output_path: string
   duration_secs: number
+  bgm_volume_db: number
   // Computed by backend — HTTP URLs served via /uploads static mount
   video_url?: string | null
   output_url?: string | null
@@ -317,3 +323,46 @@ export const LANGUAGE_OPTIONS = [
   { value: 'zh', label: 'Chinese' },
   { value: 'km', label: 'Khmer'   },
 ]
+
+// ── Assistant chat ─────────────────────────────────────────────────
+
+export type ChatRole = 'user' | 'model'
+
+export interface ChatFunctionCall {
+  name: string
+  args: Record<string, unknown>
+}
+
+export interface ChatFunctionResponse {
+  name: string
+  response: Record<string, unknown>
+}
+
+export interface ChatMessage {
+  id: string
+  project_id: string
+  role: ChatRole
+  text: string
+  function_call?: ChatFunctionCall | null
+  function_response?: ChatFunctionResponse | null
+  created_at: string
+}
+
+export interface ChatSendResponse {
+  messages: ChatMessage[]
+}
+
+export type ChatEditStatus = 'pending' | 'approved' | 'rejected'
+
+export interface ChatProposedEdit {
+  id: string
+  project_id: string
+  segment_id: string
+  message_id?: string | null
+  old_khmer_text: string
+  new_khmer_text: string
+  reason: string
+  status: ChatEditStatus
+  created_at: string
+  resolved_at?: string | null
+}

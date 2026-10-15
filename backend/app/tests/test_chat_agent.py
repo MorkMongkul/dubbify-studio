@@ -1,0 +1,248 @@
+"""
+Assistant chat: the tool-calling loop, and the auto vs. manual edit-approval
+split (Project.chat_edit_mode). Gemini itself is mocked at _call_gemini —
+everything downstream (tool execution, DB writes, history replay) is real.
+"""
+import pytest
+from sqlalchemy import select
+
+import app.services.chat_agent as chat_agent
+from app.models.models import Job, Project, Segment
+
+
+async def _get_segment(db_sessionmaker, seg_id: str) -> dict:
+    """Direct DB read — there's no GET /segments/{id} endpoint, only
+    list-by-job, so assertions here go straight to the DB instead."""
+    async with db_sessionmaker() as session:
+        seg = (await session.execute(select(Segment).where(Segment.id == seg_id))).scalar_one()
+        return {
+            "khmer_text": seg.khmer_text,
+            "tts_audio_path": seg.tts_audio_path,
+            "is_approved": seg.is_approved,
+        }
+
+
+async def _make_project_with_segment(db_sessionmaker, chat_edit_mode: str = "manual"):
+    async with db_sessionmaker() as session:
+        project = Project(name="Ep", chat_edit_mode=chat_edit_mode)
+        session.add(project)
+        await session.flush()
+        job = Job(project_id=project.id)
+        session.add(job)
+        await session.flush()
+        seg = Segment(
+            job_id=job.id, start_time=0.0, end_time=2.0,
+            source_text="我回来了", khmer_text="ខ្ញុំបានត្រឡប់មកវិញ",
+        )
+        session.add(seg)
+        await session.flush()
+        project_id, seg_id = project.id, seg.id
+        await session.commit()
+    return project_id, seg_id
+
+
+def _text_response(text: str) -> dict:
+    return {"parts": [{"text": text}], "role": "model"}
+
+
+def _function_call_response(name: str, args: dict) -> dict:
+    return {"parts": [{"functionCall": {"name": name, "args": args}}], "role": "model"}
+
+
+@pytest.mark.asyncio
+async def test_simple_text_reply_needs_no_tool_call(client, db_sessionmaker, monkeypatch):
+    project_id, _ = await _make_project_with_segment(db_sessionmaker)
+
+    async def fake_call_gemini(contents):
+        return _text_response("Sure, happy to help.")
+
+    monkeypatch.setattr(chat_agent, "_call_gemini", fake_call_gemini)
+
+    resp = await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "Hello"})
+    assert resp.status_code == 200
+    messages = resp.json()["messages"]
+    assert [m["role"] for m in messages] == ["user", "model"]
+    assert messages[1]["text"] == "Sure, happy to help."
+
+
+@pytest.mark.asyncio
+async def test_search_segments_tool_round_trip(client, db_sessionmaker, monkeypatch):
+    project_id, seg_id = await _make_project_with_segment(db_sessionmaker)
+
+    calls = []
+
+    async def fake_call_gemini(contents):
+        calls.append(contents)
+        if len(calls) == 1:
+            return _function_call_response("search_segments", {"query": "回来"})
+        return _text_response("Found it — episode 1 uses ខ្ញុំបានត្រឡប់មកវិញ for that line.")
+
+    monkeypatch.setattr(chat_agent, "_call_gemini", fake_call_gemini)
+
+    resp = await client.post(
+        f"/api/v1/chat/{project_id}/messages",
+        json={"text": "How was 回来 translated before?"},
+    )
+    assert resp.status_code == 200
+    messages = resp.json()["messages"]
+    roles = [m["role"] for m in messages]
+    assert roles == ["user", "model", "user", "model"]
+
+    # The tool-response message must carry the REAL search result, not a stub.
+    tool_response_msg = messages[2]
+    assert tool_response_msg["function_response"]["name"] == "search_segments"
+    found = tool_response_msg["function_response"]["response"]["segments"]
+    assert any(s["segment_id"] == seg_id for s in found)
+
+    # Second Gemini call must have the full history threaded through, including
+    # the tool's real result — proves replay/reconstruction is wired correctly.
+    second_call_contents = calls[1]
+    assert any("functionResponse" in p for c in second_call_contents for p in c["parts"])
+
+
+@pytest.mark.asyncio
+async def test_propose_edit_manual_mode_stages_without_touching_segment(client, db_sessionmaker, monkeypatch):
+    project_id, seg_id = await _make_project_with_segment(db_sessionmaker, chat_edit_mode="manual")
+
+    calls = []
+
+    async def fake_call_gemini(contents):
+        calls.append(contents)
+        if len(calls) == 1:
+            return _function_call_response("propose_edit", {
+                "segment_id": seg_id, "new_khmer_text": "ខ្ញុំមកដល់ហើយ", "reason": "more natural",
+            })
+        return _text_response("Proposed a more natural phrasing — waiting on your approval.")
+
+    monkeypatch.setattr(chat_agent, "_call_gemini", fake_call_gemini)
+
+    resp = await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "Fix that line"})
+    assert resp.status_code == 200
+
+    # Segment must be untouched in manual mode.
+    seg = await _get_segment(db_sessionmaker, seg_id)
+    assert seg["khmer_text"] == "ខ្ញុំបានត្រឡប់មកវិញ"
+
+    pending = (await client.get(f"/api/v1/chat/{project_id}/pending-edits")).json()
+    assert len(pending) == 1
+    assert pending[0]["status"] == "pending"
+    assert pending[0]["new_khmer_text"] == "ខ្ញុំមកដល់ហើយ"
+
+
+@pytest.mark.asyncio
+async def test_propose_edit_auto_mode_applies_immediately(client, db_sessionmaker, monkeypatch):
+    project_id, seg_id = await _make_project_with_segment(db_sessionmaker, chat_edit_mode="auto")
+
+    calls = []
+
+    async def fake_call_gemini(contents):
+        calls.append(contents)
+        if len(calls) == 1:
+            return _function_call_response("propose_edit", {
+                "segment_id": seg_id, "new_khmer_text": "ខ្ញុំមកដល់ហើយ", "reason": "more natural",
+            })
+        return _text_response("Applied the fix.")
+
+    monkeypatch.setattr(chat_agent, "_call_gemini", fake_call_gemini)
+
+    resp = await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "Fix that line"})
+    assert resp.status_code == 200
+
+    seg = await _get_segment(db_sessionmaker, seg_id)
+    assert seg["khmer_text"] == "ខ្ញុំមកដល់ហើយ"
+    assert seg["tts_audio_path"] == ""
+    assert seg["is_approved"] is False
+
+    pending = (await client.get(f"/api/v1/chat/{project_id}/pending-edits?status=all")).json()
+    assert len(pending) == 1
+    assert pending[0]["status"] == "approved"
+    assert pending[0]["resolved_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_approve_pending_edit_applies_it(client, db_sessionmaker, monkeypatch):
+    project_id, seg_id = await _make_project_with_segment(db_sessionmaker, chat_edit_mode="manual")
+
+    async def fake_call_gemini(contents):
+        if len(contents) <= 1:
+            return _function_call_response("propose_edit", {
+                "segment_id": seg_id, "new_khmer_text": "ខ្ញុំមកដល់ហើយ", "reason": "more natural",
+            })
+        return _text_response("Waiting on approval.")
+
+    monkeypatch.setattr(chat_agent, "_call_gemini", fake_call_gemini)
+    await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "Fix that line"})
+
+    pending = (await client.get(f"/api/v1/chat/{project_id}/pending-edits")).json()
+    edit_id = pending[0]["id"]
+
+    approve_resp = await client.post(f"/api/v1/chat/pending-edits/{edit_id}/approve")
+    assert approve_resp.status_code == 200
+    assert approve_resp.json()["status"] == "approved"
+
+    seg = await _get_segment(db_sessionmaker, seg_id)
+    assert seg["khmer_text"] == "ខ្ញុំមកដល់ហើយ"
+
+    # Approving twice must fail cleanly rather than double-apply.
+    second = await client.post(f"/api/v1/chat/pending-edits/{edit_id}/approve")
+    assert second.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_reject_pending_edit_leaves_segment_untouched(client, db_sessionmaker, monkeypatch):
+    project_id, seg_id = await _make_project_with_segment(db_sessionmaker, chat_edit_mode="manual")
+
+    async def fake_call_gemini(contents):
+        if len(contents) <= 1:
+            return _function_call_response("propose_edit", {
+                "segment_id": seg_id, "new_khmer_text": "ខ្ញុំមកដល់ហើយ", "reason": "more natural",
+            })
+        return _text_response("Waiting on approval.")
+
+    monkeypatch.setattr(chat_agent, "_call_gemini", fake_call_gemini)
+    await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "Fix that line"})
+
+    pending = (await client.get(f"/api/v1/chat/{project_id}/pending-edits")).json()
+    edit_id = pending[0]["id"]
+
+    reject_resp = await client.post(f"/api/v1/chat/pending-edits/{edit_id}/reject")
+    assert reject_resp.status_code == 200
+    assert reject_resp.json()["status"] == "rejected"
+
+    seg = await _get_segment(db_sessionmaker, seg_id)
+    assert seg["khmer_text"] == "ខ្ញុំបានត្រឡប់មកវិញ"
+
+
+@pytest.mark.asyncio
+async def test_propose_edit_rejects_segment_from_another_project(client, db_sessionmaker, monkeypatch):
+    project_id, _ = await _make_project_with_segment(db_sessionmaker, chat_edit_mode="auto")
+    _other_project_id, other_seg_id = await _make_project_with_segment(db_sessionmaker, chat_edit_mode="auto")
+
+    async def fake_call_gemini(contents):
+        if len(contents) <= 1:
+            return _function_call_response("propose_edit", {
+                "segment_id": other_seg_id, "new_khmer_text": "hijacked", "reason": "x",
+            })
+        return _text_response("done")
+
+    monkeypatch.setattr(chat_agent, "_call_gemini", fake_call_gemini)
+    await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "edit it"})
+
+    seg = await _get_segment(db_sessionmaker, other_seg_id)
+    assert seg["khmer_text"] != "hijacked"
+
+
+@pytest.mark.asyncio
+async def test_tool_round_cap_surfaces_instead_of_hanging(client, db_sessionmaker, monkeypatch):
+    project_id, seg_id = await _make_project_with_segment(db_sessionmaker)
+    monkeypatch.setattr(chat_agent.settings, "CHAT_MAX_TOOL_ROUNDS", 2)
+
+    async def always_calls_tool(contents):
+        return _function_call_response("list_episodes", {})
+
+    monkeypatch.setattr(chat_agent, "_call_gemini", always_calls_tool)
+
+    resp = await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "loop forever"})
+    assert resp.status_code == 200
+    messages = resp.json()["messages"]
+    assert "didn't reach a final answer" in messages[-1]["text"]

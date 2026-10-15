@@ -6,7 +6,7 @@
 import { useNavigate } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
 import {
-  Zap, FolderOpen, Film, Users, ImagePlus, Mic, Settings2, Sun, Moon,
+  Zap, FolderOpen, Users, ImagePlus, Mic, Bot, Settings2, Sun, Moon,
 } from 'lucide-react'
 import { useEditorStore, type RailTab } from '@/store/editorStore'
 import { useThemeStore } from '@/store/themeStore'
@@ -14,11 +14,11 @@ import { Tooltip } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils'
 
 const RAIL_ITEMS: { tab: RailTab; icon: LucideIcon; label: string }[] = [
-  { tab: 'projects', icon: FolderOpen, label: 'Projects' },
-  { tab: 'sessions', icon: Film,       label: 'Sessions' },
-  { tab: 'speakers', icon: Users,      label: 'Speakers' },
-  { tab: 'elements', icon: ImagePlus,  label: 'Elements' },
-  { tab: 'voices',   icon: Mic,        label: 'Voices' },
+  { tab: 'projects',  icon: FolderOpen, label: 'Projects' },
+  { tab: 'speakers',  icon: Users,      label: 'Speakers' },
+  { tab: 'elements',  icon: ImagePlus,  label: 'Elements' },
+  { tab: 'voices',    icon: Mic,        label: 'Voices' },
+  { tab: 'assistant', icon: Bot,        label: 'Assistant' },
 ]
 
 function RailButton({

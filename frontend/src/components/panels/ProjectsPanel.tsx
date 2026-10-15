@@ -3,18 +3,25 @@
 // without leaving the editor. Replaces the old standalone /projects grid page.
 import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { FolderOpen, Plus, Search, Trash2, Check, X, Clapperboard, ChevronRight, AlertCircle, RefreshCw } from 'lucide-react'
+import { FolderOpen, Plus, Search, Trash2, Check, X, Clapperboard, ChevronRight, ChevronDown, AlertCircle, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { useProjects, useDeleteProject } from '@/hooks/useApi'
 import { CreateProjectModal } from '@/features/projects/CreateProjectModal'
 import { getLanguageName } from '@/lib/utils'
 import { PanelHeader, PanelEmptyState } from './PanelShell'
+import { ProjectEpisodeList } from './ProjectEpisodeList'
 
 interface ProjectsPanelProps {
   activeProjectId?: string
+  /** Currently-open episode, if any — highlighted within its project's
+   *  expanded episode list. */
+  activeJobId?: string
+  /** Import only ever targets the currently-open project — passed through
+   *  to that project's expanded episode list only. */
+  onImportFile?: (files: File[]) => void
 }
 
-export function ProjectsPanel({ activeProjectId }: ProjectsPanelProps) {
+export function ProjectsPanel({ activeProjectId, activeJobId, onImportFile }: ProjectsPanelProps) {
   const navigate = useNavigate()
   const { data, isLoading, isError, refetch, isFetching } = useProjects()
   // Belt and braces: the API layer already rejects non-JSON, but a list panel
@@ -25,6 +32,22 @@ export function ProjectsPanel({ activeProjectId }: ProjectsPanelProps) {
   const [search, setSearch] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+
+  // Which projects show their episode list inline. The active project
+  // starts expanded automatically (you're clearly working in it — showing
+  // its episodes needs no extra click, and it's derived rather than synced
+  // via an effect so it can't fall out of sync with a changing route);
+  // anything else opens on demand via the row's chevron, without navigating
+  // away from wherever you are.
+  const [manuallyExpandedIds, setManuallyExpandedIds] = useState<Set<string>>(new Set())
+  const isExpanded = (id: string) => id === activeProjectId || manuallyExpandedIds.has(id)
+  const toggleExpanded = (id: string) => {
+    setManuallyExpandedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
 
   // A pending delete reverts on its own after a few seconds — no modal to
   // dismiss, no way to leave a row stuck in the scary state.
@@ -128,48 +151,64 @@ export function ProjectsPanel({ activeProjectId }: ProjectsPanelProps) {
             {projects.map((p) => {
               const isActive = p.id === activeProjectId
               const confirming = confirmDeleteId === p.id
+              const expanded = isExpanded(p.id)
               const createdAt = new Date(p.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
               return (
-                <div
-                  key={p.id}
-                  onClick={() => { if (!isActive) navigate(`/projects/${p.id}`) }}
-                  className={`group flex items-center gap-2 p-2 rounded cursor-pointer transition-all border ${isActive ? 'bg-purple-500/10 border-purple-500/30' : 'bg-zinc-800/30 border-zinc-800/40 hover:bg-zinc-800/60 hover:border-zinc-700/60'}`}
-                >
-                  <div className="flex-1 min-w-0">
-                    <p className={`text-[10.5px] font-medium truncate ${isActive ? 'text-white' : 'text-zinc-300'}`}>{p.name}</p>
-                    <p className="text-[9px] text-zinc-600 flex items-center gap-0.5">
-                      {getLanguageName(p.source_lang)}
-                      <ChevronRight size={8} className="opacity-60" />
-                      <span className="text-purple-400/70">{getLanguageName(p.target_lang)}</span>
-                      <span className="mx-0.5 opacity-50">·</span>
-                      {createdAt}
-                    </p>
-                  </div>
-                  {confirming ? (
-                    <div className="flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        onClick={() => handleDelete(p.id)}
-                        disabled={deleting}
-                        className="flex items-center gap-0.5 px-1.5 h-6 rounded bg-red-500 hover:bg-red-400 text-white text-[9px] font-semibold transition-colors"
-                      >
-                        <Check size={10} /> Delete
-                      </button>
-                      <button
-                        onClick={() => setConfirmDeleteId(null)}
-                        className="h-6 w-6 rounded flex items-center justify-center text-zinc-400 hover:bg-white/10"
-                        aria-label="Cancel delete"
-                      >
-                        <X size={11} />
-                      </button>
-                    </div>
-                  ) : (
+                <div key={p.id}>
+                  <div
+                    onClick={() => { if (!isActive) navigate(`/projects/${p.id}`) }}
+                    className={`group flex items-center gap-1.5 p-2 rounded cursor-pointer transition-all border ${isActive ? 'bg-purple-500/10 border-purple-500/30' : 'bg-zinc-800/30 border-zinc-800/40 hover:bg-zinc-800/60 hover:border-zinc-700/60'}`}
+                  >
                     <button
-                      onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(p.id) }}
-                      className={`shrink-0 p-1 rounded transition-all ${isActive ? 'opacity-60 hover:opacity-100 hover:bg-red-500/20 hover:text-red-400 text-zinc-400' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-red-500/20 hover:text-red-400 text-zinc-500'}`}
-                      title="Delete project"
+                      onClick={(e) => { e.stopPropagation(); toggleExpanded(p.id) }}
+                      className="shrink-0 p-0.5 rounded text-zinc-500 hover:text-zinc-200 hover:bg-white/10 transition-colors"
+                      aria-label={expanded ? 'Collapse episodes' : 'Expand episodes'}
                     >
-                      <Trash2 size={11} />
+                      {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                     </button>
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-[10.5px] font-medium truncate ${isActive ? 'text-white' : 'text-zinc-300'}`}>{p.name}</p>
+                      <p className="text-[9px] text-zinc-600 flex items-center gap-0.5">
+                        {getLanguageName(p.source_lang)}
+                        <ChevronRight size={8} className="opacity-60" />
+                        <span className="text-purple-400/70">{getLanguageName(p.target_lang)}</span>
+                        <span className="mx-0.5 opacity-50">·</span>
+                        {createdAt}
+                      </p>
+                    </div>
+                    {confirming ? (
+                      <div className="flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={() => handleDelete(p.id)}
+                          disabled={deleting}
+                          className="flex items-center gap-0.5 px-1.5 h-6 rounded bg-red-500 hover:bg-red-400 text-white text-[9px] font-semibold transition-colors"
+                        >
+                          <Check size={10} /> Delete
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteId(null)}
+                          className="h-6 w-6 rounded flex items-center justify-center text-zinc-400 hover:bg-white/10"
+                          aria-label="Cancel delete"
+                        >
+                          <X size={11} />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(p.id) }}
+                        className={`shrink-0 p-1 rounded transition-all ${isActive ? 'opacity-60 hover:opacity-100 hover:bg-red-500/20 hover:text-red-400 text-zinc-400' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-red-500/20 hover:text-red-400 text-zinc-500'}`}
+                        title="Delete project"
+                      >
+                        <Trash2 size={11} />
+                      </button>
+                    )}
+                  </div>
+                  {expanded && (
+                    <ProjectEpisodeList
+                      projectId={p.id}
+                      activeJobId={isActive ? activeJobId : undefined}
+                      onImportFile={isActive ? onImportFile : undefined}
+                    />
                   )}
                 </div>
               )

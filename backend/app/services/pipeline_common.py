@@ -1,15 +1,23 @@
 """
 app/services/pipeline_common.py
-Shared helpers used by both the ASR pipeline and the subtitle pipeline.
-
-Extracted to remove the duplicated _update_job and speaker-creation logic
-that previously lived in both pipeline modules.
+Shared helpers used by both the ASR pipeline and the subtitle pipeline:
+job status updates, speaker bookkeeping, speaker reference voices, the atomic
+segment swap, failure recovery, and orphaned-job recovery on startup.
 """
 import logging
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+import os
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional
 
-from app.models.models import Job, Speaker, Segment, JobStatus, Gender, AgeGroup
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.core.paths import resolve_existing
+from app.models.models import (
+    AgeGroup, ChatProposedEdit, Gender, Job, JobStatus, Segment, Speaker,
+)
+from app.services import asr
 from app.services.diarizer import build_voice_design_prompt
 
 logger = logging.getLogger(__name__)
@@ -26,51 +34,155 @@ async def update_job_status(
     logger.info(f"Job {job.id[:8]} | {status.value} | {progress}%")
 
 
-async def get_or_create_speakers(
-    db: AsyncSession, project_id: str, diarized: list
-) -> dict[str, Speaker]:
-    """
-    Build a {speaker_label: Speaker} map for the project, reusing speakers
-    that already exist (matched by label).
+def vocals_path_for(job: Job) -> Optional[str]:
+    """The job's separated vocals stem, else its extracted audio — whichever exists on disk."""
+    stem = Path(settings.UPLOAD_DIR) / job.project_id / job.id / "vocals.wav"
+    if stem.exists():
+        return str(stem)
+    audio = resolve_existing(job.audio_path)
+    return str(audio) if audio else None
 
-    Idempotent: re-running Stage 2 will not create duplicate Speaker rows.
-    Speakers are project-scoped (matching the data model), so labels are
-    shared across jobs within the same project.
+
+# ── Speakers ──────────────────────────────────────────────────────────────────
+
+def is_confirmed_speaker(speaker: Speaker) -> bool:
+    """A speaker the user has made their own — renamed it or gave it a voice."""
+    name = (speaker.display_name or "").strip()
+    return bool(speaker.voice_id) or (bool(name) and name != speaker.label)
+
+
+async def project_speaker_labels(db: AsyncSession, project_id: str) -> set:
+    result = await db.execute(select(Speaker.label).where(Speaker.project_id == project_id))
+    return set(result.scalars().all())
+
+
+async def ensure_speakers(db: AsyncSession, project_id: str, labels: Iterable[str]) -> Dict[str, Speaker]:
+    """
+    {label: Speaker} for every label, creating the missing ones. Flushes but
+    does not commit, so the caller decides what is written atomically.
+    Speakers are project-scoped: the same label means the same character
+    across the project's episodes.
     """
     result = await db.execute(select(Speaker).where(Speaker.project_id == project_id))
-    speaker_map: dict[str, Speaker] = {sp.label: sp for sp in result.scalars().all()}
-
-    for seg in diarized:
-        label = seg.speaker_label
+    speaker_map: Dict[str, Speaker] = {sp.label: sp for sp in result.scalars().all()}
+    for label in labels:
         if label not in speaker_map:
             speaker = Speaker(
                 project_id=project_id,
                 label=label,
                 display_name=label,
-                gender=Gender(seg.gender),
-                age_group=AgeGroup(seg.age_group),
-                voice_design_prompt=build_voice_design_prompt(label, seg.gender, seg.age_group),
+                gender=Gender.UNKNOWN,
+                age_group=AgeGroup.ADULT,
+                voice_design_prompt=build_voice_design_prompt(label, "unknown", "adult"),
             )
             db.add(speaker)
-            await db.commit()
             speaker_map[label] = speaker
+    await db.flush()
     return speaker_map
 
 
-async def clear_job_segments(db: AsyncSession, job_id: str) -> None:
-    """
-    Delete existing segments for a job so a Stage 2 re-run does not stack up
-    duplicate rows. Only used by the ASR pipeline, which creates segments
-    fresh — the subtitle pipeline updates its segments in place.
-    """
-    await db.execute(delete(Segment).where(Segment.job_id == job_id))
-    await db.commit()
+async def remove_unused_auto_speakers(db: AsyncSession, project_id: str) -> None:
+    """Drop speakers nothing points at any more, unless the user named or voiced them."""
+    in_use = select(Segment.speaker_id).where(Segment.speaker_id.is_not(None)).distinct()
+    result = await db.execute(
+        select(Speaker).where(Speaker.project_id == project_id, Speaker.id.not_in(in_use))
+    )
+    for speaker in result.scalars().all():
+        if not is_confirmed_speaker(speaker):
+            await db.delete(speaker)
+    await db.flush()
 
+
+async def build_speaker_references(db: AsyncSession, project_id: str, tmp_dir: str) -> List[asr.SpeakerReference]:
+    """
+    Reference voices for the ASR: one short clip per named/voiced speaker in
+    the project (from any episode), so a recurring character keeps the same
+    label — and with it the name and voice the user assigned.
+    """
+    result = await db.execute(select(Speaker).where(Speaker.project_id == project_id))
+    confirmed = {sp.id: sp for sp in result.scalars().all() if is_confirmed_speaker(sp)}
+    if not confirmed:
+        return []
+
+    rows = (await db.execute(
+        select(Segment, Job).join(Job, Job.id == Segment.job_id)
+        .where(Segment.speaker_id.in_(list(confirmed)))
+    )).all()
+    counts: Dict[str, int] = {}
+    best: Dict[str, tuple] = {}
+    for seg, job in rows:
+        counts[seg.speaker_id] = counts.get(seg.speaker_id, 0) + 1
+        duration = seg.end_time - seg.start_time
+        if not (seg.source_text or "").strip():
+            continue
+        if not asr.REFERENCE_MIN_SECONDS <= duration <= asr.REFERENCE_MAX_SECONDS:
+            continue
+        if seg.speaker_id not in best or duration > best[seg.speaker_id][0]:
+            best[seg.speaker_id] = (duration, seg, job)
+
+    references: List[asr.SpeakerReference] = []
+    for speaker_id in sorted(best, key=lambda sid: -counts[sid]):
+        duration, seg, job = best[speaker_id]
+        vocals = vocals_path_for(job)
+        if not vocals:
+            continue
+        clip = os.path.join(tmp_dir, f"ref_{speaker_id}.flac")
+        try:
+            await asr._slice_chunk(vocals, seg.start_time, seg.end_time, clip)
+        except Exception as e:
+            logger.warning(f"Could not cut a reference clip for speaker {confirmed[speaker_id].label}: {e}")
+            continue
+        references.append(asr.SpeakerReference(confirmed[speaker_id].label, clip, seg.source_text.strip(), duration))
+        if len(references) >= asr.ASR_MAX_REFERENCES:
+            break
+    return references
+
+
+# ── Segments ──────────────────────────────────────────────────────────────────
+
+async def replace_job_segments(db: AsyncSession, job_id: str, new_segments: List[Segment]) -> None:
+    """
+    Swap a job's segments for new ones inside the caller's transaction — the
+    old rows (and Assistant edits pointing at them) only disappear when the
+    caller commits, so a failure anywhere before that loses nothing.
+    """
+    old_ids = select(Segment.id).where(Segment.job_id == job_id)
+    await db.execute(delete(ChatProposedEdit).where(ChatProposedEdit.segment_id.in_(old_ids)))
+    await db.execute(delete(Segment).where(Segment.job_id == job_id))
+    db.add_all(new_segments)
+    await db.flush()
+
+
+async def restore_or_fail_job(db: AsyncSession, job_id: str, message: str) -> None:
+    """
+    After a failed Stage 2 / speaker-detection run: roll back whatever was half
+    written, then leave a job that still has segments COMPLETED (so the editor
+    stays usable and the message explains what happened) — FAILED otherwise.
+    """
+    try:
+        await db.rollback()
+        job = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
+        if job is None:
+            return
+        has_segments = (await db.execute(
+            select(Segment.id).where(Segment.job_id == job_id).limit(1)
+        )).first() is not None
+        if has_segments:
+            job.status, job.progress = JobStatus.COMPLETED, 100
+            job.error_msg = f"{message} Your existing segments were kept."
+        else:
+            job.status, job.progress, job.error_msg = JobStatus.FAILED, 0, message
+        await db.commit()
+    except Exception:
+        logger.exception(f"Could not record the failure for job {job_id[:8]}")
+
+
+# ── Startup recovery ──────────────────────────────────────────────────────────
 
 # Statuses that mean a job was actively being processed in a worker.
 # If the server restarts, these can never resume on their own (work runs in
-# in-process BackgroundTasks), so they must be failed on startup.
-# STEMS_READY is a valid paused state and is intentionally excluded.
+# in-process BackgroundTasks). STEMS_READY is a valid paused state and is
+# intentionally excluded.
 _ORPHANABLE_STATUSES = [
     JobStatus.PENDING,
     JobStatus.EXTRACTING,
@@ -85,29 +197,39 @@ _ORPHANABLE_STATUSES = [
 
 async def recover_orphaned_jobs() -> None:
     """
-    Mark any job left mid-processing by a previous run as failed.
+    Settle any job left mid-processing by a previous run.
 
-    Pipeline work runs in FastAPI BackgroundTasks inside this process, so a
-    restart abandons in-flight jobs — they would otherwise sit forever showing
-    'diarizing', 'extracting', etc. with no worker behind them.
+    A job that already has segments (an interrupted re-analysis, speaker
+    detection, batch TTS or export) goes back to COMPLETED with a note —
+    failing it would hide the user's edited timeline. Only jobs with nothing
+    to show are marked FAILED.
 
     Filtering is done in Python rather than via a SQL WHERE on the status enum:
     the live Postgres `jobs.status` column is plain VARCHAR, so an enum-typed
-    comparison emits a `::jobstatus` cast that has no matching operator. Reading
-    the rows and comparing the ORM-converted JobStatus members sidesteps that,
-    and the per-row assignment matches how the pipeline already updates status.
+    comparison emits a `::jobstatus` cast that has no matching operator.
     """
     from app.core.database import AsyncSessionLocal
 
     orphanable = set(_ORPHANABLE_STATUSES)
     async with AsyncSessionLocal() as db:
-        result = await db.execute(select(Job))
-        recovered = 0
-        for job in result.scalars().all():
-            if job.status in orphanable:
+        jobs = [j for j in (await db.execute(select(Job))).scalars().all() if j.status in orphanable]
+        if not jobs:
+            return
+        with_segments = set((await db.execute(
+            select(Segment.job_id).where(Segment.job_id.in_([j.id for j in jobs])).distinct()
+        )).scalars().all())
+        for job in jobs:
+            if job.id in with_segments:
+                job.status, job.progress = JobStatus.COMPLETED, 100
+                job.error_msg = (
+                    "Interrupted by a server restart — your segments were kept. "
+                    "Re-run the step that was in progress."
+                )
+            else:
                 job.status = JobStatus.FAILED
                 job.error_msg = "Interrupted by server restart"
-                recovered += 1
-        if recovered:
-            await db.commit()
-            logger.warning(f"Recovered {recovered} orphaned job(s) → failed")
+        await db.commit()
+        logger.warning(
+            f"Recovered {len(jobs)} interrupted job(s): "
+            f"{len(with_segments)} kept as completed, {len(jobs) - len(with_segments)} failed"
+        )

@@ -6,13 +6,29 @@ test file under pytest's rootdir import mode creates a SECOND module instance
 with its own engine, whose module-level dependency_overrides assignment
 silently re-points the app at a database where create_all never ran.
 """
-import pytest_asyncio
-from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from sqlalchemy.pool import StaticPool
+import os
+import tempfile
 
-from app.main import app
-from app.core.database import get_db, Base
+# Before anything imports the app: environment variables override backend/.env
+# (pydantic-settings), so no test can reach the developer's real database or
+# spend real API quota. Tests that need a "configured" key set it themselves.
+_TEST_ROOT = tempfile.mkdtemp(prefix="dubify-tests-")
+os.environ.update({
+    "DATABASE_URL": f"sqlite+aiosqlite:///{_TEST_ROOT}/unused.db",
+    "UPLOAD_DIR": os.path.join(_TEST_ROOT, "uploads"),
+    "GEMINI_API_KEY": "",
+    "HF_TOKEN": "",
+    "VOXCPM2_API_URL": "",
+    "ALLOWED_HOSTS": "127.0.0.1,localhost,test,testserver",
+})
+
+import pytest_asyncio  # noqa: E402
+from httpx import AsyncClient, ASGITransport  # noqa: E402
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
+
+from app.main import app  # noqa: E402
+from app.core.database import get_db, Base  # noqa: E402
 
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"

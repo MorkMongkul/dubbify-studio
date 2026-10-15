@@ -9,7 +9,7 @@ import {
 import { toast } from 'sonner'
 import type { Segment, Speaker, Job, SegmentUpdate } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
-import { useUpdateSegment, useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes } from '@/hooks/useApi'
+import { useUpdateSegment, useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useSetBgmVolume } from '@/hooks/useApi'
 import { segments as segmentsApi } from '@/api/client'
 import { PipelineStepper } from '@/features/upload/PipelineStepper'
 import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, hexToRgba, cn, isJobRunning, getJobStatusConfig } from '@/lib/utils'
@@ -102,8 +102,31 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const { mutate: regenerateSegment, isPending: isRegenerating, variables: regenVariables } = useSynthesizeSegment()
   const autofitSegments = useAutofitSegments()
   const tidyLanes = useTidyLanes()
+  const { mutate: setBgmVolume, isPending: isSettingBgmVolume } = useSetBgmVolume()
   const clearSegmentPositions = useEditorStore((s) => s.clearSegmentPositions)
   const qc = useQueryClient()
+
+  // BGM & SFX gain — mirrors job.bgm_volume_db while dragging, committed on
+  // release (see handleVolumeChange). Re-synced whenever the confirmed
+  // server value changes (job switch, or the mutation's own response).
+  const serverBgmVolume = job?.bgm_volume_db ?? 0
+  const [bgmVolume, setBgmVolumeLocal] = useState<number>(serverBgmVolume)
+  // Re-sync during render when the confirmed value or the job changes (React's
+  // "adjust state when a prop changes" pattern — no extra effect pass).
+  const [syncedBgm, setSyncedBgm] = useState({ jobId: job?.id, value: serverBgmVolume })
+  if (syncedBgm.jobId !== job?.id || syncedBgm.value !== serverBgmVolume) {
+    setSyncedBgm({ jobId: job?.id, value: serverBgmVolume })
+    setBgmVolumeLocal(serverBgmVolume)
+  }
+  const handleBgmVolumeCommit = useCallback((value: number) => {
+    if (!jobId || value === (job?.bgm_volume_db ?? 0)) return
+    setBgmVolume({ jobId, volumeDb: value }, {
+      onError: () => {
+        toast.error('Failed to update BGM volume')
+        setBgmVolumeLocal(job?.bgm_volume_db ?? 0)
+      },
+    })
+  }, [jobId, job?.bgm_volume_db, setBgmVolume])
 
   const handleAutofit = () => {
     if (!jobId) return
@@ -178,7 +201,12 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
 
   // Stem waveform paths — use tiny 8kHz mono preview files so Web Audio decodes instantly.
   // Full stems (~19MB) are kept for playback; preview files (~1.7MB) are for visualization only.
-  const noVocalsPreviewPath = jobId && projectId ? `uploads/${projectId}/${jobId}/no_vocals.preview.wav` : null
+  // Cache-busted by bgm_volume_db — the backend overwrites this same file path
+  // whenever the BGM gain changes, so the URL needs to change too or the
+  // browser (and WaveSurfer's decode) keeps showing the pre-gain waveform.
+  const noVocalsPreviewPath = jobId && projectId
+    ? `uploads/${projectId}/${jobId}/no_vocals.preview.wav?v=${job?.bgm_volume_db ?? 0}`
+    : null
   const vocalsPreviewPath   = jobId && projectId ? `uploads/${projectId}/${jobId}/vocals.preview.wav`    : null
 
   // Timeline rows are free lanes, independent of speaker — a lane is just a
@@ -418,8 +446,11 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
 
   const onRulerMouseDown = useCallback((e: React.MouseEvent) => {
     isDraggingRef.current = true
-    seekFromEvent(e.clientX, e.currentTarget.getBoundingClientRect())
-    const onMove  = (ev: MouseEvent) => seekFromEvent(ev.clientX, (e.currentTarget as HTMLElement).getBoundingClientRect())
+    // Captured now: React clears e.currentTarget once this handler returns, so
+    // reading it inside the move listener threw on every mousemove.
+    const ruler = e.currentTarget as HTMLElement
+    seekFromEvent(e.clientX, ruler.getBoundingClientRect())
+    const onMove  = (ev: MouseEvent) => seekFromEvent(ev.clientX, ruler.getBoundingClientRect())
     const onUp    = () => { isDraggingRef.current = false; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
@@ -901,30 +932,53 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
             >
               {/* Track label (sticky left) */}
               <div
-                className="sticky left-0 z-10 h-full flex items-center px-2.5 gap-2 shrink-0 bg-zinc-900/95 backdrop-blur-sm border-r border-white/[0.06]"
+                className="sticky left-0 z-10 h-full flex flex-col justify-center gap-1 px-2.5 py-1.5 shrink-0 bg-zinc-900/95 backdrop-blur-sm border-r border-white/[0.06]"
                 style={{ float: 'left', width: 'var(--speaker-width)' }}
               >
-                <div
-                  className="h-2.5 w-2.5 rounded-full shrink-0 bg-sky-500"
-                />
-                <span className="text-[13px] text-white/70 truncate grow min-w-0 pr-1 font-semibold">
-                  BGM &amp; SFX
-                </span>
+                <div className="flex items-center gap-2">
+                  <div
+                    className="h-2.5 w-2.5 rounded-full shrink-0 bg-sky-500"
+                  />
+                  <span className="text-[13px] text-white/70 truncate grow min-w-0 pr-1 font-semibold">
+                    BGM &amp; SFX
+                  </span>
 
-                {/* Mute Track Control */}
-                <div className="flex items-center gap-0.5 ml-auto shrink-0">
-                  <button
-                    onClick={() => toggleMuteTrack('__bgm__')}
-                    className={cn(
-                      "h-6 w-6 rounded-md text-[11px] font-bold flex items-center justify-center border transition-all select-none",
-                      mutedTrackIds['__bgm__']
-                        ? "bg-amber-500/20 text-amber-500 border-amber-500/30 hover:bg-amber-500/30"
-                        : "bg-transparent text-white/35 border-transparent hover:bg-white/8 hover:text-white/70"
-                    )}
-                    title="Mute Background Music"
-                  >
-                    M
-                  </button>
+                  {/* Mute Track Control */}
+                  <div className="flex items-center gap-0.5 ml-auto shrink-0">
+                    <button
+                      onClick={() => toggleMuteTrack('__bgm__')}
+                      className={cn(
+                        "h-6 w-6 rounded-md text-[11px] font-bold flex items-center justify-center border transition-all select-none",
+                        mutedTrackIds['__bgm__']
+                          ? "bg-amber-500/20 text-amber-500 border-amber-500/30 hover:bg-amber-500/30"
+                          : "bg-transparent text-white/35 border-transparent hover:bg-white/8 hover:text-white/70"
+                      )}
+                      title="Mute Background Music"
+                    >
+                      M
+                    </button>
+                  </div>
+                </div>
+
+                {/* Volume Control — re-encodes the BGM stem server-side, so the
+                    slider stages locally and only commits (PATCH) on release. */}
+                <div className="flex items-center gap-1.5 pl-0.5">
+                  <input
+                    type="range"
+                    min={-24}
+                    max={12}
+                    step={1}
+                    value={bgmVolume}
+                    disabled={!jobId || isSettingBgmVolume}
+                    onChange={(e) => setBgmVolumeLocal(Number(e.target.value))}
+                    onMouseUp={() => handleBgmVolumeCommit(bgmVolume)}
+                    onTouchEnd={() => handleBgmVolumeCommit(bgmVolume)}
+                    title="BGM & SFX volume"
+                    className="flex-1 accent-sky-500 bg-zinc-800 rounded-lg cursor-pointer h-1 min-w-0 disabled:opacity-40 disabled:cursor-not-allowed"
+                  />
+                  <span className="text-[9px] font-mono text-white/40 shrink-0 w-9 text-right tabular-nums">
+                    {isSettingBgmVolume ? '…' : `${bgmVolume > 0 ? '+' : ''}${bgmVolume}dB`}
+                  </span>
                 </div>
               </div>
 
@@ -1631,7 +1685,15 @@ const InteractiveSegment = memo(function InteractiveSegment({
         // collapse the selection (onSelect clears it) — that press is the
         // start of a group drag. Plain click on an unselected clip keeps the
         // standard replace-selection behaviour.
-        if (!isSelected) onSelect(seg)
+        if (!isSelected) {
+          onSelect(seg)
+        } else {
+          // Still focus this clip and open its settings, selection intact —
+          // volume/filter/speed edits there apply to the whole selection.
+          const st = useEditorStore.getState()
+          st.setActiveSegment(seg.id)
+          st.setInspectorMode('audio_clip_settings')
+        }
       }}
       onMouseDown={(e) => {
         e.stopPropagation()
@@ -2067,6 +2129,9 @@ function StemWaveform({ audioUrl, color, pxPerSec }: StemWaveformProps) {
     wsRef.current = ws
 
     return () => { cancelled = true; ws.destroy(); wsRef.current = null }
+    // pxPerSec is only the initial zoom: recreating the instance on every zoom
+    // step would re-download and re-decode the stem — the effect below zooms it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioUrl, color, attempt])
 
   // Sync zoom level without recreating the instance.

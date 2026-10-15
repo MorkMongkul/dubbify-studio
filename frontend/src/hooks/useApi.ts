@@ -2,7 +2,7 @@
 // React Query hooks — data fetching, caching, polling
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions } from '@/api/client'
+import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions, chat } from '@/api/client'
 import type { VoiceCreateInput } from '@/api/client'
 import type { Segment, ProjectCreate, ProjectUpdate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice, OverlayUpdate } from '@/types'
 
@@ -262,6 +262,29 @@ export function useApproveAll() {
   })
 }
 
+export function useSetBgmVolume() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ jobId, volumeDb }: { jobId: string; volumeDb: number }) =>
+      jobs.setBgmVolume(jobId, volumeDb),
+    onSuccess: (updated) => {
+      qc.setQueryData(['job', updated.id], updated)
+    },
+  })
+}
+
+export function useSetJobTitle() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ jobId, title }: { jobId: string; title: string }) =>
+      jobs.setTitle(jobId, title),
+    onSuccess: (updated) => {
+      qc.setQueryData(['job', updated.id], updated)
+      qc.invalidateQueries({ queryKey: ['jobs', updated.project_id] })
+    },
+  })
+}
+
 // ── Analyze (Stage 2 trigger) ─────────────────────────────────
 export function useAnalyzeJob() {
   const qc = useQueryClient()
@@ -269,6 +292,16 @@ export function useAnalyzeJob() {
     mutationFn: ({ jobId, maxSpeakers }: { jobId: string; maxSpeakers?: number | null }) =>
       jobs.analyze(jobId, maxSpeakers),
     onSuccess: (_, { jobId }) => {
+      qc.invalidateQueries({ queryKey: ['job', jobId] })
+    },
+  })
+}
+
+export function useDetectSpeakers() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (jobId: string) => jobs.detectSpeakers(jobId),
+    onSuccess: (_, jobId) => {
       qc.invalidateQueries({ queryKey: ['job', jobId] })
     },
   })
@@ -475,5 +508,57 @@ export function usePreviewVoice() {
   return useMutation({
     mutationFn: ({ id, text }: { id: string; text: string }) =>
       voices.preview(id, text),
+  })
+}
+
+// ── Assistant chat ────────────────────────────────────────────
+export function useChatMessages(projectId: string | null) {
+  return useQuery({
+    queryKey: ['chat-messages', projectId],
+    queryFn: () => chat.listMessages(projectId!),
+    enabled: !!projectId,
+  })
+}
+
+export function useSendChatMessage() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ projectId, text }: { projectId: string; text: string }) =>
+      chat.sendMessage(projectId, text),
+    onSuccess: (_, { projectId }) => {
+      qc.invalidateQueries({ queryKey: ['chat-messages', projectId] })
+      qc.invalidateQueries({ queryKey: ['chat-pending-edits', projectId] })
+      // A tool call may have applied an auto-mode edit straight to a segment.
+      qc.invalidateQueries({ queryKey: ['segments'] })
+    },
+  })
+}
+
+export function usePendingEdits(projectId: string | null, status: 'pending' | 'all' = 'pending') {
+  return useQuery({
+    queryKey: ['chat-pending-edits', projectId, status],
+    queryFn: () => chat.listPendingEdits(projectId!, status),
+    enabled: !!projectId,
+  })
+}
+
+export function useApproveEdit() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ editId }: { editId: string; projectId: string }) => chat.approveEdit(editId),
+    onSuccess: (_, { projectId }) => {
+      qc.invalidateQueries({ queryKey: ['chat-pending-edits', projectId] })
+      qc.invalidateQueries({ queryKey: ['segments'] })
+    },
+  })
+}
+
+export function useRejectEdit() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ editId }: { editId: string; projectId: string }) => chat.rejectEdit(editId),
+    onSuccess: (_, { projectId }) => {
+      qc.invalidateQueries({ queryKey: ['chat-pending-edits', projectId] })
+    },
   })
 }

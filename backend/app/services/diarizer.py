@@ -22,6 +22,14 @@ MOSS_MAX_DURATION_SECONDS = 1750
 
 CHUNK_OVERLAP_SECONDS = 10   # overlap between chunks to catch cross-boundary speech
 
+# Overall wall-clock cap on the blocking HF call. gradio_client's own httpx
+# timeout only bounds individual connect/read/write operations — Gradio's job
+# queue streams periodic SSE keepalives while queued/processing, so a Space
+# that's alive but slow (not dead) can hold the connection open indefinitely
+# without ever tripping a per-phase timeout, hanging the pipeline forever
+# instead of falling back to mock.
+MOSS_CALL_TIMEOUT_SECONDS = 300
+
 
 @dataclass
 class DiarizedSegment:
@@ -31,6 +39,13 @@ class DiarizedSegment:
     gender: str             # always "unknown" — MOSS doesn't return gender
     age_group: str          # always "adult" — user edits in UI
     source_text: str = ""   # transcribed text
+    chunk_index: int = -1   # which audio chunk this came from (chunked
+                             # diarization only); -1 = single-call / mock,
+                             # not chunked. MOSS numbers speakers fresh
+                             # per call, so this is what lets _normalise_speakers
+                             # tell "chunk 2's SPEAKER_00" apart from
+                             # "chunk 0's SPEAKER_00" instead of conflating
+                             # same-numbered-but-unrelated speakers.
 
 
 # ── Mock fallback ─────────────────────────────────────────────
@@ -65,7 +80,7 @@ def _mock_diarize(audio_path: str) -> List[DiarizedSegment]:
 
 # ── Audio utilities ───────────────────────────────────────────
 
-def _get_audio_duration(audio_path: str) -> float:
+def get_audio_duration(audio_path: str) -> float:
     """Get WAV duration in seconds using soundfile."""
     import soundfile as sf
     try:
@@ -93,7 +108,7 @@ async def _split_audio_into_chunks(
     Each chunk starts (chunk_duration - overlap) seconds after the previous.
     The overlap ensures speech at chunk boundaries is not lost.
     """
-    total_duration = _get_audio_duration(audio_path)
+    total_duration = get_audio_duration(audio_path)
     if total_duration == 0:
         raise RuntimeError(f"Could not determine duration of {audio_path}")
 
@@ -235,11 +250,14 @@ async def _diarize_via_moss(audio_path: str) -> List[DiarizedSegment]:
     labels consistent throughout (no cross-chunk speaker-drift). Longer audio
     is chunked with overlap and merged with speaker-label normalisation.
     """
-    duration = _get_audio_duration(audio_path)
+    duration = get_audio_duration(audio_path)
 
     if duration <= MOSS_MAX_DURATION_SECONDS:
         logger.info(f"MOSS: audio {duration:.0f}s ≤ {MOSS_MAX_DURATION_SECONDS}s — single call")
-        raw = await asyncio.to_thread(_moss_transcribe_call, audio_path)
+        raw = await asyncio.wait_for(
+            asyncio.to_thread(_moss_transcribe_call, audio_path),
+            timeout=MOSS_CALL_TIMEOUT_SECONDS,
+        )
         segments = _parse_moss_output(raw)
         speakers = len(set(s.speaker_label for s in segments))
         logger.info(f"MOSS: {len(segments)} segments, {speakers} speakers")
@@ -259,8 +277,17 @@ async def _diarize_via_moss(audio_path: str) -> List[DiarizedSegment]:
         all_segments: List[DiarizedSegment] = []
         for i, chunk in enumerate(chunks):
             try:
-                raw = await asyncio.to_thread(_moss_transcribe_call, chunk["path"])
-                all_segments.extend(_parse_moss_output(raw, time_offset=chunk["offset"]))
+                raw = await asyncio.wait_for(
+                    asyncio.to_thread(_moss_transcribe_call, chunk["path"]),
+                    timeout=MOSS_CALL_TIMEOUT_SECONDS,
+                )
+                parsed = _parse_moss_output(raw, time_offset=chunk["offset"])
+                for seg in parsed:
+                    seg.chunk_index = chunk["index"]
+                all_segments.extend(parsed)
+            except asyncio.TimeoutError:
+                logger.error(f"MOSS chunk {i+1} timed out after {MOSS_CALL_TIMEOUT_SECONDS}s — skipping")
+                continue
             except Exception as e:
                 logger.error(f"MOSS chunk {i+1} failed: {e} — skipping")
                 continue
@@ -276,51 +303,82 @@ def _normalise_speakers(
     overlap_secs: float,
 ) -> List[DiarizedSegment]:
     """
-    After merging chunks, the same physical speaker may have different
-    labels in different chunks (e.g. SPEAKER_00 in chunk 0 and SPEAKER_01
-    in chunk 1 may be the same person).
+    After merging chunks, the same physical speaker has a DIFFERENT label in
+    each chunk: MOSS numbers speakers fresh per call (chunk 0's "SPEAKER_00"
+    and chunk 1's "SPEAKER_00" have no relation to each other — they just
+    happen to share a number). The only signal available for matching
+    identity across a chunk boundary is the ~10s overlap window every two
+    adjacent chunks share: the same utterance gets transcribed twice there,
+    once by each chunk, so a near-duplicate pair IS the same physical
+    speaker under two different local labels.
 
-    This function uses the overlap region to match speakers across chunks
-    and rename them to a consistent global set.
+    Strategy — union-find over (chunk_index, local_label) keys:
+    - Walk segments in time order; when one nearly duplicates an
+      already-kept segment (>80% overlap — the classic sign of the same
+      utterance re-transcribed across a chunk boundary), union its
+      (chunk, label) key with the kept segment's key instead of just
+      discarding it. This chains labels across every chunk boundary a
+      speaker actually talks through.
+    - Each connected component becomes one global SPEAKER_XX, assigned in
+      order of first appearance.
 
-    Strategy:
-    - In the overlap region between two adjacent chunks, find speakers
-      that appear in both. Map the chunk-2 label to the chunk-1 label
-      if they overlap significantly in time.
-    - Apply the mapping to all segments from that chunk onwards.
+    A speaker who is silent through an entire overlap window (no utterance
+    within ~10s of that specific chunk boundary) can't be linked this way
+    and will still get a fresh label — that residual gap needs real speaker
+    embeddings to close, which is out of scope here (this project is
+    cloud-Space-only; see CLAUDE.md on not reintroducing local/pyannoteAI
+    inference).
     """
     if not all_segments:
         return all_segments
 
-    # Find all unique chunk offsets (approximated from speaker label patterns)
-    # For simplicity: sort by time, deduplicate overlapping segments,
-    # then renumber speakers globally in order of first appearance.
+    ordered = sorted(all_segments, key=lambda s: s.start_time)
 
-    # Step 1: Remove duplicate segments from overlap regions
-    # Keep the segment from the earlier chunk (lower offset = more accurate timing)
-    seen_ranges: List[tuple] = []
-    deduped = []
+    parent: dict[tuple, tuple] = {}
 
-    for seg in sorted(all_segments, key=lambda s: s.start_time):
+    def find(key: tuple) -> tuple:
+        parent.setdefault(key, key)
+        root = key
+        while parent[root] != root:
+            root = parent[root]
+        while parent[key] != root:
+            parent[key], key = root, parent[key]
+        return root
+
+    def union(a: tuple, b: tuple) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    # Step 1: walk in time order; a near-duplicate of an already-kept segment
+    # gets its (chunk, label) key unioned with the kept segment's key, then
+    # is dropped. Non-duplicates are kept as-is.
+    seen: List[tuple] = []  # (start, end, key) for kept segments
+    deduped: List[DiarizedSegment] = []
+
+    for seg in ordered:
+        key = (seg.chunk_index, seg.speaker_label)
+        dur = seg.end_time - seg.start_time
         is_dup = False
-        for (s, e) in seen_ranges:
+        for (s, e, kept_key) in seen:
             overlap = min(seg.end_time, e) - max(seg.start_time, s)
-            if overlap > (seg.end_time - seg.start_time) * 0.8:
+            if overlap > dur * 0.8:
+                union(key, kept_key)
                 is_dup = True
                 break
         if not is_dup:
             deduped.append(seg)
-            seen_ranges.append((seg.start_time, seg.end_time))
+            seen.append((seg.start_time, seg.end_time, key))
 
-    # Step 2: Renumber speakers in order of first appearance
-    speaker_map: dict[str, str] = {}
+    # Step 2: one global label per connected component, in first-appearance order.
+    global_label: dict[tuple, str] = {}
     counter = 0
-
     for seg in deduped:
-        if seg.speaker_label not in speaker_map:
-            speaker_map[seg.speaker_label] = f"SPEAKER_{counter:02d}"
+        root = find((seg.chunk_index, seg.speaker_label))
+        if root not in global_label:
+            global_label[root] = f"SPEAKER_{counter:02d}"
             counter += 1
-        seg.speaker_label = speaker_map[seg.speaker_label]
+        seg.speaker_label = global_label[root]
 
     unique = set(s.speaker_label for s in deduped)
     has_text = sum(1 for s in deduped if s.source_text)
@@ -337,18 +395,25 @@ async def diarize_audio(
     audio_path: str,
     num_speakers: int | None = None,
     max_speakers: int | None = None,
-) -> List[DiarizedSegment]:
+) -> tuple[List[DiarizedSegment], bool]:
     """
     Main entry point for diarization — MOSS HF Space, mock on failure.
 
     num_speakers / max_speakers are accepted for API compatibility but the
     MOSS Space has no speaker-count parameter, so they are ignored.
+
+    Returns (segments, used_mock). MOSS needs no API key, so — unlike
+    TTS/translation, where a mock result can mean "no key configured, this
+    is expected dev-mode behaviour" — used_mock=True here always means the
+    Space failed: these segments are placeholder speaker splits over
+    placeholder text, not a real transcript. Callers must surface this
+    rather than let the job complete looking like a normal success.
     """
     try:
-        return await _diarize_via_moss(audio_path)
+        return await _diarize_via_moss(audio_path), False
     except Exception as e:
         logger.error(f"MOSS diarization failed: {e} — falling back to mock")
-        return _mock_diarize(audio_path)
+        return _mock_diarize(audio_path), True
 
 
 def build_voice_design_prompt(speaker_label: str, gender: str, age_group: str) -> str:
