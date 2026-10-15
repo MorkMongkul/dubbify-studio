@@ -26,6 +26,15 @@ TARGET="${1:-aarch64-apple-darwin}"
 shift || true
 cd "$ROOT"
 
+# CI passes secrets that don't exist as empty strings, but Tauri treats a
+# variable that merely exists as a credential: it would import an empty
+# certificate and notarize with an empty Apple ID, failing the build. Only
+# non-empty ones count.
+for var in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+           APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH; do
+  if [ -z "${!var:-}" ]; then unset "$var"; fi
+done
+
 if [ -n "$(git status --porcelain)" ]; then
   echo "warning: uncommitted changes — this build won't match any commit." >&2
 fi
