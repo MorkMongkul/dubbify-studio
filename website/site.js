@@ -1,55 +1,15 @@
-// Dubify Studio website: the before/after demo, download links and the copy button.
-// Everything here is an enhancement: without JavaScript the page shows the
-// finished dub and the download buttons link straight to the latest release.
+// Dubify Studio website: download links and the copy button.
+// Everything here is an enhancement: without JavaScript both download buttons
+// link straight to the latest release.
 
 const REPO = "MorkMongkul/dubbify-studio";
 const ASSETS = {
   arm: { name: "Dubify-Studio-Apple-Silicon.dmg", pattern: /(aarch64|arm64|apple-silicon)\.dmg$/i },
   intel: { name: "Dubify-Studio-Intel.dmg", pattern: /(x64|x86_64|intel)\.dmg$/i },
 };
-const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-setUpDemo();
 setUpDownloads();
 setUpCopyButtons();
-
-function setUpDemo() {
-  const demo = document.querySelector("[data-demo]");
-  if (!demo) return;
-  const buttons = demo.querySelectorAll("[data-show]");
-  let touched = false;
-
-  const show = (state) => {
-    demo.dataset.state = state;
-    buttons.forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.show === state)));
-  };
-  buttons.forEach((b) =>
-    b.addEventListener("click", () => {
-      touched = true;
-      show(b.dataset.show);
-    }),
-  );
-
-  if (reduceMotion || !("IntersectionObserver" in window)) {
-    show("dub");
-    return;
-  }
-  // Play the dub once, when the subtitle line itself is on screen (not just
-  // the top of the frame) and its fonts are in.
-  const observer = new IntersectionObserver(
-    (entries) => {
-      if (!entries.some((e) => e.isIntersecting)) return;
-      observer.disconnect();
-      document.fonts.ready.then(() =>
-        setTimeout(() => {
-          if (!touched) show("dub");
-        }, 900),
-      );
-    },
-    { threshold: 0.6, rootMargin: "0px 0px -10% 0px" },
-  );
-  observer.observe(demo.querySelector(".hardsub"));
-}
 
 async function setUpDownloads() {
   const section = document.querySelector("[data-downloads]");
@@ -98,21 +58,24 @@ function showNoRelease(section) {
   });
 }
 
+// The matching download becomes the bright one and is labelled "This Mac".
 function markThisMac(section, arch) {
-  for (const choice of section.querySelectorAll("[data-choice]")) {
-    const isThisMac = choice.dataset.choice === arch;
-    choice.classList.toggle("is-this-mac", isThisMac);
-    choice.querySelector(".this-mac").hidden = !isThisMac;
-    choice.querySelector(".btn").classList.toggle("btn-quiet", !isThisMac);
+  section.classList.add("knows-mac");
+  for (const link of section.querySelectorAll("[data-choice]")) {
+    const isThisMac = link.dataset.choice === arch;
+    link.classList.toggle("is-this-mac", isThisMac);
+    link.querySelector(".dl-badge").hidden = !isThisMac;
   }
 }
 
 // Only says which chip a Mac has when the browser is sure. Safari doesn't
 // tell, and then both downloads stay equal.
 async function detectMac() {
+  // Desktop Mac browsers say "Macintosh"; iPhones say "like Mac OS X", and
+  // iPads pass as Macs but have a touch screen.
   const ua = navigator.userAgent;
   const isIpad = /Macintosh/.test(ua) && navigator.maxTouchPoints > 1;
-  if (!/Macintosh|Mac OS X/.test(ua) || isIpad) return { isMac: false };
+  if (!/Macintosh/.test(ua) || isIpad) return { isMac: false };
 
   try {
     const hints = await navigator.userAgentData?.getHighEntropyValues(["architecture"]);

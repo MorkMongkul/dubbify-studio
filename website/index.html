@@ -4,14 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Dubify Studio: dub Chinese videos into Khmer on your Mac</title>
-  <meta name="description" content="A Mac app that separates the dialogue from the music, transcribes and translates every line into Khmer, and gives each character a natural Khmer voice. For Apple Silicon and Intel Macs.">
-  <meta name="theme-color" content="#F4F1FA">
+  <meta name="description" content="A Mac app that transcribes and translates every line into Khmer, gives each character a natural Khmer voice, and keeps the original music. For Apple Silicon and Intel Macs.">
+  <meta name="theme-color" content="#F4EFFF">
   <link rel="icon" href="assets/mark.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Dubify Studio">
   <meta property="og:title" content="Dubify Studio: give Chinese videos a Khmer voice">
-  <meta property="og:description" content="A Mac app for dubbing Chinese videos into Khmer: separate the dialogue, translate every line, and voice each character.">
+  <meta property="og:description" content="A Mac app for dubbing Chinese videos into Khmer: translate every line, voice each character, keep the original music.">
   <!-- Link previews need an absolute URL. After a custom domain is added, GitHub
        redirects this address to it, so it keeps working until it is updated. -->
   <meta property="og:image" content="https://morkmongkul.github.io/dubbify-studio/assets/og.png">
@@ -23,8 +23,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Kantumruy+Pro:wght@400..700&display=swap">
-  <!-- The subtitle and title-card faces are only used for these few Khmer words, so only those glyphs are fetched. -->
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Koulen&family=Noto+Sans+Khmer:wght@700&display=swap&text=%20%E1%9E%80%E1%9E%82%E1%9E%84%E1%9E%89%E1%9E%8F%E1%9E%91%E1%9E%94%E1%9E%95%E1%9E%97%E1%9E%98%E1%9E%9A%E1%9E%9C%E1%9E%A1%E1%9E%B6%E1%9E%B7%E1%9E%B8%E1%9E%BB%E1%9F%86%E1%9F%8B%E1%9F%8F%E1%9F%92%E1%9F%94%E1%9F%A1%E1%9F%A2">
+  <link rel="preload" as="image" href="assets/editor-1600.webp" imagesrcset="assets/editor-1600.webp 1600w, assets/editor-2400.webp 2400w" imagesizes="(min-width: 1320px) 1240px, 94vw">
   <link rel="stylesheet" href="styles.css">
   <script src="site.js" defer></script>
 </head>
@@ -34,12 +33,13 @@
   <header class="site-header">
     <div class="wrap header-row">
       <a class="brand" href="./">
-        <img class="brand-mark" src="assets/mark.svg" alt="" width="32" height="32">
+        <img class="brand-mark" src="assets/mark.svg" alt="" width="30" height="30">
         <span>Dubify Studio</span>
       </a>
       <nav class="site-nav" aria-label="Main">
         <a class="nav-link" href="#how">How it works</a>
-        <a class="nav-link" href="#install">Installing</a>
+        <a class="nav-link" href="#install">Install</a>
+        <a class="nav-link" href="#questions">Questions</a>
         <a class="btn btn-small" href="#download">Download</a>
       </nav>
     </div>
@@ -47,208 +47,159 @@
 
   <main id="main">
     <section class="hero" aria-labelledby="hero-title">
-      <div class="wrap">
+      <div class="wrap hero-intro">
         <h1 id="hero-title">Give Chinese videos a Khmer voice.</h1>
-        <p class="lede">Dubify Studio is a Mac app for dubbing Chinese videos into Khmer. It separates the dialogue from the music, transcribes and translates every line, and gives each character a natural Khmer voice. You have the final say on every word.</p>
-        <div class="hero-actions">
-          <a class="btn" href="#download">Download for Mac</a>
-          <a class="text-link" href="#install">How to install it</a>
-        </div>
-        <p class="fine">For Apple Silicon and Intel Macs with macOS 11 or later.</p>
-
-        <figure class="demo" data-demo data-state="original">
-          <p class="sr-only">A scene from a Chinese drama, before and after dubbing. Before: the original Chinese voice and a Chinese subtitle. After: the Chinese subtitle is blurred out, a Khmer subtitle and an episode title are added, a Khmer voice replaces the original one, and the music track is unchanged.</p>
-          <div class="screen" aria-hidden="true">
-            <div class="frame">
-              <p class="title-card" lang="km">ភាគទី ១២</p>
-              <p class="hardsub" lang="zh-Hans">你终于回来了。</p>
-              <div class="blurbox"></div>
-              <p class="khsub" lang="km">ទីបំផុតបងក៏ត្រឡប់មកវិញ។</p>
-            </div>
-            <div class="lanes">
-              <div class="lane-labels">
-                <span class="lane-label lane-label-original">Original voice <em>muted</em></span>
-                <span class="lane-label">Khmer voice</span>
-                <span class="lane-label">Music and effects</span>
-              </div>
-              <div class="lane-tracks">
-                <div class="ruler"><span>14:30</span><span>14:31</span><span>14:32</span><span>14:33</span><span>14:34</span></div>
-                <div class="track track-original">
-                  <svg class="wave" viewBox="0 0 1000 40" preserveAspectRatio="none"><path d="M3.1 18.8V21.2M9.4 14.9V25.1M15.6 8.0V32.0M21.9 7.2V32.8M28.1 5.0V35.0M34.4 6.6V33.4M40.6 9.5V30.5M46.9 11.1V28.9M53.1 16.0V24.0M59.4 10.7V29.3M65.6 9.1V30.9M71.9 7.5V32.5M78.1 5.5V34.5M84.4 5.5V34.5M90.6 12.0V28.0M96.9 15.5V24.5M103.1 18.4V21.6M234.4 18.0V22.0M240.6 13.4V26.6M246.9 5.5V34.5M253.1 7.2V32.8M259.4 3.7V36.3M265.6 7.2V32.8M271.9 9.7V30.3M278.1 12.8V27.2M284.4 14.3V25.7M290.6 8.9V31.1M296.9 8.3V31.7M303.1 5.3V34.7M309.4 4.5V35.5M315.6 6.3V33.7M321.9 7.3V32.7M328.1 11.5V28.5M334.4 15.5V24.5M340.6 12.0V28.0M346.9 7.5V32.5M353.1 6.4V33.6M359.4 6.0V34.0M365.6 5.0V35.0M371.9 6.8V33.2M378.1 9.6V30.4M384.4 11.9V28.1M390.6 12.8V27.2M396.9 10.1V29.9M403.1 6.6V33.4M409.4 5.3V34.7M415.6 3.6V36.4M421.9 5.0V35.0M428.1 8.6V31.4M434.4 9.6V30.4M440.6 16.4V23.6M446.9 10.9V29.1M453.1 6.8V33.2M459.4 7.3V32.7M465.6 5.2V34.8M471.9 7.4V32.6M478.1 6.3V33.7M484.4 8.6V31.4M490.6 13.2V26.8M496.9 11.6V28.4M503.1 9.4V30.6M509.4 5.8V34.2M515.6 4.9V35.1M521.9 4.9V35.1M528.1 9.3V30.7M534.4 12.8V27.2M540.6 16.8V23.2M728.1 16.0V24.0M734.4 9.1V30.9M740.6 5.0V35.0M746.9 3.0V37.0M753.1 4.5V35.5M759.4 8.3V31.7M765.6 10.7V29.3M771.9 14.8V25.2M778.1 12.4V27.6M784.4 8.2V31.8M790.6 7.4V32.6M796.9 6.8V33.2M803.1 7.2V32.8M809.4 5.6V34.4M815.6 10.2V29.8M821.9 13.2V26.8M828.1 13.3V26.7M834.4 8.1V31.9M840.6 8.4V31.6M846.9 5.6V34.4M853.1 4.9V35.1M859.4 4.4V35.6M865.6 6.8V33.2M871.9 10.0V30.0M878.1 16.0V24.0M884.4 10.9V29.1M890.6 8.2V31.8M896.9 4.3V35.7M903.1 3.2V36.8M909.4 6.9V33.1M915.6 8.1V31.9M921.9 10.3V29.7M928.1 13.9V26.1M934.4 12.4V27.6M940.6 8.5V31.5M946.9 7.4V32.6M953.1 7.4V32.6M959.4 5.6V34.4M965.6 6.7V33.3M971.9 8.0V32.0M978.1 12.5V27.5M984.4 16.8V23.2M990.6 16.7V23.3M996.9 18.5V21.5"/></svg>
-                </div>
-                <div class="track track-khmer">
-                  <div class="clip clip-husband" style="left:0%;width:10%"><svg viewBox="0 0 100.0 40" preserveAspectRatio="none"><path d="M3.1 18.5V21.5M9.4 13.6V26.4M15.6 7.1V32.9M21.9 4.4V35.6M28.1 8.7V31.3M34.4 11.3V28.7M40.6 12.6V27.4M46.9 7.6V32.4M53.1 6.1V33.9M59.4 7.3V32.7M65.6 7.7V32.3M71.9 9.6V30.4M78.1 16.1V23.9M84.4 14.3V25.7M90.6 14.9V25.1M96.9 18.4V21.6"/></svg></div>
-                  <div class="clip clip-xiaoyu" style="left:22%;width:34%"><svg viewBox="0 0 340.0 40" preserveAspectRatio="none"><path d="M3.1 18.8V21.2M9.4 13.6V26.4M15.6 7.6V32.4M21.9 6.1V33.9M28.1 8.8V31.2M34.4 10.9V29.1M40.6 12.7V27.3M46.9 8.7V31.3M53.1 6.4V33.6M59.4 7.0V33.0M65.6 9.2V30.8M71.9 11.2V28.8M78.1 14.2V25.8M84.4 10.6V29.4M90.6 5.5V34.5M96.9 7.0V33.0M103.1 8.1V31.9M109.4 11.5V28.5M115.6 15.2V24.8M121.9 9.2V30.8M128.1 5.5V34.5M134.4 5.4V34.6M140.6 8.5V31.5M146.9 10.1V29.9M153.1 15.0V25.0M159.4 11.6V28.4M165.6 5.6V34.4M171.9 6.4V33.6M178.1 7.8V32.2M184.4 8.0V32.0M190.6 14.5V25.5M196.9 10.2V29.8M203.1 7.8V32.2M209.4 5.8V34.2M215.6 6.9V33.1M221.9 8.6V31.4M228.1 13.5V26.5M234.4 13.1V26.9M240.6 6.8V33.2M246.9 7.2V32.8M253.1 5.0V35.0M259.4 9.0V31.0M265.6 10.9V29.1M271.9 12.1V27.9M278.1 7.7V32.3M284.4 5.3V34.7M290.6 5.7V34.3M296.9 6.8V33.2M303.1 12.2V27.8M309.4 13.9V26.1M315.6 9.6V30.4M321.9 12.0V28.0M328.1 13.3V26.7M334.4 17.2V22.8"/></svg></div>
-                  <div class="clip clip-husband" style="left:71%;width:29%"><svg viewBox="0 0 290.0 40" preserveAspectRatio="none"><path d="M3.1 18.5V21.5M9.4 14.5V25.5M15.6 9.6V30.4M21.9 4.1V35.9M28.1 8.9V31.1M34.4 12.5V27.5M40.6 13.0V27.0M46.9 9.3V30.7M53.1 4.9V35.1M59.4 7.0V33.0M65.6 5.8V34.2M71.9 11.3V28.7M78.1 14.2V25.8M84.4 8.0V32.0M90.6 5.9V34.1M96.9 4.2V35.8M103.1 6.3V33.7M109.4 11.5V28.5M115.6 15.3V24.7M121.9 9.6V30.4M128.1 7.6V32.4M134.4 7.1V32.9M140.6 5.4V34.6M146.9 9.3V30.7M153.1 14.4V25.6M159.4 9.8V30.2M165.6 5.6V34.4M171.9 5.6V34.4M178.1 5.7V34.3M184.4 8.7V31.3M190.6 14.3V25.7M196.9 10.1V29.9M203.1 8.3V31.7M209.4 4.9V35.1M215.6 4.5V35.5M221.9 8.0V32.0M228.1 13.6V26.4M234.4 11.3V28.7M240.6 7.5V32.5M246.9 7.4V32.6M253.1 7.9V32.1M259.4 7.9V32.1M265.6 14.0V26.0M271.9 14.8V25.2M278.1 15.1V24.9M284.4 17.2V22.8"/></svg></div>
-                </div>
-                <div class="track track-music">
-                  <svg class="wave" viewBox="0 0 1000 40" preserveAspectRatio="none"><path d="M3.1 12.5V27.5M9.4 13.2V26.8M15.6 13.2V26.8M21.9 14.0V26.0M28.1 14.0V26.0M34.4 13.9V26.1M40.6 14.3V25.7M46.9 13.8V26.2M53.1 13.6V26.4M59.4 13.2V26.8M65.6 14.1V25.9M71.9 13.8V26.2M78.1 14.0V26.0M84.4 12.9V27.1M90.6 13.1V26.9M96.9 14.0V26.0M103.1 9.8V30.2M109.4 11.0V29.0M115.6 12.2V27.8M121.9 12.7V27.3M128.1 13.7V26.3M134.4 14.1V25.9M140.6 13.5V26.5M146.9 14.3V25.7M153.1 14.2V25.8M159.4 14.2V25.8M165.6 14.6V25.4M171.9 14.1V25.9M178.1 14.2V25.8M184.4 13.8V26.2M190.6 14.3V25.7M196.9 14.2V25.8M203.1 11.8V28.2M209.4 12.6V27.4M215.6 13.6V26.4M221.9 14.2V25.8M228.1 13.5V26.5M234.4 13.7V26.3M240.6 13.9V26.1M246.9 14.1V25.9M253.1 14.6V25.4M259.4 14.7V25.3M265.6 14.5V25.5M271.9 14.7V25.3M278.1 13.8V26.2M284.4 14.2V25.8M290.6 13.5V26.5M296.9 14.0V26.0M303.1 10.3V29.7M309.4 11.5V28.5M315.6 13.5V26.5M321.9 13.4V26.6M328.1 12.5V27.5M334.4 13.2V26.8M340.6 12.4V27.6M346.9 13.3V26.7M353.1 13.8V26.2M359.4 13.0V27.0M365.6 12.7V27.3M371.9 13.5V26.5M378.1 13.8V26.2M384.4 13.5V26.5M390.6 12.6V27.4M396.9 13.0V27.0M403.1 11.7V28.3M409.4 12.5V27.5M415.6 13.5V26.5M421.9 14.0V26.0M428.1 13.3V26.7M434.4 14.4V25.6M440.6 14.1V25.9M446.9 14.5V25.5M453.1 15.0V25.0M459.4 14.6V25.4M465.6 15.4V24.6M471.9 15.1V24.9M478.1 15.8V24.2M484.4 15.6V24.4M490.6 16.0V24.0M496.9 16.1V23.9M503.1 12.7V27.3M509.4 14.2V25.8M515.6 15.5V24.5M521.9 15.5V24.5M528.1 16.4V23.6M534.4 16.4V23.6M540.6 16.2V23.8M546.9 16.4V23.6M553.1 16.9V23.1M559.4 16.3V23.7M565.6 16.8V23.2M571.9 16.8V23.2M578.1 16.4V23.6M584.4 16.7V23.3M590.6 16.7V23.3M596.9 16.8V23.2M603.1 14.3V25.7M609.4 14.7V25.3M615.6 15.6V24.4M621.9 15.5V24.5M628.1 15.9V24.1M634.4 15.8V24.2M640.6 15.4V24.6M646.9 15.8V24.2M653.1 15.7V24.3M659.4 15.4V24.6M665.6 16.0V24.0M671.9 16.0V24.0M678.1 15.3V24.7M684.4 15.4V24.6M690.6 15.9V24.1M696.9 16.0V24.0M703.1 12.8V27.2M709.4 13.7V26.3M715.6 15.3V24.7M721.9 14.9V25.1M728.1 15.3V24.7M734.4 15.8V24.2M740.6 16.1V23.9M746.9 16.5V23.5M753.1 16.7V23.3M759.4 16.1V23.9M765.6 16.8V23.2M771.9 16.5V23.5M778.1 16.9V23.1M784.4 16.6V23.4M790.6 16.9V23.1M796.9 17.1V22.9M803.1 14.9V25.1M809.4 15.4V24.6M815.6 16.6V23.4M821.9 16.8V23.2M828.1 16.8V23.2M834.4 16.7V23.3M840.6 16.9V23.1M846.9 17.2V22.8M853.1 16.7V23.3M859.4 17.1V22.9M865.6 17.2V22.8M871.9 16.9V23.1M878.1 16.7V23.3M884.4 16.8V23.2M890.6 16.6V23.4M896.9 16.3V23.7M903.1 13.3V26.7M909.4 14.8V25.2M915.6 14.9V25.1M921.9 14.5V25.5M928.1 14.5V25.5M934.4 14.8V25.2M940.6 14.6V25.4M946.9 14.6V25.4M953.1 15.0V25.0M959.4 15.1V24.9M965.6 15.0V25.0M971.9 13.7V26.3M978.1 13.9V26.1M984.4 13.4V26.6M990.6 14.6V25.4M996.9 13.7V26.3"/></svg>
-                </div>
-                <div class="playhead"></div>
-              </div>
-            </div>
+        <div class="hero-side">
+          <p class="lede">A Mac app for dubbing Chinese dramas, short videos and ads into Khmer. It translates every line, gives each character a natural voice, and keeps the original music.</p>
+          <div class="hero-actions">
+            <a class="btn" href="#download">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>
+              Download for Mac
+            </a>
+            <a class="text-link" href="#how">See how it works</a>
           </div>
-          <figcaption class="demo-caption">
-            <div class="toggle" role="group" aria-label="Show the scene">
-              <button type="button" data-show="original" aria-pressed="true">Original</button>
-              <button type="button" data-show="dub" aria-pressed="false">Khmer dub</button>
-            </div>
-            <p>Same scene, before and after. The original voice and Chinese subtitle are replaced; the music and sound effects stay as they were.</p>
-          </figcaption>
+          <p class="fine">For Apple Silicon and Intel Macs with macOS 11 or later.</p>
+        </div>
+      </div>
+      <div class="wrap wrap-wide">
+        <figure class="window">
+          <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span><p>Dubify Studio</p></div>
+          <img src="assets/editor-1600.webp"
+               srcset="assets/editor-1600.webp 1600w, assets/editor-2400.webp 2400w"
+               sizes="(min-width: 1320px) 1240px, 94vw" width="1600" height="1000"
+               alt="The Dubify Studio editor. A Chinese drama scene plays with its Chinese subtitle blurred out and a Khmer subtitle in its place. Beside it, the episode's lines in Khmer with each character's voice; below, a timeline with the music, the original voices and the new Khmer voice clips.">
         </figure>
       </div>
     </section>
 
     <section class="section" id="how" aria-labelledby="how-title">
       <div class="wrap">
-        <div class="section-head">
-          <h2 id="how-title">How a dub comes together</h2>
-          <p>Five steps, in the order you take them. Dubify Studio handles the slow parts; the decisions about words and voices stay with you.</p>
-        </div>
-        <div class="flow-columns" aria-hidden="true">
-          <span></span><span>You</span><span>Dubify Studio</span>
-        </div>
-        <ol class="flow">
+        <h2 class="section-title" id="how-title">From the original to the dub</h2>
+        <ol class="steps">
           <li>
+            <span class="step-icon"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg></span>
             <h3>Import</h3>
-            <div class="flow-cell">
-              <p class="who">You</p>
-              <p>Drop a video onto the window.</p>
-            </div>
-            <div class="flow-cell">
-              <p class="who">Dubify Studio</p>
-              <p>Separates the dialogue from the music and sound effects, so the original soundtrack carries into the dub.</p>
-            </div>
+            <p>Drop in a video. The dialogue is separated from the music and sound effects.</p>
           </li>
           <li>
+            <span class="step-icon"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg></span>
             <h3>Analyze</h3>
-            <div class="flow-cell">
-              <p class="who">You</p>
-              <p>Click Analyze.</p>
-            </div>
-            <div class="flow-cell">
-              <p class="who">Dubify Studio</p>
-              <p>Transcribes every line with its timing, tells the speakers apart, and translates each line into Khmer. In later episodes it matches voices to the characters you’ve already named.</p>
-            </div>
+            <p>Every line is transcribed, matched to its character and translated into Khmer.</p>
           </li>
           <li>
+            <span class="step-icon"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 21h8"/><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/></svg></span>
             <h3>Edit</h3>
-            <div class="flow-cell">
-              <p class="who">You</p>
-              <p>Rewrite lines so they sound the way your audience talks. Name the characters and fix anything misheard.</p>
-            </div>
-            <div class="flow-cell">
-              <p class="who">Dubify Studio</p>
-              <p>Keeps every line in sync with the picture. The Assistant can find a name or phrase across all your episodes and suggest consistent wording.</p>
-            </div>
+            <p>Rewrite lines the way your audience talks. The Assistant keeps names consistent across episodes.</p>
           </li>
           <li>
-            <h3>Voice</h3>
-            <div class="flow-cell">
-              <p class="who">You</p>
-              <p>Give each character a voice: design one from a description, or clone one from a short clip.</p>
-            </div>
-            <div class="flow-cell">
-              <p class="who">Dubify Studio</p>
-              <p>Generates every line in its character’s voice. Auto-fit voices then speeds each clip up or down to fill the time the original line took.</p>
-            </div>
-          </li>
-          <li>
-            <h3>Export</h3>
-            <div class="flow-cell">
-              <p class="who">You</p>
-              <p>Add Khmer subtitles, your logo, and blur boxes over the old subtitles, then click Export.</p>
-            </div>
-            <div class="flow-cell">
-              <p class="who">Dubify Studio</p>
-              <p>Mixes the Khmer voices with the original music and effects, and saves an MP4 wherever you choose.</p>
-            </div>
+            <span class="step-icon"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg></span>
+            <h3>Voice and export</h3>
+            <p>Give each character a natural Khmer voice, then export an MP4 with Khmer subtitles and the original music.</p>
           </li>
         </ol>
       </div>
     </section>
 
-    <section class="section" aria-labelledby="context-title">
-      <div class="wrap context">
-        <div class="section-head">
-          <h2 id="context-title">Lines that fit the scene</h2>
-          <p>A first-pass translation is a draft. Khmer picks its words by who is speaking to whom, so a line that’s correct on paper can sound cold or stiff in a character’s mouth.</p>
-          <p>Every line sits beside its original, so you can fix the wording before any voice is generated.</p>
-        </div>
-        <article class="line-card" aria-label="Example: editing one line">
-          <div class="line-meta">
-            <span class="timecode">00:14:31</span>
-            <span class="speaker-chip">Xiaoyu</span>
+    <section class="section section-tight" aria-label="Highlights">
+      <div class="wrap tiles">
+        <article class="tile">
+          <h2 class="tile-title">Lines that fit the scene</h2>
+          <p class="tile-text">Khmer picks its words by who is speaking to whom. Fix a first-pass translation before any voice is made.</p>
+          <div class="tile-visual">
+          <div class="line-card">
+            <div class="line-meta"><span class="timecode">00:01</span><span class="speaker-chip">Xiaoyu</span></div>
+            <p class="line-source" lang="zh-Hans">你终于回来了。</p>
+            <p class="line-version"><span class="version-label">First pass</span><span class="version-text" lang="km">ទីបំផុត<del>អ្នកបាន</del>ត្រឡប់មកវិញ។</span></p>
+            <p class="line-version"><span class="version-label">Your edit</span><span class="version-text" lang="km">ទីបំផុត<ins>បងក៏</ins>ត្រឡប់មកវិញ។</span></p>
+            <p class="line-note">She’s greeting her husband. <span lang="km">អ្នក</span> is a neutral “you”; a wife would say <span lang="km">បង</span>.</p>
           </div>
-          <p class="line-source" lang="zh-Hans">你终于回来了。</p>
-          <div class="line-version">
-            <p class="version-label">First pass</p>
-            <p class="version-text" lang="km">ទីបំផុត<del>អ្នកបាន</del>ត្រឡប់មកវិញ។</p>
           </div>
-          <div class="line-version">
-            <p class="version-label">Your edit</p>
-            <p class="version-text" lang="km">ទីបំផុត<ins>បងក៏</ins>ត្រឡប់មកវិញ។</p>
+        </article>
+        <article class="tile">
+          <h2 class="tile-title">A voice for every character</h2>
+          <p class="tile-text">Describe a voice, or clone one from a short clip. It stays with that character in every episode.</p>
+          <div class="tile-visual voices">
+          <ul>
+            <li style="--speaker: #60A5FA">
+              <span class="voice-dot"></span>
+              <span class="voice-name"><strong>Xiaoyu</strong><span>Warm, gentle young woman</span></span>
+              <span class="voice-kind">Designed</span>
+            </li>
+            <li style="--speaker: #A78BFA">
+              <span class="voice-dot"></span>
+              <span class="voice-name"><strong>Jun</strong><span>Calm, low-pitched man</span></span>
+              <span class="voice-kind">Designed</span>
+            </li>
+            <li style="--speaker: #34D399">
+              <span class="voice-dot"></span>
+              <span class="voice-name"><strong>Grandma</strong><span>From a 10-second clip</span></span>
+              <span class="voice-kind">Cloned</span>
+            </li>
+          </ul>
+          <div class="voice-preview" aria-hidden="true">
+            <span class="play"><svg viewBox="0 0 24 24"><path d="M8 5.14v13.72a1 1 0 0 0 1.5.86l11-6.86a1 1 0 0 0 0-1.72l-11-6.86A1 1 0 0 0 8 5.14z"/></svg></span>
+            <svg class="preview-wave" viewBox="0 0 200 40" preserveAspectRatio="none"><path d="M1.5 8.6V31.4M6.0 6.8V33.2M10.5 10.7V29.3M15.0 7.3V32.7M19.5 4.9V35.1M24.0 7.0V33.0M28.5 2.2V37.8M33.0 12.5V27.5M37.5 8.5V31.5M42.0 11.7V28.3M46.5 12.0V28.0M51.0 9.5V30.5M55.5 7.8V32.2M60.0 7.0V33.0M64.5 6.6V33.4M69.0 2.0V38.0M73.5 5.1V34.9M78.0 15.4V24.6M82.5 7.9V32.1M87.0 11.4V28.6M91.5 10.9V29.1M96.0 3.3V36.7M100.5 9.7V30.3M105.0 16.9V23.1M109.5 7.4V32.6M114.0 10.0V30.0M118.5 13.7V26.3M123.0 12.6V27.4M127.5 11.4V28.6M132.0 8.8V31.2M136.5 10.5V29.5M141.0 8.4V31.6M145.5 2.0V38.0M150.0 12.1V27.9M154.5 12.1V27.9M159.0 9.8V30.2M163.5 4.1V35.9M168.0 11.7V28.3M172.5 2.7V37.3M177.0 14.2V25.8M181.5 13.1V26.9M186.0 9.0V31.0M190.5 12.4V27.6M195.0 11.3V28.7M199.5 6.9V33.1"/></svg>
+            <span class="preview-line" lang="km">ទីបំផុតបងក៏ត្រឡប់មកវិញ។</span>
           </div>
-          <p class="line-note">She’s greeting her husband after a long time apart. <span lang="km">អ្នក</span> is a neutral “you”; a wife would say <span lang="km">បង</span>.</p>
+          </div>
         </article>
       </div>
     </section>
 
-    <section class="section download" id="download" aria-labelledby="download-title" data-downloads>
-      <div class="wrap">
-        <div class="section-head">
+    <section class="download" id="download" aria-labelledby="download-title" data-downloads>
+      <div class="wrap download-inner">
+        <div class="download-copy">
           <h2 id="download-title">Download Dubify Studio</h2>
-          <p data-release>Choose the version for your Mac.</p>
+          <p class="download-release" data-release>Choose the version for your Mac.</p>
+          <p class="download-needs">Needs macOS 11 or later, an internet connection, and a Gemini API key from Google AI Studio. Updates install from inside the app.</p>
         </div>
-        <p class="notice" data-not-mac hidden>Dubify Studio runs on Macs. Open this page on your Mac to download it.</p>
-        <p class="notice" data-no-release hidden>The first release is almost ready. Check back soon, or follow <a href="https://github.com/MorkMongkul/dubbify-studio/releases">releases on GitHub</a>.</p>
-        <div class="choices">
-          <div class="choice" data-choice="arm">
-            <h3>Apple Silicon</h3>
-            <p>For Macs with an Apple M1 chip or newer.</p>
-            <a class="btn" data-asset="arm" href="https://github.com/MorkMongkul/dubbify-studio/releases/latest/download/Dubify-Studio-Apple-Silicon.dmg">Download for Apple Silicon</a>
-            <p class="choice-meta" data-size="arm"></p>
-            <p class="this-mac" hidden>This looks like your Mac.</p>
-          </div>
-          <div class="choice" data-choice="intel">
-            <h3>Intel</h3>
-            <p>For Macs with an Intel processor.</p>
-            <a class="btn" data-asset="intel" href="https://github.com/MorkMongkul/dubbify-studio/releases/latest/download/Dubify-Studio-Intel.dmg">Download for Intel</a>
-            <p class="choice-meta" data-size="intel"></p>
-            <p class="this-mac" hidden>This looks like your Mac.</p>
-          </div>
-        </div>
-        <div class="download-details">
+        <div class="download-actions">
+          <p class="notice" data-not-mac hidden>Dubify Studio runs on Macs. Open this page on your Mac to download it.</p>
+          <p class="notice" data-no-release hidden>The first release is almost ready. Follow <a href="https://github.com/MorkMongkul/dubbify-studio/releases">releases on GitHub</a>.</p>
+          <a class="dl" data-choice="arm" data-asset="arm" href="https://github.com/MorkMongkul/dubbify-studio/releases/latest/download/Dubify-Studio-Apple-Silicon.dmg">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>
+            <span class="dl-text">
+              <strong>Download for Apple Silicon</strong>
+              <span class="dl-meta">Macs with an M1 chip or newer<span class="dl-size" data-size="arm"></span></span>
+            </span>
+            <span class="dl-badge" hidden>This Mac</span>
+          </a>
+          <a class="dl" data-choice="intel" data-asset="intel" href="https://github.com/MorkMongkul/dubbify-studio/releases/latest/download/Dubify-Studio-Intel.dmg">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>
+            <span class="dl-text">
+              <strong>Download for Intel</strong>
+              <span class="dl-meta">Macs with an Intel processor<span class="dl-size" data-size="intel"></span></span>
+            </span>
+            <span class="dl-badge" hidden>This Mac</span>
+          </a>
           <details class="which-mac">
             <summary>Which one is my Mac?</summary>
-            <p>Open the Apple menu and choose About This Mac. If it lists a chip such as Apple M1, M2 or M4, choose Apple Silicon. If it lists a processor made by Intel, choose Intel.</p>
+            <p>Open the Apple menu and choose About This Mac. A chip such as Apple M1, M2 or M4 means Apple Silicon; a processor made by Intel means Intel.</p>
           </details>
-          <div class="needs">
-            <h3>You’ll need</h3>
-            <ul>
-              <li>macOS 11 Big Sur or later.</li>
-              <li>An internet connection. Transcription, translation and voices run on cloud AI services.</li>
-              <li>A Gemini API key from Google AI Studio. <a href="#setup">Setting it up</a> takes a couple of minutes.</li>
-            </ul>
-          </div>
         </div>
       </div>
     </section>
 
     <section class="section" id="install" aria-labelledby="install-title">
-      <div class="wrap install-layout">
+      <div class="wrap install">
         <div>
-          <div class="section-head">
-            <h2 id="install-title">Installing Dubify Studio</h2>
-            <p>Dubify Studio isn’t notarized by Apple yet, so the first time you open it, macOS asks you to confirm it. After that, it opens like any other app.</p>
-          </div>
-          <ol class="steps">
-            <li>Open the downloaded file and drag Dubify Studio into your Applications folder.</li>
-            <li>Open Dubify Studio from Applications. macOS says it can’t verify the app; click Done.</li>
-            <li>Open System Settings, choose Privacy &amp; Security, and scroll down to Security. Next to “Dubify Studio” was blocked, click Open Anyway.</li>
-            <li>Click Open Anyway again and enter your Mac’s password.</li>
+          <h2 class="section-title" id="install-title">Installing it</h2>
+          <p class="section-lede">Dubify Studio isn’t notarized by Apple yet, so macOS asks you to confirm it the first time. After that it opens like any other app.</p>
+          <ol class="install-steps">
+            <li>Open the download and drag Dubify Studio into Applications.</li>
+            <li>Open it. When macOS says it can’t verify the app, click Done.</li>
+            <li>In System Settings, open Privacy &amp; Security, click Open Anyway, and confirm with your password.</li>
+            <li>In the app, open Settings and paste your Gemini API key from <a href="https://aistudio.google.com/apikey">Google AI Studio</a>.</li>
           </ol>
-          <p class="aside">The Open Anyway button stays for about an hour after step 2. On macOS 14 or earlier, you can instead Control-click the app, choose Open, then click Open.</p>
+          <details class="fix">
+            <summary>macOS says the app is damaged?</summary>
+            <p>That’s macOS’s download quarantine, not a broken file. Run this in Terminal, then open the app again.</p>
+            <div class="command">
+              <code id="unquarantine">xattr -dr com.apple.quarantine "/Applications/Dubify Studio.app"</code>
+              <button type="button" class="copy-button" data-copy="unquarantine" hidden>Copy</button>
+            </div>
+            <p class="sr-only" role="status" data-copy-status></p>
+          </details>
         </div>
         <div class="mock-window" aria-hidden="true">
           <div class="mock-titlebar"><span></span><span></span><span></span><p>Privacy &amp; Security</p></div>
@@ -261,73 +212,40 @@
           </div>
         </div>
       </div>
-      <div class="wrap">
-        <div class="damaged">
-          <h3>If macOS says the app is damaged</h3>
-          <p>That message comes from macOS’s download quarantine, not from a broken file. Open Terminal, paste this command, press Return, then open the app again.</p>
-          <div class="command">
-            <code id="unquarantine">xattr -dr com.apple.quarantine "/Applications/Dubify Studio.app"</code>
-            <button type="button" class="copy-button" data-copy="unquarantine" hidden>Copy</button>
-          </div>
-          <p class="sr-only" role="status" data-copy-status></p>
-        </div>
-        <p class="provenance">Every download is built by GitHub Actions from the <a href="https://github.com/MorkMongkul/dubbify-studio">public source code</a>.</p>
-      </div>
-    </section>
-
-    <section class="section" id="setup" aria-labelledby="setup-title">
-      <div class="wrap">
-        <div class="section-head">
-          <h2 id="setup-title">Before your first dub</h2>
-        </div>
-        <ol class="setup">
-          <li>
-            <h3>Get a Gemini API key</h3>
-            <p>Sign in to <a href="https://aistudio.google.com/apikey">Google AI Studio</a> and create an API key. Dubify Studio uses it to transcribe, translate and answer you in the Assistant.</p>
-          </li>
-          <li>
-            <h3>Add it in Settings</h3>
-            <p>Click Settings in the app’s left rail, paste the key into Gemini API key, and click Save. The key is stored only on your Mac.</p>
-          </li>
-          <li>
-            <h3>Import a video</h3>
-            <p>Drop a video onto the window. Once the dialogue and music are separated, click Analyze.</p>
-          </li>
-        </ol>
-      </div>
     </section>
 
     <section class="section" id="questions" aria-labelledby="questions-title">
-      <div class="wrap">
-        <div class="section-head">
-          <h2 id="questions-title">Questions</h2>
+      <div class="wrap faq-layout">
+        <div>
+          <h2 class="section-title" id="questions-title">Questions</h2>
+          <p class="section-lede">Anything else? Ask on <a href="https://github.com/MorkMongkul/dubbify-studio/issues">GitHub</a>.</p>
         </div>
-        <dl class="faq">
-          <div>
-            <dt>Does it run on Windows?</dt>
-            <dd>Not yet. Dubify Studio is for Macs with macOS 11 or later.</dd>
-          </div>
-          <div>
-            <dt>Do my videos leave my Mac?</dt>
-            <dd>Your projects, videos and exports are saved on your Mac. To do the AI work, the app sends audio and text to cloud services: Google’s Gemini API, using your key, for transcription and translation, and services hosted on Hugging Face for separating the music and generating voices.</dd>
-          </div>
-          <div>
-            <dt>Which languages does it support?</dt>
-            <dd>It’s built for Chinese to Khmer: Chinese speech in, Khmer subtitles and voices out.</dd>
-          </div>
-          <div>
-            <dt>Why does it take a moment to open?</dt>
-            <dd>Each time it opens, Dubify Studio starts its own processing engine in the background. That can take up to a minute, and you’ll see a start-up screen until it’s ready.</dd>
-          </div>
-          <div>
-            <dt>How do I update?</dt>
-            <dd>Dubify Studio checks for updates when it opens and installs them with one click. You can also choose Check for Updates… from the Dubify Studio menu. Version 0.1.0 can’t update itself yet: download the new version from this page once and drag it into Applications, replacing the old one. Your projects are kept either way.</dd>
-          </div>
-          <div>
-            <dt>Where are my projects stored?</dt>
-            <dd>In <code>~/Library/Application Support/studio.dubify.desktop</code>. If something goes wrong, the logs in <code>~/Library/Logs/studio.dubify.desktop</code> show what happened.</dd>
-          </div>
-        </dl>
+        <div class="faq">
+          <details>
+            <summary>Does it run on Windows?</summary>
+            <p>Not yet. Dubify Studio is for Macs with macOS 11 or later.</p>
+          </details>
+          <details>
+            <summary>Do my videos leave my Mac?</summary>
+            <p>Your projects, videos and exports are saved on your Mac. To do the AI work, the app sends audio and text to cloud services: Google’s Gemini API, using your key, for transcription and translation, and services hosted on Hugging Face for separating the music and generating voices.</p>
+          </details>
+          <details>
+            <summary>How do updates work?</summary>
+            <p>Dubify Studio checks for updates when it opens and installs them with one click. You can also choose Check for Updates… in the Dubify Studio menu. Version 0.1.0 can’t update itself: download the latest version once and replace it. Your projects are kept.</p>
+          </details>
+          <details>
+            <summary>Which languages does it support?</summary>
+            <p>It’s built for Chinese to Khmer: Chinese speech in, Khmer subtitles and voices out.</p>
+          </details>
+          <details>
+            <summary>Why does it take a moment to open?</summary>
+            <p>Each time it opens, Dubify Studio starts its own processing engine in the background. That can take up to a minute; you’ll see a start-up screen until it’s ready.</p>
+          </details>
+          <details>
+            <summary>Where are my projects stored?</summary>
+            <p>In <code>~/Library/Application Support/studio.dubify.desktop</code>. If something goes wrong, the logs in <code>~/Library/Logs/studio.dubify.desktop</code> show what happened.</p>
+          </details>
+        </div>
       </div>
     </section>
   </main>
