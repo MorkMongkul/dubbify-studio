@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
@@ -329,26 +330,64 @@ async def synthesize_job(
 _EXPORT_DRIVE_ROOTS = (Path("/Volumes"), Path("/media"), Path("/mnt"))
 
 
-def _validated_export_path(raw: str) -> str:
+def _export_target(raw: str, default_name: str = "dubbed.mp4") -> Path:
     """
-    Where a finished video may be copied: an .mp4 file (or an existing folder)
-    under the user's home or on an external drive. The API has no login, so an
-    arbitrary path would let any local caller overwrite any file the user owns.
+    The file a finished video may be written to: an .mp4 (or default_name
+    inside an existing folder) under the user's home or on an external drive.
+    The API has no login, so an arbitrary path would let any local caller
+    overwrite any file the user owns. Parent folders are resolved for the
+    location check; the final name never is — a symlink there gets replaced by
+    the write, not followed. Raises ValueError with a user-facing reason.
     """
     dest = Path(raw).expanduser()
     if not dest.is_absolute():
-        raise HTTPException(status_code=400, detail="export_path must be an absolute path")
-    dest = dest.resolve()
+        raise ValueError("export_path must be an absolute path")
+    if dest.is_dir() and not dest.is_symlink():
+        dest = dest / default_name
+    target = dest.parent.resolve() / dest.name
     roots = (Path.home().resolve(), *_EXPORT_DRIVE_ROOTS)
-    if not any(dest.is_relative_to(root) for root in roots):
-        raise HTTPException(status_code=400, detail="Export to a folder in your home directory or on an external drive.")
-    if not dest.is_dir() and dest.suffix.lower() != ".mp4":
-        raise HTTPException(status_code=400, detail="The export file name must end in .mp4.")
+    if not any(target.is_relative_to(root) for root in roots):
+        raise ValueError("Export to a folder in your home directory or on an external drive.")
+    if target.suffix.lower() != ".mp4":
+        raise ValueError("The export file name must end in .mp4.")
+    return target
+
+
+def _validated_export_path(raw: str) -> str:
+    """Request-time check, so a bad destination fails the request rather than the minutes-long mix."""
     try:
-        (dest if dest.is_dir() else dest.parent).mkdir(parents=True, exist_ok=True)
+        target = _export_target(raw)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         raise HTTPException(status_code=400, detail=f"Cannot create export folder: {e}")
-    return str(dest)
+    return str(Path(raw).expanduser())
+
+
+def _copy_export(final_path: str, export_path: str) -> Path:
+    """
+    Copy the finished video to the chosen destination. The destination is
+    checked again now — the mix ran for minutes since the request — and the
+    bytes go to a new temp file in the destination folder that is then renamed
+    over the target, so a symlink placed at the target is replaced, never
+    written through. Raises OSError (PermissionError for a refused location).
+    """
+    try:
+        target = _export_target(export_path, default_name=Path(final_path).name)
+    except ValueError as e:
+        raise PermissionError(str(e)) from e
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=".dubify-export-", suffix=".mp4")
+    try:
+        with os.fdopen(fd, "wb") as out, open(final_path, "rb") as src:
+            shutil.copyfileobj(src, out, 8 * 1024 * 1024)
+        os.replace(tmp_name, target)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+    return target
 
 
 class MixRequest(BaseModel):
@@ -569,10 +608,7 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
             # error_msg carries the problem for the UI to surface.
             if export_path:
                 try:
-                    dest = Path(export_path)
-                    if dest.is_dir():
-                        dest = dest / Path(final_path).name
-                    await asyncio.to_thread(shutil.copy2, final_path, dest)
+                    dest = await asyncio.to_thread(_copy_export, final_path, export_path)
                     logger.info(f"Export copied to {dest}")
                 except OSError as e:
                     logger.exception(f"Export copy to {export_path} failed")

@@ -67,9 +67,13 @@ async def _clip_path_in_session(db: AsyncSession, seg: Segment, path: str) -> st
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     tts_dir = (Path(settings.UPLOAD_DIR) / job.project_id / job.id / "tts").resolve()
-    if not Path(resolve_media_path(path)).resolve().is_relative_to(tts_dir):
+    resolved = Path(resolve_media_path(path)).resolve()
+    if not resolved.is_relative_to(tts_dir):
         raise HTTPException(status_code=400, detail="Audio clips must come from this session's generated voices.")
-    return path
+    # Store the path that was checked, never the client's spelling of it: a raw
+    # path that only remapped into the session now (resolve_media_path) would
+    # resolve to its own location once a file exists there, bypassing the check.
+    return str(resolved)
 
 
 @router.patch("/segments/{segment_id}", response_model=SegmentResponse)

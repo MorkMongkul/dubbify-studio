@@ -107,6 +107,79 @@ async def test_segment_audio_path_inside_its_session_is_accepted(client, db_sess
 
 
 @pytest.mark.asyncio
+async def test_audio_path_is_stored_in_the_form_that_was_checked(client, db_sessionmaker, monkeypatch, tmp_path):
+    """
+    A raw path that only *remaps* into the session at check time must not be
+    stored as given: once a file appears at the raw location, the stored
+    string would resolve there instead, and the next effect change would
+    re-render (overwrite) that outside file.
+    """
+    monkeypatch.setattr(app_settings, "UPLOAD_DIR", str(tmp_path / "uploads"))
+    project_id, job_id, seg_id = await _session_with_segment(db_sessionmaker)
+    real = tmp_path / "uploads" / project_id / job_id / "tts" / f"seg_{seg_id}.wav"
+    real.parent.mkdir(parents=True)
+    sf.write(real, np.zeros(2205, dtype=np.float32), 22050)
+    decoy = tmp_path / "elsewhere" / "uploads" / project_id / job_id / "tts" / f"seg_{seg_id}.wav"
+
+    resp = await client.patch(f"/api/v1/segments/{seg_id}", json={"tts_audio_path": str(decoy)})
+    assert resp.status_code == 200
+    assert resp.json()["tts_audio_path"] == str(real.resolve())
+
+    decoy.parent.mkdir(parents=True)
+    decoy.write_bytes(b"outside file")
+    await client.patch(f"/api/v1/segments/{seg_id}", json={"volume_db": 3})
+    assert decoy.read_bytes() == b"outside file"
+
+
+@pytest.mark.asyncio
+async def test_audio_path_through_a_symlink_out_of_the_session_is_rejected(client, db_sessionmaker, monkeypatch, tmp_path):
+    monkeypatch.setattr(app_settings, "UPLOAD_DIR", str(tmp_path / "uploads"))
+    project_id, job_id, seg_id = await _session_with_segment(db_sessionmaker)
+    tts_dir = tmp_path / "uploads" / project_id / job_id / "tts"
+    tts_dir.mkdir(parents=True)
+    outside = tmp_path / "outside.wav"
+    outside.write_bytes(b"outside")
+    (tts_dir / "link.wav").symlink_to(outside)
+    resp = await client.patch(f"/api/v1/segments/{seg_id}", json={"tts_audio_path": str(tts_dir / "link.wav")})
+    assert resp.status_code == 400
+
+
+def test_export_copy_never_writes_through_a_symlink_placed_after_validation(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    final = tmp_path / "uploads" / "final.mp4"
+    final.parent.mkdir()
+    final.write_bytes(b"VIDEO")
+    victim = tmp_path / "victim.txt"
+    victim.write_bytes(b"precious")
+    dest = tmp_path / "Movies" / "dub.mp4"
+
+    validated = tts_routes._validated_export_path(str(dest))
+    dest.symlink_to(victim)                      # swapped in while the mix runs
+    tts_routes._copy_export(str(final), validated)
+
+    assert victim.read_bytes() == b"precious"
+    assert dest.read_bytes() == b"VIDEO" and not dest.is_symlink()
+    assert [p.name for p in dest.parent.iterdir()] == ["dub.mp4"], "no temp file left behind"
+
+
+def test_export_copy_rechecks_the_destination_when_writing(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    final = tmp_path / "final.mp4"
+    final.write_bytes(b"VIDEO")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    movies = tmp_path / "home" / "Movies"
+    movies.mkdir(parents=True)
+
+    validated = tts_routes._validated_export_path(str(movies / "dub.mp4"))
+    movies.rmdir()
+    movies.symlink_to(outside)                   # parent swapped for a link out of $HOME
+    with pytest.raises(OSError):
+        tts_routes._copy_export(str(final), validated)
+    assert not (outside / "dub.mp4").exists()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("dest", ["/etc/periodic/daily/evil.mp4", "~/notes.txt", "relative/out.mp4"])
 async def test_export_destination_must_be_an_mp4_in_a_user_location(client, db_sessionmaker, monkeypatch, tmp_path, dest):
     monkeypatch.setenv("HOME", str(tmp_path))
