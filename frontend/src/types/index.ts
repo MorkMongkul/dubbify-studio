@@ -247,8 +247,35 @@ export interface TTSResponse {
 export interface HealthResponse {
   status: 'ok' | 'error'
   version?: string
-  timestamp?: string
+  services?: Record<string, string>
 }
+
+// ── App settings (desktop Settings panel) ──────────────────────────
+// Secrets are write-only: the API only says whether each one is set.
+
+export interface AppSettingsValues {
+  VOXCPM2_API_URL: string
+  VOXCPM2_HF_SPACE_FALLBACK: string
+  TRANSLATION_BACKEND: 'gemini' | 'deep'
+  GEMINI_MODEL: string
+  GEMINI_ASR_MODEL: string
+  GEMINI_CHAT_MODEL: string
+  TTS_BATCH_CONCURRENCY: number
+}
+
+export interface AppSettings {
+  /** False during development, where settings come from backend/.env. */
+  editable: boolean
+  values: AppSettingsValues
+  secrets: { GEMINI_API_KEY: boolean; HF_TOKEN: boolean }
+  storage: { data_dir: string; upload_dir: string; database: 'local' | 'server'; log_dir: string }
+  ffmpeg: string | null
+  ffprobe: string | null
+  version: string
+}
+
+/** Only the fields sent change; an empty secret removes it. */
+export type AppSettingsUpdate = Partial<AppSettingsValues & { GEMINI_API_KEY: string; HF_TOKEN: string }>
 
 // ── Editor UI State ───────────────────────────────────────────────
 

@@ -3,44 +3,64 @@ app/core/config.py
 Centralised settings — all env vars live here.
 Loaded once at startup via pydantic-settings.
 """
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from typing import List
 import os
-import sys
 from pathlib import Path
+
+
+def _data_dir() -> str:
+    """The app-data folder the desktop shell passes in; empty during development."""
+    return os.environ.get("DUBIFY_DATA_DIR", "").strip()
 
 
 def _env_file_path() -> str:
     """
-    Dev: repo-relative `.env` next to this file's project root (unchanged
-    behavior — relies on the process being started with cwd=backend/).
+    Desktop app: the user's own settings file in the app-data folder (written
+    by the Settings panel). Nothing is ever read from inside the binary — keys
+    baked into a distributed app can be extracted by anyone who has a copy.
 
-    Frozen (PyInstaller sidecar): the working directory Tauri spawns the
-    sidecar with is not backend/, so a bare relative ".env" would never be
-    found — resolve it next to the bundled data under sys._MEIPASS instead.
+    Development: `.env` relative to the working directory (cwd=backend/).
     """
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        return str(Path(meipass) / ".env")
-    return ".env"
+    data = _data_dir()
+    return str(Path(data) / "settings.env") if data else ".env"
 
 
 class Settings(BaseSettings):
     # ── App ───────────────────────────────────────────────────
     APP_NAME: str = "Dubbify Studio API"
-    APP_VERSION: str = "1.0.0"
+    APP_VERSION: str = "0.1.0-dev"
     DEBUG: bool = False
-    SECRET_KEY: str = "change-me-in-production"
+
+    # ── Desktop shell (set by the Tauri app when it starts the backend) ──
+    DUBIFY_DATA_DIR: str = ""      # ~/Library/Application Support/<app id>
+    DUBIFY_LOG_DIR: str = ""       # ~/Library/Logs/<app id>
+    DUBIFY_INSTANCE_ID: str = ""   # per launch — proves to the app it reached THIS backend
+    DUBIFY_APP_VERSION: str = ""   # the app's own version (tauri.conf.json)
+
+    @property
+    def version(self) -> str:
+        return self.DUBIFY_APP_VERSION or self.APP_VERSION
 
     # ── Database ──────────────────────────────────────────────
-    # Leave empty to use SQLite (dev). Set postgresql+asyncpg:// for production.
+    # Leave empty for SQLite: in the app-data folder on the desktop, ./ in dev.
+    # Set postgresql+asyncpg:// only for a server database.
     DATABASE_URL: str = ""
 
     @property
     def effective_db_url(self) -> str:
         if self.DATABASE_URL:
             return self.DATABASE_URL
+        if self.DUBIFY_DATA_DIR:
+            return f"sqlite+aiosqlite:///{Path(self.DUBIFY_DATA_DIR) / 'dubify.db'}"
         return "sqlite+aiosqlite:///./khmer_dubber_dev.db"
+
+    # ── ffmpeg / ffprobe ──────────────────────────────────────
+    # Explicit paths — the desktop app points these at the copies bundled
+    # inside it. Empty = search PATH plus the Homebrew folders (app/core/binaries.py).
+    FFMPEG_PATH: str = ""
+    FFPROBE_PATH: str = ""
 
     # ── File storage ──────────────────────────────────────────
     UPLOAD_DIR: str = "./uploads"
@@ -133,14 +153,22 @@ class Settings(BaseSettings):
         # Filter out empties so a trailing comma can't inject a "" origin
         return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
 
+    @model_validator(mode="after")
+    def _desktop_defaults(self):
+        # Desktop: media lives in the app-data folder unless explicitly moved
+        # (a relative ./uploads would land wherever the app was launched from).
+        if self.DUBIFY_DATA_DIR and "UPLOAD_DIR" not in self.model_fields_set:
+            self.UPLOAD_DIR = str(Path(self.DUBIFY_DATA_DIR) / "uploads")
+        return self
+
     model_config = {
-        "env_file": _env_file_path(),
+        "env_file": ".env",
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }
 
 
-settings = Settings()
+settings = Settings(_env_file=_env_file_path())
 
 # Ensure upload directory exists at startup.
 # Never fatal: this runs at import, and a relative UPLOAD_DIR resolved against a

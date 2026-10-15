@@ -37,13 +37,13 @@ Run both servers together for dev; the Vite proxy handles all backend calls (fro
 ### Desktop (Tauri)
 
 ```bash
-cd backend && ./build_sidecar.sh       # PyInstaller binary → frontend/src-tauri/binaries/ (needs venv_clean with pyinstaller; bundles frontend/dist and backend/.env INTO the binary)
-cd frontend && npm run tauri dev       # or: npm run tauri build
+scripts/release-macos.sh aarch64-apple-darwin   # frontend → backend sidecar (embeds frontend/dist) → .app/.dmg; Intel: VENV=<x86_64 venv> … x86_64-apple-darwin
+cd frontend && npm run tauri dev                # dev shell: uses Vite + a backend you run yourself (no sidecar)
 ```
 
-Rebuild the sidecar after backend changes for the packaged app to see them. Frozen-build path quirks (`sys._MEIPASS`) are handled in `app/core/config.py` and `app/main.py`.
+How the packaged app runs (`src-tauri/src/lib.rs` ↔ `backend/sidecar_entry.py`): Rust picks a free port and a per-launch instance id, then starts the PyInstaller sidecar with `PORT`, `DUBIFY_DATA_DIR` (app-data folder), `DUBIFY_LOG_DIR`, `DUBIFY_INSTANCE_ID`, `DUBIFY_APP_VERSION`, `FFMPEG_PATH`/`FFPROBE_PATH` (when ffmpeg is bundled next to the executable) and a PATH that includes Homebrew. It navigates the window to the backend only once `/health/ready` echoes that instance id, and emits `backend-failed` / `backend-stopped` events that `BackendGate` shows. With `DUBIFY_DATA_DIR` set the backend keeps SQLite, uploads and the user's `settings.env` (written by `PUT /api/v1/settings`; secrets are write-only) in that folder — nothing is baked into the binary. The sidecar exits when its stdin closes (the app quit or crashed), because killing the PyInstaller one-file launcher alone leaves its Python child running. Every ffmpeg/ffprobe call goes through `app/core/binaries.py`.
 
-Desktop-only browser APIs go through `src/lib/desktop.ts`, which degrades to a no-op in the browser so components can call it unconditionally (e.g. `chooseVideoSavePath` opens a native Save dialog in Tauri, returns `undefined` in dev). Adding a Tauri plugin needs three edits: `Cargo.toml`, `.plugin(...)` in `src-tauri/src/lib.rs`, **and** a permission entry in `src-tauri/capabilities/default.json` — miss the last one and the call fails at runtime only.
+Desktop-only browser APIs go through `src/lib/desktop.ts`, which degrades to a no-op in the browser so components can call it unconditionally (e.g. `chooseVideoSavePath` opens a native Save dialog in Tauri, returns `undefined` in dev). Adding a Tauri plugin needs three edits: `Cargo.toml`, `.plugin(...)` in `src-tauri/src/lib.rs`, **and** a permission entry in `src-tauri/capabilities/` — `backend.json` covers the editor (served from `http://127.0.0.1:<port>`), `default.json` only the bundled start-up page. Miss it and the call fails at runtime only. Web content gets no shell permission: the backend is started from Rust.
 
 ## Configuration
 

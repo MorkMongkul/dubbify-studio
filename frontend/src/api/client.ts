@@ -11,6 +11,8 @@ import type {
   Voice, VoiceMode,
   Overlay, OverlayUpdate, OverlayTemplate,
   ChatMessage, ChatSendResponse, ChatProposedEdit,
+  AppSettings,
+  AppSettingsUpdate,
 } from '@/types'
 
 const api = axios.create({
@@ -56,6 +58,14 @@ api.interceptors.response.use(
 )
 
 // ── Health ────────────────────────────────────────────────────
+export const appSettings = {
+  get: () =>
+    api.get<AppSettings>('/settings').then((r) => r.data),
+
+  update: (data: AppSettingsUpdate) =>
+    api.put<AppSettings>('/settings', data).then((r) => r.data),
+}
+
 export const health = {
   check: () =>
     axios.get<HealthResponse>('/health').then((r) => r.data),

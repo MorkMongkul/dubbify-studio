@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "backend",
+  "description": "The editor, served by the local backend on its per-launch port: the native Save dialog for exports and backend events. The backend itself is started from Rust, so no shell permission is granted to web content.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*"]
+  },
+  "permissions": ["core:default", "dialog:default"]
+}

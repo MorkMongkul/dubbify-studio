@@ -86,11 +86,17 @@ Run both servers together; the Vite proxy handles all backend calls. See [fronte
 ### Desktop (Tauri)
 
 ```bash
-cd backend && ./build_sidecar.sh    # PyInstaller sidecar → frontend/src-tauri/binaries/
-cd frontend && npm run tauri build  # → .app + .dmg (Apple Silicon)
+# one-time: a build venv with the SAME chip architecture as the target
+cd backend && python3 -m venv venv_clean && venv_clean/bin/pip install -r requirements.txt -r requirements-build.txt
+
+scripts/release-macos.sh aarch64-apple-darwin                         # Apple Silicon → .app + .dmg
+VENV=venv_clean_x86_64 scripts/release-macos.sh x86_64-apple-darwin   # Intel (x86_64 venv made under Rosetta)
 ```
 
-Rebuild the sidecar after backend **or** frontend changes — it bundles `frontend/dist` and `backend/.env` into the binary.
+The release script builds the frontend, the backend binary (which embeds the frontend) and the Tauri bundle in one go, so a stale UI can't ship. Nothing secret is built in: each user enters their API keys in **Settings**, and the app keeps its database, videos, keys (`settings.env`, owner-only) and logs per user in `~/Library/Application Support/studio.dubify.desktop` and `~/Library/Logs/studio.dubify.desktop`. No web server is needed — every Mac runs its own backend; the AI services are cloud APIs.
+
+- **ffmpeg** — put builds for the target at `vendor/ffmpeg/<target>/ffmpeg` and `ffprobe` to bundle them; otherwise the app uses the Mac's own (e.g. `brew install ffmpeg`, found even when the app is opened from Finder) and Settings warns when there is none.
+- **Signing / notarization** — set `APPLE_SIGNING_IDENTITY` plus `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` (or `APPLE_API_KEY`/`APPLE_API_ISSUER`/`APPLE_API_KEY_PATH`) before running the script; without them other Macs block the app.
 
 ### Tests
 
@@ -130,7 +136,7 @@ The product targets **Chinese → Khmer** and the UI ships that pair. The transl
 
 ## Known limitations
 
-- The desktop build currently targets **macOS Apple Silicon** only, and the sidecar embeds `backend/.env` (API keys + machine-specific paths) — built binaries are personal; don't distribute them.
+- Desktop builds are per architecture (Apple Silicon and Intel are separate downloads); the Intel build has to be made with an x86_64 Python (Rosetta).
 - Burned-in subtitles render with Noto Sans Khmer, which has **no Latin glyphs** — Khmer, digits, and punctuation render; Latin letters inside a line are dropped.
 - Subtitle sizing is deliberately automatic: you set the font size and the text-column width, and each line's block grows upward from a fixed bottom anchor. There's no manual box height — a single hand-drawn rectangle can't fit every segment's translation.
 - The "spk" max-speakers input next to Analyze is accepted but ignored (the MOSS Space has no speaker-count parameter).

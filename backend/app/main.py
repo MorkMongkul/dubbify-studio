@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.core.database import init_db
 from app.services.pipeline_common import recover_orphaned_jobs
 from app.api.routes import health, projects, jobs, segments, tts, voices, overlays, chat
+from app.api.routes import settings as settings_routes
 
 # ── Logging setup ─────────────────────────────────────────────
 logging.basicConfig(
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 # ── Lifespan (startup / shutdown) ─────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
+    logger.info(f"Starting {settings.APP_NAME} v{settings.version}")
     await init_db()
     logger.info("Database tables initialised.")
     await recover_orphaned_jobs()
@@ -38,7 +39,7 @@ async def lifespan(app: FastAPI):
 # ── App instance ──────────────────────────────────────────────
 app = FastAPI(
     title=settings.APP_NAME,
-    version=settings.APP_VERSION,
+    version=settings.version,
     description=(
         "Production-grade dubbing studio API.\n\n"
         "Pipeline: Video upload → ASR (Whisper) → "
@@ -95,6 +96,7 @@ app.include_router(tts.router,       prefix="/api/v1")
 app.include_router(voices.router,    prefix="/api/v1")
 app.include_router(overlays.router,  prefix="/api/v1")
 app.include_router(chat.router,      prefix="/api/v1")
+app.include_router(settings_routes.router, prefix="/api/v1")
 
 # ── Static Files ──────────────────────────────────────────────
 from fastapi.staticfiles import StaticFiles
@@ -147,6 +149,6 @@ else:
     async def root():
         return {
             "app": settings.APP_NAME,
-            "version": settings.APP_VERSION,
+            "version": settings.version,
             "docs": "/docs",
         }
