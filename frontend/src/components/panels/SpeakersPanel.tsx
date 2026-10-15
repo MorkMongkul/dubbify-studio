@@ -3,11 +3,15 @@
 // library voice. Extracted from EditorPage; fully self-contained (React Query
 // dedupes the segment/speaker subscriptions it shares with the editor).
 import { useState } from 'react'
-import { Users } from 'lucide-react'
+import { AudioLines, Loader2, RefreshCw, Users } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useSegments, useSpeakers, useVoices, useUpdateSpeaker } from '@/hooks/useApi'
-import { getSpeakerColor, getSpeakerDisplayName } from '@/lib/utils'
+import { toast } from 'sonner'
+import {
+  useAnalyzeJob, useDetectSpeakers, useJob, useSegments, useSpeakers, useVoices, useUpdateSpeaker,
+} from '@/hooks/useApi'
+import { getSpeakerColor, getSpeakerDisplayName, isJobRunning } from '@/lib/utils'
 import { recordSpeakerChange } from '@/lib/historyHelpers'
+import { useHistoryStore } from '@/store/historyStore'
 import { PanelHeader, PanelEmptyState } from './PanelShell'
 
 interface SpeakersPanelProps {
@@ -23,6 +27,10 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
   const updateSpeaker = useUpdateSpeaker()
   const [editingSpeakerId, setEditingSpeakerId] = useState<string | null>(null)
   const [editingSpeakerName, setEditingSpeakerName] = useState('')
+  const { data: job } = useJob(jobId ?? null)
+  const detectSpeakers = useDetectSpeakers()
+  const analyze = useAnalyzeJob()
+  const [confirmReanalyze, setConfirmReanalyze] = useState(false)
 
   // Speakers actually present in this session, each keeping the index it has
   // in the FULL project speaker list: that index is what getSpeakerColor() is
@@ -33,6 +41,31 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
     .map((sp, projectIndex) => ({ sp, projectIndex }))
     .filter(({ sp }) => sessionSpeakerIds.has(sp.id))
     .sort((a, b) => a.sp.label.localeCompare(b.sp.label))
+
+  const busy = job ? isJobRunning(job.status) : false
+  const finished = job?.status === 'completed' || job?.status === 'failed'
+  const canRelabel = finished && segs.length > 0
+
+  const runDetectSpeakers = () => {
+    if (!jobId) return
+    detectSpeakers.mutate(jobId, {
+      onSuccess: () => toast.success('Detecting speakers — your text, translations and voices are kept'),
+      onError: (e) => toast.error((e as Error).message || 'Could not start speaker detection'),
+    })
+  }
+
+  const runReanalyze = () => {
+    if (!jobId) return
+    setConfirmReanalyze(false)
+    analyze.mutate({ jobId }, {
+      onSuccess: () => {
+        // The new segments get new ids — older undo steps would point at nothing.
+        useHistoryStore.getState().clear()
+        toast.success('Re-analyzing — the new segments replace the current ones when ready')
+      },
+      onError: (e) => toast.error((e as Error).message || 'Could not start re-analysis'),
+    })
+  }
 
   if (!jobId || !projectId) {
     return (
@@ -51,6 +84,68 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
     <div className="h-full flex flex-col min-h-0">
       <PanelHeader icon={Users} title="Speakers" count={sessionSpeakers.length} />
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        {(canRelabel || busy) && (
+          <div className="p-2 rounded bg-zinc-800/30 border border-zinc-800/40 space-y-1.5">
+            {busy ? (
+              <p className="flex items-center gap-1.5 text-[10px] text-zinc-400">
+                <Loader2 size={11} className="animate-spin shrink-0" />
+                {job?.status === 'diarizing' ? 'Listening for speakers…' : 'Working on this session…'}
+              </p>
+            ) : (
+              <>
+                {sessionSpeakers.length === 1 && segs.length >= 4 && (
+                  <p className="text-[9px] text-amber-300/80">
+                    Only one voice is assigned. If more people speak in this video, detect speakers again.
+                  </p>
+                )}
+                <button
+                  onClick={runDetectSpeakers}
+                  disabled={detectSpeakers.isPending}
+                  className="w-full flex items-center justify-center gap-1.5 py-1 rounded bg-purple-600 hover:bg-purple-500 disabled:opacity-60 text-white text-[10px] font-semibold transition-colors"
+                >
+                  <AudioLines size={11} />
+                  Detect speakers
+                </button>
+                <p className="text-[9px] text-zinc-500 leading-snug">
+                  Re-listens to the audio and reassigns who speaks each line. Text, translations and
+                  generated voices stay as they are.
+                </p>
+                {confirmReanalyze ? (
+                  <div className="space-y-1.5 pt-1 border-t border-zinc-800/60">
+                    <p className="text-[9px] text-amber-300/90 leading-snug">
+                      Replace every segment with a fresh transcription, speakers and translation?
+                      Your text edits and generated voices in this session will be discarded.
+                    </p>
+                    <div className="flex gap-1.5">
+                      <button
+                        onClick={runReanalyze}
+                        className="flex-1 py-1 rounded bg-red-600/80 hover:bg-red-500 text-white text-[10px] font-semibold transition-colors"
+                      >
+                        Replace segments
+                      </button>
+                      <button
+                        onClick={() => setConfirmReanalyze(false)}
+                        className="flex-1 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[10px] transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setConfirmReanalyze(true)}
+                    disabled={analyze.isPending}
+                    className="w-full flex items-center justify-center gap-1.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-60 text-zinc-300 text-[10px] transition-colors"
+                    title="Transcribe, detect speakers and translate this session again from scratch"
+                  >
+                    <RefreshCw size={10} />
+                    Re-analyze…
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        )}
         {sessionSpeakers.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-6 text-center">
             <Users size={18} className="text-zinc-700 mb-2" />

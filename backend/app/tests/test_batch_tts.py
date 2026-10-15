@@ -107,10 +107,12 @@ async def test_mock_audio_rejected_when_real_backends_configured(client, db_sess
 
 
 @pytest.mark.asyncio
-async def test_mock_audio_accepted_in_keyless_dev_mode(client, db_sessionmaker, monkeypatch, tmp_path):
+async def test_mock_audio_accepted_in_pure_mock_mode(client, db_sessionmaker, monkeypatch, tmp_path):
+    """Pure mock mode = no TTS engine configured at all (the free HF Space counts as one)."""
     monkeypatch.setattr(tts_routes.settings, "UPLOAD_DIR", str(tmp_path))
     monkeypatch.setattr(tts_routes.settings, "GEMINI_API_KEY", "")
     monkeypatch.setattr(tts_routes.settings, "VOXCPM2_API_URL", "")
+    monkeypatch.setattr(tts_routes.settings, "VOXCPM2_HF_SPACE_FALLBACK", "")
     monkeypatch.setattr(tts_routes.tts_client, "synthesize", _fake_synthesize(mock=True))
 
     _, seg_ids = await _make_job_with_segments(client, db_sessionmaker, 1)

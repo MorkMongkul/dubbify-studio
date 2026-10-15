@@ -10,6 +10,7 @@ import type {
   TTSResponse, HealthResponse,
   Voice, VoiceMode,
   Overlay, OverlayUpdate, OverlayTemplate,
+  ChatMessage, ChatSendResponse, ChatProposedEdit,
 } from '@/types'
 
 const api = axios.create({
@@ -128,6 +129,16 @@ export const jobs = {
     api.post(`/jobs/${jobId}/analyze`, null, {
       params: maxSpeakers ? { max_speakers: maxSpeakers } : undefined,
     }).then((r) => r.data),
+
+  // Re-detect who speaks each existing segment; text, edits and voices are kept.
+  detectSpeakers: (jobId: string) =>
+    api.post(`/jobs/${jobId}/detect-speakers`).then((r) => r.data),
+
+  setBgmVolume: (jobId: string, volumeDb: number) =>
+    api.patch<Job>(`/jobs/${jobId}/bgm-volume`, { volume_db: volumeDb }).then((r) => r.data),
+
+  setTitle: (jobId: string, title: string) =>
+    api.patch<Job>(`/jobs/${jobId}/title`, { title }).then((r) => r.data),
 }
 
 // ── Speakers ──────────────────────────────────────────────────
@@ -298,13 +309,16 @@ export const voices = {
   list: () =>
     api.get<Voice[]>('/voices/').then((r) => r.data),
 
+  // Design-mode creation bakes a reference clip via TTS inline — Space
+  // cold-start/queue can take minutes, so this must outlive the 30s default.
   create: (data: VoiceCreateInput) =>
     api.post<Voice>('/voices/', voiceFormData(data), {
       headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 600_000,
     }).then((r) => r.data),
 
   update: (id: string, data: Partial<Pick<Voice, 'name' | 'mode' | 'description' | 'reference_transcript' | 'cfg_value' | 'inference_timesteps' | 'seed'>>) =>
-    api.patch<Voice>(`/voices/${id}`, data).then((r) => r.data),
+    api.patch<Voice>(`/voices/${id}`, data, { timeout: 600_000 }).then((r) => r.data),
 
   uploadReference: (id: string, file: File) => {
     const form = new FormData()
@@ -323,6 +337,26 @@ export const voices = {
       responseType: 'blob',
       timeout: 300_000,   // cold-start tolerant
     }).then((r) => r.data as Blob),
+}
+
+// ── Assistant chat ────────────────────────────────────────────
+export const chat = {
+  listMessages: (projectId: string) =>
+    api.get<ChatMessage[]>(`/chat/${projectId}/messages`).then((r) => r.data),
+
+  // A turn can involve several tool-call round trips to Gemini — give it
+  // real headroom instead of the 30s default.
+  sendMessage: (projectId: string, text: string) =>
+    api.post<ChatSendResponse>(`/chat/${projectId}/messages`, { text }, { timeout: 120_000 }).then((r) => r.data),
+
+  listPendingEdits: (projectId: string, status: 'pending' | 'all' = 'pending') =>
+    api.get<ChatProposedEdit[]>(`/chat/${projectId}/pending-edits`, { params: { status } }).then((r) => r.data),
+
+  approveEdit: (editId: string) =>
+    api.post<ChatProposedEdit>(`/chat/pending-edits/${editId}/approve`).then((r) => r.data),
+
+  rejectEdit: (editId: string) =>
+    api.post<ChatProposedEdit>(`/chat/pending-edits/${editId}/reject`).then((r) => r.data),
 }
 
 export default api

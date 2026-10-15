@@ -156,7 +156,8 @@ class VoxCPM2Client:
             if time.monotonic() < self._primary_down_until:
                 # Known-dead Colab URL — don't burn ~5s failing on it again.
                 result = {"success": False, "audio_path": "", "duration_secs": 0,
-                          "error": "primary Gradio URL unreachable (cooling down)"}
+                          "error": "primary Gradio URL unreachable (cooling down)",
+                          "backend": "voxcpm_gradio"}
             else:
                 result = await self._gradio_synthesize(
                     text, voice_design, output_path, cfg_value, inference_timesteps,
@@ -276,7 +277,7 @@ class VoxCPM2Client:
         shutil.copyfile(src, out_p)
         duration = _get_wav_duration(str(out_p))
         logger.info(f"Gradio VoxCPM2 saved: {out_p.name} ({duration:.1f}s)")
-        return {"success": True, "audio_path": str(out_p), "duration_secs": duration, "error": ""}
+        return {"success": True, "audio_path": str(out_p), "duration_secs": duration, "error": "", "backend": "voxcpm_gradio"}
 
     async def _gradio_synthesize(
         self, text, voice_design, output_path, cfg_value, inference_timesteps,
@@ -290,7 +291,7 @@ class VoxCPM2Client:
             )
         except Exception as e:
             logger.warning(f"Gradio VoxCPM2 failed: {e}")
-            return {"success": False, "audio_path": "", "duration_secs": 0, "error": str(e)}
+            return {"success": False, "audio_path": "", "duration_secs": 0, "error": str(e), "backend": "voxcpm_gradio"}
 
     # ── HF Space fallback (openbmb/VoxCPM-Demo, no setup required) ────────
     # Different Gradio app from the Colab one above — a single unified
@@ -338,7 +339,7 @@ class VoxCPM2Client:
         shutil.copyfile(src, out_p)
         duration = _get_wav_duration(str(out_p))
         logger.info(f"HF Space VoxCPM2 saved: {out_p.name} ({duration:.1f}s)")
-        return {"success": True, "audio_path": str(out_p), "duration_secs": duration, "error": ""}
+        return {"success": True, "audio_path": str(out_p), "duration_secs": duration, "error": "", "backend": "voxcpm_hf_space"}
 
     async def _hf_space_synthesize(
         self, text, voice_design, output_path, cfg_value,
@@ -352,7 +353,7 @@ class VoxCPM2Client:
             )
         except Exception as e:
             logger.warning(f"HF Space VoxCPM2 failed: {e}")
-            return {"success": False, "audio_path": "", "duration_secs": 0, "error": str(e)}
+            return {"success": False, "audio_path": "", "duration_secs": 0, "error": str(e), "backend": "voxcpm_hf_space"}
 
     # ── Gemini TTS ────────────────────────────────────────────────────────
 
@@ -448,6 +449,7 @@ class VoxCPM2Client:
                         "audio_path": str(out_path),
                         "duration_secs": duration,
                         "error": "",
+                        "backend": "gemini",
                     }
 
             logger.warning(f"Gemini TTS returned no audio. Response: {data}")
@@ -455,7 +457,7 @@ class VoxCPM2Client:
 
         except Exception as e:
             logger.error(f"Gemini TTS failed: {e}")
-            return {"success": False, "audio_path": "", "duration_secs": 0, "error": str(e)}
+            return {"success": False, "audio_path": "", "duration_secs": 0, "error": str(e), "backend": "gemini"}
 
     # ── Mock (silent WAV) ─────────────────────────────────────────────────
 
@@ -472,24 +474,7 @@ class VoxCPM2Client:
         # "mock" lets callers with real backends configured treat this as a
         # failure (rate-limited end of the chain) instead of silently saving
         # a silent clip that LOOKS like a finished voice in the editor.
-        return {"success": True, "audio_path": str(out_path), "duration_secs": duration, "error": "", "mock": True}
-
-    async def synthesize_batch(self, segments: list, output_dir: str, max_concurrent: int = 3) -> list:
-        sem = asyncio.Semaphore(max_concurrent)
-        output_dir = Path(output_dir)
-
-        async def synth_one(seg: dict) -> dict:
-            async with sem:
-                out_path = output_dir / f"tts_{seg['id']}.wav"
-                result = await self.synthesize(
-                    text=seg["text"],
-                    voice_design=seg.get("voice_design", ""),
-                    output_path=str(out_path),
-                )
-                result["segment_id"] = seg["id"]
-                return result
-
-        return await asyncio.gather(*[synth_one(s) for s in segments])
+        return {"success": True, "audio_path": str(out_path), "duration_secs": duration, "error": "", "mock": True, "backend": "mock"}
 
 
 # Singleton

@@ -15,9 +15,10 @@ interface VideoPlayerProps {
   projectId?: string
   jobStatus?: string
   overlays?: Overlay[]
+  bgmVolumeDb?: number
 }
 
-export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus, overlays }: VideoPlayerProps) {
+export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus, overlays, bgmVolumeDb }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const bgmAudioRef = useRef<HTMLAudioElement>(null)
   const vocalsAudioRef = useRef<HTMLAudioElement>(null)
@@ -247,7 +248,12 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
   const onStemError = useCallback(() => {
     if (jobId) setWavFallbackJobs((prev) => (prev[jobId] ? prev : { ...prev, [jobId]: true }))
   }, [jobId])
-  const noVocalsUrl = jobId && projectId ? `/uploads/${projectId}/${jobId}/no_vocals.${stemExt}` : null
+  // Cache-busted by bgm_volume_db — the backend overwrites this same file
+  // whenever the BGM gain changes, so the URL needs to change too or the
+  // browser keeps serving the pre-gain audio.
+  const noVocalsUrl = jobId && projectId
+    ? `/uploads/${projectId}/${jobId}/no_vocals.${stemExt}?v=${bgmVolumeDb ?? 0}`
+    : null
   const vocalsUrl   = jobId && projectId ? `/uploads/${projectId}/${jobId}/vocals.${stemExt}`    : null
 
   // Separated stems exist from stems_ready onwards (demucs ran in Stage 1)

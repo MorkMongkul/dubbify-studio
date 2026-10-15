@@ -35,13 +35,23 @@ def resolve_media_path(stored: str | None) -> str:
     if not stored:
         return stored or ""
 
-    p = Path(stored)
-    if p.is_absolute():
-        return str(p)
-
     upload_root = Path(settings.UPLOAD_DIR).expanduser()
     if not upload_root.is_absolute():
         upload_root = (Path.cwd() / upload_root).resolve()
+
+    p = Path(stored)
+    if p.is_absolute():
+        if p.exists():
+            return str(p)
+        # Absolute path recorded on ANOTHER machine (shared DB, media folder
+        # copied over, different home directory): remap everything after the
+        # last ".../uploads/" onto this machine's upload root.
+        if "uploads" in p.parts:
+            tail_idx = len(p.parts) - 1 - tuple(reversed(p.parts)).index("uploads")
+            candidate = upload_root.joinpath(*p.parts[tail_idx + 1:])
+            if candidate.exists():
+                return str(candidate)
+        return str(p)
 
     candidates: list[Path] = []
     # "uploads/<project>/<job>/x" where upload_root itself ends in "uploads"

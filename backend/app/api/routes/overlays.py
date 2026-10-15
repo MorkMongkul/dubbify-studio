@@ -34,7 +34,7 @@ async def _get_job(job_id: str, db: AsyncSession) -> Job:
 
 
 @router.get("/jobs/{job_id}/overlays", response_model=List[OverlayResponse])
-async def list_overlays(job_id: str, db: AsyncSession = Depends(get_db)):
+async def list_overlays(job_id: str, db: AsyncSession = Depends(get_db, scope="function")):
     """List all overlay layers for a job, in stacking (z-index) order."""
     result = await db.execute(
         select(Overlay).where(Overlay.job_id == job_id).order_by(Overlay.z_index)
@@ -46,7 +46,7 @@ async def list_overlays(job_id: str, db: AsyncSession = Depends(get_db)):
 async def create_image_overlay(
     job_id: str,
     media: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """Drop a new image (logo, sticker, etc.) onto the video canvas."""
     job = await _get_job(job_id, db)
@@ -78,7 +78,7 @@ async def create_image_overlay(
 
 
 @router.post("/jobs/{job_id}/overlays/from-project-logo", response_model=OverlayResponse, status_code=status.HTTP_201_CREATED)
-async def create_overlay_from_project_logo(job_id: str, db: AsyncSession = Depends(get_db)):
+async def create_overlay_from_project_logo(job_id: str, db: AsyncSession = Depends(get_db, scope="function")):
     """Quick-add the project's saved watermark logo as a new overlay on this job."""
     job = await _get_job(job_id, db)
     p_result = await db.execute(select(Project).where(Project.id == job.project_id))
@@ -112,7 +112,7 @@ async def create_overlay_from_project_logo(job_id: str, db: AsyncSession = Depen
 async def create_subtitle_overlay(
     job_id: str,
     payload: OverlaySubtitleCreate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """
     Create the job's subtitle box (only one supported — if it already exists,
@@ -142,7 +142,7 @@ async def create_subtitle_overlay(
 async def create_shape_overlay(
     job_id: str,
     payload: OverlayShapeCreate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """
     Add a plain box (solid color or a blurred region) — typically used to
@@ -245,7 +245,7 @@ async def apply_default_overlay_template(job: Job, db: AsyncSession) -> None:
 
 
 @router.get("/overlay-templates", response_model=List[OverlayTemplateResponse])
-async def list_overlay_templates(db: AsyncSession = Depends(get_db)):
+async def list_overlay_templates(db: AsyncSession = Depends(get_db, scope="function")):
     result = await db.execute(
         select(OverlayTemplate).order_by(OverlayTemplate.created_at)
     )
@@ -255,7 +255,7 @@ async def list_overlay_templates(db: AsyncSession = Depends(get_db)):
 @router.post("/overlay-templates", response_model=OverlayTemplateResponse, status_code=status.HTTP_201_CREATED)
 async def create_overlay_template(
     payload: OverlayTemplateCreate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """Snapshot ALL of a job's overlays into a reusable global template."""
     await _get_job(payload.from_job_id, db)
@@ -299,7 +299,7 @@ async def create_overlay_template(
 async def update_overlay_template(
     template_id: str,
     payload: OverlayTemplateUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """Rename a template or toggle it as the auto-applied default."""
     template = (await db.execute(
@@ -322,7 +322,7 @@ async def update_overlay_template(
 
 
 @router.delete("/overlay-templates/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_overlay_template(template_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_overlay_template(template_id: str, db: AsyncSession = Depends(get_db, scope="function")):
     """Delete a template and its copied media files. Overlays already
     stamped onto episodes are untouched (they own their own file copies)."""
     template = (await db.execute(
@@ -343,7 +343,7 @@ async def delete_overlay_template(template_id: str, db: AsyncSession = Depends(g
 async def apply_overlay_template_to_job(
     template_id: str,
     job_id: str,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """Stamp the template's overlays onto an episode (adds, never replaces)."""
     template = (await db.execute(
@@ -362,7 +362,7 @@ async def apply_overlay_template_to_job(
 
 
 @router.patch("/overlays/{overlay_id}", response_model=OverlayResponse)
-async def update_overlay(overlay_id: str, payload: OverlayUpdate, db: AsyncSession = Depends(get_db)):
+async def update_overlay(overlay_id: str, payload: OverlayUpdate, db: AsyncSession = Depends(get_db, scope="function")):
     """Move, resize, restyle, or retime an overlay layer."""
     result = await db.execute(select(Overlay).where(Overlay.id == overlay_id))
     overlay = result.scalar_one_or_none()
@@ -379,7 +379,7 @@ async def update_overlay(overlay_id: str, payload: OverlayUpdate, db: AsyncSessi
 
 
 @router.delete("/overlays/{overlay_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_overlay(overlay_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_overlay(overlay_id: str, db: AsyncSession = Depends(get_db, scope="function")):
     """Remove an overlay layer (and its image file, if any)."""
     result = await db.execute(select(Overlay).where(Overlay.id == overlay_id))
     overlay = result.scalar_one_or_none()

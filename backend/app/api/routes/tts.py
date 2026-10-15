@@ -4,8 +4,11 @@ TTS synthesis endpoints — trigger VoxCPM2 for individual segments or entire jo
 """
 import asyncio
 import logging
+import os
 import shutil
+import tempfile
 from pathlib import Path
+from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -71,7 +74,58 @@ async def _resolve_voice(seg: Segment, db: AsyncSession) -> dict:
     return {"voice_design": ""}
  
  
-async def _synthesize_segment_db(segment_id: str, db: AsyncSession) -> Segment:
+class TTSUnavailable(Exception):
+    """Synthesis failed, or only silent mock audio came back — nothing was saved."""
+
+
+def _real_tts_configured() -> bool:
+    """
+    True when any real engine is in the fallback chain — the free HF Space
+    counts. Silent mock audio is only acceptable in pure mock mode (no engine
+    configured at all); otherwise it means every engine failed or rate-limited,
+    and saving it as a finished clip would put silence in a client's dub.
+    """
+    return bool(settings.VOXCPM2_API_URL or settings.VOXCPM2_HF_SPACE_FALLBACK or settings.GEMINI_API_KEY)
+
+
+async def _render_segment_audio(seg: Segment, tts_dir: Path, voice_kwargs: dict) -> tuple[str, float, str]:
+    """
+    Synthesize a segment and render its final clip; returns (final_path,
+    duration, backend). The new audio is written to a temp file and only
+    replaces the segment's raw clip once a real synthesis succeeded — the raw
+    clip is what later volume/filter/speed changes re-render from, so a failed
+    regenerate must leave it (and the final clip) exactly as they were.
+    Raises TTSUnavailable otherwise.
+    """
+    raw_path = tts_dir / f"seg_{seg.id}_raw.wav"
+    final_path = tts_dir / f"seg_{seg.id}.wav"
+    tmp_path = tts_dir / f".seg_{seg.id}_{uuid4().hex}.wav"
+    try:
+        result = await tts_client.synthesize(text=seg.khmer_text, output_path=str(tmp_path), **voice_kwargs)
+        if not result.get("success"):
+            raise TTSUnavailable(result.get("error") or "TTS synthesis failed")
+        if result.get("mock") and _real_tts_configured():
+            raise TTSUnavailable("All TTS backends failed or rate-limited — wait a minute and retry")
+        os.replace(tmp_path, raw_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    from app.services.audio_extractor import apply_audio_effects
+    duration = await apply_audio_effects(
+        input_path=str(raw_path),
+        output_path=str(final_path),
+        volume_db=seg.volume_db,
+        voice_filter=seg.voice_filter,
+        voice_speed=seg.voice_speed,
+    )
+    return str(final_path), duration, result.get("backend", "")
+
+
+async def _synthesize_segment_db(segment_id: str, db: AsyncSession) -> tuple[Segment, str]:
+    """Returns (segment, backend) — backend is whichever of "voxcpm_gradio" /
+    "voxcpm_hf_space" / "gemini" / "mock" actually produced the clip, so
+    batch callers can tell when they've fallen through to Gemini (the only
+    backend here with a real request-rate limit worth pacing around)."""
     result = await db.execute(select(Segment).where(Segment.id == segment_id))
     seg = result.scalar_one_or_none()
     if not seg:
@@ -92,65 +146,37 @@ async def _synthesize_segment_db(segment_id: str, db: AsyncSession) -> Segment:
     job_dir = Path(settings.UPLOAD_DIR) / project_id / seg.job_id
     tts_dir = job_dir / "tts"
     tts_dir.mkdir(parents=True, exist_ok=True)
-    output_raw_path = tts_dir / f"seg_{segment_id}_raw.wav"
-    output_final_path = tts_dir / f"seg_{segment_id}.wav"
 
     # Release the DB connection before the TTS call — synthesis can take
-    # minutes (Modal cold start), and the dev SQLite engine has exactly one
-    # pooled connection, so holding it here would block every other request
-    # (job polls, segment fetches) for the whole call. expire_on_commit=False
-    # keeps `seg`/ORM objects usable after the commit.
+    # minutes, and the dev SQLite engine has exactly one pooled connection, so
+    # holding it here would block every other request (job polls, segment
+    # fetches) for the whole call. expire_on_commit=False keeps `seg` usable.
     await db.commit()
 
-    # Call VoxCPM2 or Gemini TTS
-    result_data = await tts_client.synthesize(
-        text=seg.khmer_text,
-        output_path=str(output_raw_path),
-        **voice_kwargs,
-    )
+    try:
+        final_path, duration, backend = await _render_segment_audio(seg, tts_dir, voice_kwargs)
+    except TTSUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
-    # Mock (silent) audio at the end of the fallback chain means every real
-    # backend failed or rate-limited. When real backends ARE configured, treat
-    # that as a failure so the segment stays visibly ungenerated and can be
-    # retried — a silent clip saved as "done" is far worse than no clip.
-    # (With zero keys configured — pure dev mode — mock is accepted as-is.)
-    if result_data.get("mock") and (settings.VOXCPM2_API_URL or settings.GEMINI_API_KEY):
-        raise HTTPException(
-            status_code=503,
-            detail="All TTS backends failed or rate-limited — wait a minute and retry",
-        )
+    # The raw pre-effects clip is KEPT: segments.update_segment re-applies
+    # effects from it whenever the user changes volume/filter/speed. Deleting
+    # it made every later tweak stack on top of the baked-in one (set +6 dB,
+    # regenerate, then change to +3 dB and the clip came out +9 dB).
+    seg.tts_audio_path    = final_path
+    seg.tts_duration_secs = duration
+    await db.flush()
+    return seg, backend
 
-    if result_data["success"]:
-        from app.services.audio_extractor import apply_audio_effects
-        new_duration = await apply_audio_effects(
-            input_path=str(output_raw_path),
-            output_path=str(output_final_path),
-            volume_db=seg.volume_db,
-            voice_filter=seg.voice_filter,
-            voice_speed=seg.voice_speed,
-        )
-        # The raw pre-effects clip is KEPT: segments.update_segment re-applies
-        # effects from it whenever the user changes volume/filter/speed. Deleting
-        # it here made that path fall back to copying the already-processed final
-        # file, so every later tweak stacked on top of the baked-in one (set
-        # +6 dB, regenerate, then change to +3 dB and the clip came out +9 dB).
-        seg.tts_audio_path    = str(output_final_path)
-        seg.tts_duration_secs = new_duration
-        await db.flush()
-        return seg
-    else:
-        raise HTTPException(status_code=500, detail=result_data.get("error", "TTS synthesis failed"))
- 
- 
+
 @router.post("/synthesize/segment/{segment_id}", response_model=TTSResponse)
 async def synthesize_segment(
     segment_id: str,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """
     Synthesize a single segment.
     """
-    seg = await _synthesize_segment_db(segment_id, db)
+    seg, _backend = await _synthesize_segment_db(segment_id, db)
     await db.commit()
     return TTSResponse(
         segment_id=segment_id,
@@ -169,7 +195,7 @@ class BatchSynthesizeRequest(BaseModel):
 async def synthesize_batch(
     payload: BatchSynthesizeRequest,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """
     Synthesize multiple segments in the background (sequentially, with a pacing
@@ -199,50 +225,63 @@ async def synthesize_batch(
 
 
 async def _synthesize_ids_task(segment_ids: List[str]) -> None:
-    """Background task: synthesize the given segments one at a time.
+    """Background task: synthesize the given segments with bounded concurrency
+    (settings.TTS_BATCH_CONCURRENCY).
 
-    Commits after every segment so results appear incrementally to polling
-    clients, and the DB connection is released during each TTS call.
+    Each concurrent worker opens its OWN DB session — never share one
+    AsyncSession across concurrent coroutines, it isn't safe for that. SQLite's
+    pool_size=1 means only one worker can actually hold the connection at a
+    time regardless, but each session commits (releasing it) before the TTS
+    call, so workers genuinely overlap during the expensive part — waiting on
+    the TTS backend — and only briefly serialize on the cheap DB read/write.
+
+    No blanket inter-segment sleep: VoxCPM2 has no request-rate limit to
+    protect against, so pacing every segment regardless of which backend
+    actually served it was pure dead time on the common (VoxCPM2-healthy)
+    path. The only backend here with a real rate limit is Gemini TTS (hit
+    only once VoxCPM2 has already failed) — `gemini_seen` turns on a short
+    pacing delay for subsequent requests only once a Gemini fallback is
+    actually observed in this batch, instead of assuming it up front.
+
     Segments that fail (rate limits, backend hiccups) get a second pass after
     a cool-off, so one bad stretch doesn't permanently skip half the batch.
     """
     from app.core.database import AsyncSessionLocal
 
-    async def _try_one(db, segment_id: str) -> bool:
-        try:
-            await _synthesize_segment_db(segment_id, db)
-            await db.commit()
-            return True
-        except HTTPException as e:
-            logger.warning(f"Batch synthesis: segment {segment_id[:8]} failed: {e.detail}")
-            await db.rollback()
-        except Exception:
-            logger.exception(f"Batch synthesis: segment {segment_id[:8]} failed")
-            await db.rollback()
-        return False
+    concurrency = max(1, settings.TTS_BATCH_CONCURRENCY)
+    sem = asyncio.Semaphore(concurrency)
+    gemini_seen = asyncio.Event()
 
-    async with AsyncSessionLocal() as db:
-        failed: List[str] = []
-        for i, segment_id in enumerate(segment_ids):
-            if not await _try_one(db, segment_id):
-                failed.append(segment_id)
-            # Pacing delay between generations (except after the last one)
-            if i < len(segment_ids) - 1:
+    async def _try_one(segment_id: str) -> bool:
+        async with sem:
+            if gemini_seen.is_set():
                 await asyncio.sleep(1.5)
+            async with AsyncSessionLocal() as db:
+                try:
+                    _seg, backend = await _synthesize_segment_db(segment_id, db)
+                    await db.commit()
+                    if backend == "gemini":
+                        gemini_seen.set()
+                    return True
+                except HTTPException as e:
+                    logger.warning(f"Batch synthesis: segment {segment_id[:8]} failed: {e.detail}")
+                    await db.rollback()
+                except Exception:
+                    logger.exception(f"Batch synthesis: segment {segment_id[:8]} failed")
+                    await db.rollback()
+            return False
 
-        if failed:
-            logger.info(
-                f"Batch synthesis: retrying {len(failed)} failed segment(s) "
-                "after a 30s cool-off (rate limits usually clear by then)..."
-            )
-            await asyncio.sleep(30)
-            still_failed = []
-            for i, segment_id in enumerate(failed):
-                if not await _try_one(db, segment_id):
-                    still_failed.append(segment_id)
-                if i < len(failed) - 1:
-                    await asyncio.sleep(5)  # gentler pacing on the retry pass
-            failed = still_failed
+    results = await asyncio.gather(*[_try_one(sid) for sid in segment_ids])
+    failed = [sid for sid, ok in zip(segment_ids, results) if not ok]
+
+    if failed:
+        logger.info(
+            f"Batch synthesis: retrying {len(failed)} failed segment(s) "
+            "after a 30s cool-off (rate limits usually clear by then)..."
+        )
+        await asyncio.sleep(30)
+        retry_results = await asyncio.gather(*[_try_one(sid) for sid in failed])
+        failed = [sid for sid, ok in zip(failed, retry_results) if not ok]
 
     done = len(segment_ids) - len(failed)
     if failed:
@@ -258,7 +297,7 @@ async def _synthesize_ids_task(segment_ids: List[str]) -> None:
 async def synthesize_job(
     job_id: str,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """
     Synthesize ALL approved segments in a job (runs in background).
@@ -287,6 +326,70 @@ async def synthesize_job(
     }
 
 
+# External drives, where video is often exported to (macOS, then Linux).
+_EXPORT_DRIVE_ROOTS = (Path("/Volumes"), Path("/media"), Path("/mnt"))
+
+
+def _export_target(raw: str, default_name: str = "dubbed.mp4") -> Path:
+    """
+    The file a finished video may be written to: an .mp4 (or default_name
+    inside an existing folder) under the user's home or on an external drive.
+    The API has no login, so an arbitrary path would let any local caller
+    overwrite any file the user owns. Parent folders are resolved for the
+    location check; the final name never is — a symlink there gets replaced by
+    the write, not followed. Raises ValueError with a user-facing reason.
+    """
+    dest = Path(raw).expanduser()
+    if not dest.is_absolute():
+        raise ValueError("export_path must be an absolute path")
+    if dest.is_dir() and not dest.is_symlink():
+        dest = dest / default_name
+    target = dest.parent.resolve() / dest.name
+    roots = (Path.home().resolve(), *_EXPORT_DRIVE_ROOTS)
+    if not any(target.is_relative_to(root) for root in roots):
+        raise ValueError("Export to a folder in your home directory or on an external drive.")
+    if target.suffix.lower() != ".mp4":
+        raise ValueError("The export file name must end in .mp4.")
+    return target
+
+
+def _validated_export_path(raw: str) -> str:
+    """Request-time check, so a bad destination fails the request rather than the minutes-long mix."""
+    try:
+        target = _export_target(raw)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise HTTPException(status_code=400, detail=f"Cannot create export folder: {e}")
+    return str(Path(raw).expanduser())
+
+
+def _copy_export(final_path: str, export_path: str) -> Path:
+    """
+    Copy the finished video to the chosen destination. The destination is
+    checked again now — the mix ran for minutes since the request — and the
+    bytes go to a new temp file in the destination folder that is then renamed
+    over the target, so a symlink placed at the target is replaced, never
+    written through. Raises OSError (PermissionError for a refused location).
+    """
+    try:
+        target = _export_target(export_path, default_name=Path(final_path).name)
+    except ValueError as e:
+        raise PermissionError(str(e)) from e
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=".dubify-export-", suffix=".mp4")
+    try:
+        with os.fdopen(fd, "wb") as out, open(final_path, "rb") as src:
+            shutil.copyfileobj(src, out, 8 * 1024 * 1024)
+        os.replace(tmp_name, target)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+    return target
+
+
 class MixRequest(BaseModel):
     # Absolute destination path on the machine running the app (backend and UI
     # run on the same machine — dev server or Tauri sidecar). When set, the
@@ -301,7 +404,7 @@ async def mix_final_audio(
     background_tasks: BackgroundTasks,
     mute_original: bool = True,
     payload: MixRequest | None = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """
     Mix all synthesized TTS segments back into the original video, compositing
@@ -333,14 +436,7 @@ async def mix_final_audio(
     if export_path:
         # Validate up front so a bad destination fails the request, not the
         # multi-minute background mix.
-        dest = Path(export_path).expanduser()
-        if not dest.is_absolute():
-            raise HTTPException(status_code=400, detail="export_path must be an absolute path")
-        try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            raise HTTPException(status_code=400, detail=f"Cannot create export folder: {e}")
-        export_path = str(dest)
+        export_path = _validated_export_path(export_path)
 
     job.status = JobStatus.MIXING
     job.progress = 5
@@ -512,10 +608,7 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
             # error_msg carries the problem for the UI to surface.
             if export_path:
                 try:
-                    dest = Path(export_path)
-                    if dest.is_dir():
-                        dest = dest / Path(final_path).name
-                    await asyncio.to_thread(shutil.copy2, final_path, dest)
+                    dest = await asyncio.to_thread(_copy_export, final_path, export_path)
                     logger.info(f"Export copied to {dest}")
                 except OSError as e:
                     logger.exception(f"Export copy to {export_path} failed")
@@ -538,7 +631,10 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
 
 
 async def _synthesize_all_segments(job_id: str):
-    """Background task: synthesize all segments with speaker voice profiles."""
+    """Background task: synthesize all approved segments with bounded
+    concurrency (settings.TTS_BATCH_CONCURRENCY). See _synthesize_ids_task
+    for why each concurrent worker needs its own DB session and why the
+    Gemini-only adaptive pacing (vs. a blanket per-segment sleep) is safe."""
     from app.core.database import AsyncSessionLocal
 
     async with AsyncSessionLocal() as db:
@@ -558,46 +654,59 @@ async def _synthesize_all_segments(job_id: str):
         job_obj = j_result.scalar_one_or_none()
         project_id = job_obj.project_id if job_obj else job_id
 
-        job_dir = Path(settings.UPLOAD_DIR) / project_id / job_id
-        tts_dir = job_dir / "tts"
-        tts_dir.mkdir(parents=True, exist_ok=True)
+    job_dir = Path(settings.UPLOAD_DIR) / project_id / job_id
+    tts_dir = job_dir / "tts"
+    tts_dir.mkdir(parents=True, exist_ok=True)
 
-        skipped = 0
-        for seg in segments:
-            # Skip segments that already have a synthesized clip — re-running
-            # "synthesize job" must not re-buy TTS for unchanged lines (a text
-            # edit clears tts_audio_path, so changed lines still regenerate).
-            if seg.tts_audio_path and Path(seg.tts_audio_path).exists():
-                skipped += 1
-                continue
+    # Skip segments that already have a synthesized clip — re-running
+    # "synthesize job" must not re-buy TTS for unchanged lines (a text
+    # edit clears tts_audio_path, so changed lines still regenerate).
+    to_synth = [s for s in segments if not resolve_existing(s.tts_audio_path)]
+    skipped = len(segments) - len(to_synth)
 
-            voice_kwargs = await _resolve_voice(seg, db)
-            out_raw_path = tts_dir / f"seg_{seg.id}_raw.wav"
-            out_final_path = tts_dir / f"seg_{seg.id}.wav"
+    concurrency = max(1, settings.TTS_BATCH_CONCURRENCY)
+    sem = asyncio.Semaphore(concurrency)
+    gemini_seen = asyncio.Event()
 
-            # Release the DB connection during the (potentially minutes-long)
-            # TTS call so polling requests aren't starved on the SQLite engine.
-            await db.commit()
+    async def _synth_one(segment_id: str) -> bool:
+        async with sem:
+            if gemini_seen.is_set():
+                await asyncio.sleep(1.5)
+            async with AsyncSessionLocal() as db2:
+                try:
+                    seg_result = await db2.execute(select(Segment).where(Segment.id == segment_id))
+                    seg = seg_result.scalar_one_or_none()
+                    if not seg:
+                        return False
 
-            result_data = await tts_client.synthesize(
-                text=seg.khmer_text,
-                output_path=str(out_raw_path),
-                **voice_kwargs,
-            )
+                    voice_kwargs = await _resolve_voice(seg, db2)
 
-            if result_data["success"]:
-                from app.services.audio_extractor import apply_audio_effects
-                new_duration = await apply_audio_effects(
-                    input_path=str(out_raw_path),
-                    output_path=str(out_final_path),
-                    volume_db=seg.volume_db,
-                    voice_filter=seg.voice_filter,
-                    voice_speed=seg.voice_speed,
-                )
-                # Kept, not deleted — see the note in _synthesize_segment_db.
-                seg.tts_audio_path    = str(out_final_path)
-                seg.tts_duration_secs = new_duration
-                await db.commit()
+                    # Release the DB connection during the (potentially
+                    # minutes-long) TTS call so other concurrent workers and
+                    # polling requests aren't starved on the single pooled
+                    # SQLite connection.
+                    await db2.commit()
 
-        if skipped:
-            logger.info(f"Job synthesis: skipped {skipped} already-synthesized segment(s).")
+                    final_path, duration, backend = await _render_segment_audio(seg, tts_dir, voice_kwargs)
+                    if backend == "gemini":
+                        gemini_seen.set()
+                    seg.tts_audio_path    = final_path
+                    seg.tts_duration_secs = duration
+                    await db2.commit()
+                    return True
+                except TTSUnavailable as e:
+                    logger.warning(f"Job synthesis: segment {segment_id[:8]} not generated: {e}")
+                    await db2.rollback()
+                    return False
+                except Exception:
+                    logger.exception(f"Job synthesis: segment {segment_id[:8]} failed")
+                    await db2.rollback()
+                    return False
+
+    results = await asyncio.gather(*[_synth_one(s.id) for s in to_synth])
+    failed = sum(1 for ok in results if not ok)
+
+    if skipped:
+        logger.info(f"Job synthesis: skipped {skipped} already-synthesized segment(s).")
+    if failed:
+        logger.warning(f"Job synthesis: {failed}/{len(to_synth)} segment(s) failed.")

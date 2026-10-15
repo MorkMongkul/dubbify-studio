@@ -97,6 +97,15 @@ class Project(Base):
     created_at  = Column(DateTime, server_default=func.now())
     updated_at  = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
+    # Assistant chat: how ChatProposedEdit.propose_edit tool calls are handled.
+    # "manual" (default) — a proposed edit is staged (status="pending") and
+    #   waits for the user to approve/reject it in the Assistant panel; the
+    #   segment's khmer_text is untouched until then.
+    # "auto"   — the edit applies immediately AND is still logged as a
+    #   status="approved" row, so there's an auditable history / manual
+    #   revert path even when nothing waited for a human click.
+    chat_edit_mode = Column(String(10), default="manual")
+
     jobs     = relationship("Job", back_populates="project", cascade="all, delete")
     speakers = relationship("Speaker", back_populates="project", cascade="all, delete")
 
@@ -111,6 +120,14 @@ class Job(Base):
     progress    = Column(Integer, default=0)          # 0-100
     error_msg   = Column(Text, default="")
 
+    # User-facing session label (e.g. "Episode 5"). Every uploaded video is
+    # stored on disk as a generic source.mp4 regardless of its original
+    # filename, so once a project holds more than one session, the Sessions
+    # panel has nothing else distinctive to show — this is what it displays
+    # instead, falling back to the filename when blank (the common case for
+    # a single-session project, where the project's own name already IDs it).
+    title = Column(String(255), default="")
+
     # File paths (stored on disk / S3)
     video_path    = Column(String, default="")
     audio_path    = Column(String, default="")
@@ -121,6 +138,11 @@ class Job(Base):
     created_at    = Column(DateTime, server_default=func.now())
     completed_at  = Column(DateTime, nullable=True)
     duration_secs = Column(Float, default=0.0)        # video duration
+
+    # BGM/SFX stem gain — baked into the no_vocals stem on disk (see
+    # routes/jobs.py:update_bgm_volume), so this column just mirrors the
+    # currently-applied value for the UI slider to read back.
+    bgm_volume_db = Column(Float, default=0.0)
 
     project  = relationship("Project", back_populates="jobs")
     segments = relationship("Segment", back_populates="job", cascade="all, delete",
@@ -257,3 +279,57 @@ class Overlay(Base):
     created_at = Column(DateTime, server_default=func.now())
 
     job = relationship("Job", back_populates="overlays")
+
+
+# ── Assistant chat (project-scoped translation memory chatbot) ────────────
+class ChatMessage(Base):
+    """
+    One turn of a project's single ongoing Assistant conversation. Stored
+    locally (not relying on Gemini's server-side interaction state) so the
+    transcript survives independent of any one API's retention policy and
+    replays deterministically into the next generateContent call — see
+    app/services/chat_agent.py for how these get turned back into Gemini's
+    `contents` array.
+
+    role="user" covers both real user messages (function_response is null)
+    and the function-result turn fed back after a tool call (function_response
+    set) — that's the role Gemini's REST API expects a function response to
+    carry. role="model" covers both a plain text reply (function_call null)
+    and a tool-call request (function_call set).
+    """
+    __tablename__ = "chat_messages"
+
+    id         = Column(String, primary_key=True, default=generate_uuid)
+    project_id = Column(String, ForeignKey("projects.id"), nullable=False)
+    role       = Column(String(10), nullable=False)   # "user" | "model"
+    text       = Column(Text, default="")               # empty for pure function-call/response turns
+
+    function_call     = Column(JSON, nullable=True)   # {"name": ..., "args": {...}}
+    function_response = Column(JSON, nullable=True)   # {"name": ..., "response": {...}}
+
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class ChatProposedEdit(Base):
+    """
+    A segment translation change proposed by the Assistant's propose_edit
+    tool. In "manual" mode (Project.chat_edit_mode) this row is the ONLY
+    effect of the tool call — status stays "pending" until the user approves
+    or rejects it in the Assistant panel, and the segment is untouched until
+    then. In "auto" mode the segment is updated immediately and the row is
+    written already status="approved", purely as an audit / revert trail.
+    """
+    __tablename__ = "chat_proposed_edits"
+
+    id         = Column(String, primary_key=True, default=generate_uuid)
+    project_id = Column(String, ForeignKey("projects.id"), nullable=False)
+    segment_id = Column(String, ForeignKey("segments.id"), nullable=False)
+    message_id = Column(String, ForeignKey("chat_messages.id"), nullable=True)
+
+    old_khmer_text = Column(Text, default="")
+    new_khmer_text = Column(Text, default="")
+    reason         = Column(Text, default="")
+    status         = Column(String(10), default="pending")  # "pending" | "approved" | "rejected"
+
+    created_at  = Column(DateTime, server_default=func.now())
+    resolved_at = Column(DateTime, nullable=True)

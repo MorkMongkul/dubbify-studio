@@ -5,15 +5,16 @@ Registers all routers and startup/shutdown events.
 """
 import sys
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from contextlib import asynccontextmanager
 import logging
 
 from app.core.config import settings
 from app.core.database import init_db
 from app.services.pipeline_common import recover_orphaned_jobs
-from app.api.routes import health, projects, jobs, segments, tts, voices, overlays
+from app.api.routes import health, projects, jobs, segments, tts, voices, overlays, chat
 
 # ── Logging setup ─────────────────────────────────────────────
 logging.basicConfig(
@@ -80,6 +81,11 @@ class APIGZipMiddleware:
 
 app.add_middleware(APIGZipMiddleware)
 
+# ── Host check (outermost) ────────────────────────────────────
+# No login on a 127.0.0.1 API: validating Host stops a web page from reaching
+# it via DNS rebinding (its own domain re-pointed at 127.0.0.1).
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+
 # ── Routers ───────────────────────────────────────────────────
 app.include_router(health.router)
 app.include_router(projects.router,  prefix="/api/v1")
@@ -88,6 +94,7 @@ app.include_router(segments.router,  prefix="/api/v1")
 app.include_router(tts.router,       prefix="/api/v1")
 app.include_router(voices.router,    prefix="/api/v1")
 app.include_router(overlays.router,  prefix="/api/v1")
+app.include_router(chat.router,      prefix="/api/v1")
 
 # ── Static Files ──────────────────────────────────────────────
 from fastapi.staticfiles import StaticFiles
@@ -119,13 +126,22 @@ def _frontend_dist_dir() -> Path | None:
 FRONTEND_DIST = _frontend_dist_dir()
 
 if FRONTEND_DIST:
+    _FRONTEND_ROOT = FRONTEND_DIST.resolve()
+
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_frontend(full_path: str):
-        candidate = FRONTEND_DIST / full_path
-        if full_path and candidate.is_file():
+        # An API or media URL that reached this catch-all doesn't exist —
+        # answer with a JSON 404, not the SPA shell.
+        if full_path == "api" or full_path.startswith(("api/", "uploads/")):
+            raise HTTPException(status_code=404, detail="Not found")
+        # The path arrives percent-decoded, so "..%2F" segments or an absolute
+        # path would reach any file on disk (including the bundled .env) unless
+        # the resolved file is required to stay inside the build.
+        candidate = (_FRONTEND_ROOT / full_path).resolve()
+        if full_path and candidate.is_relative_to(_FRONTEND_ROOT) and candidate.is_file():
             return FileResponse(candidate)
         # SPA fallback — client-side routes (e.g. /projects/123) resolve to index.html
-        return FileResponse(FRONTEND_DIST / "index.html")
+        return FileResponse(_FRONTEND_ROOT / "index.html")
 else:
     @app.get("/", include_in_schema=False)
     async def root():

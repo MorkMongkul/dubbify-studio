@@ -29,6 +29,7 @@ huggingface_hub==1.25.1
 idna==3.18
 iniconfig==2.3.0
 numpy==2.4.6
+opencc-python-reimplemented==0.1.7
 packaging==26.2
 pillow==12.3.0
 pluggy==1.6.0

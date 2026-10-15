@@ -1,0 +1,369 @@
+"""
+Stage 2 / speaker detection behaviour at the pipeline + route level:
+
+- re-analysis never destroys the user's existing segments unless the new ones
+  are fully ready (atomic swap), and a failure leaves the editor usable;
+- new voices never reuse labels already taken in the project, and the
+  project's named/voiced speakers are offered to the ASR as reference voices;
+- "Detect speakers" relabels existing segments without touching text/audio;
+- a server restart never strands a job that already has segments.
+
+ASR and translation are replaced at the service boundary; everything else
+(routes, sessions, models) runs for real against the in-memory test DB.
+"""
+from pathlib import Path
+
+import pytest
+from sqlalchemy import select
+
+import app.core.database as core_db
+from app.api.routes import jobs as jobs_routes
+from app.models.models import Job, JobStatus, Project, Segment, Speaker, Voice
+from app.services import asr, pipeline
+from app.services.diarizer import DiarizedSegment
+from app.services.pipeline_common import recover_orphaned_jobs
+from app.services.translator import TranslationReport
+
+
+@pytest.fixture
+def uploads(monkeypatch, tmp_path):
+    """Point every module that builds media paths at a temp upload root; 'configure' Gemini."""
+    monkeypatch.setattr(pipeline.settings, "UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(pipeline.settings, "GEMINI_API_KEY", "test-key")
+    return tmp_path
+
+
+@pytest.fixture
+def background_db(monkeypatch, db_sessionmaker):
+    """Background tasks open their own sessions — point them at the test DB."""
+    monkeypatch.setattr(core_db, "AsyncSessionLocal", db_sessionmaker)
+    return db_sessionmaker
+
+
+def _vocals(uploads: Path, project_id: str, job_id: str) -> Path:
+    d = uploads / project_id / job_id
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / "vocals.wav"
+    p.write_bytes(b"RIFFfake")
+    return p
+
+
+async def _seed(db_sessionmaker, *, status=JobStatus.COMPLETED, segments=(), speakers=()):
+    """
+    segments: tuples (start, end, source_text, khmer_text, speaker_label|None, tts_path)
+    speakers: tuples (label, display_name, has_voice)
+    """
+    async with db_sessionmaker() as s:
+        project = Project(name="Series")
+        s.add(project)
+        await s.flush()
+        voice = None
+        if any(has_voice for _, _, has_voice in speakers):
+            voice = Voice(name="Narrator", mode="design")
+            s.add(voice)
+            await s.flush()
+        by_label = {}
+        for label, display, has_voice in speakers:
+            sp = Speaker(project_id=project.id, label=label, display_name=display,
+                         voice_id=voice.id if has_voice else None)
+            s.add(sp)
+            await s.flush()
+            by_label[label] = sp
+        job = Job(project_id=project.id, status=status, progress=100, video_path="v.mp4")
+        s.add(job)
+        await s.flush()
+        for start, end, src, km, label, tts in segments:
+            s.add(Segment(job_id=job.id, start_time=start, end_time=end, source_text=src,
+                          khmer_text=km, tts_audio_path=tts,
+                          speaker_id=by_label[label].id if label else None))
+        await s.commit()
+        return project.id, job.id
+
+
+async def _job(db_sessionmaker, job_id):
+    async with db_sessionmaker() as s:
+        return (await s.execute(select(Job).where(Job.id == job_id))).scalar_one()
+
+
+async def _segments(db_sessionmaker, job_id):
+    async with db_sessionmaker() as s:
+        rows = (await s.execute(
+            select(Segment, Speaker.label).outerjoin(Speaker, Speaker.id == Segment.speaker_id)
+            .where(Segment.job_id == job_id).order_by(Segment.start_time)
+        )).all()
+        return [(seg, label) for seg, label in rows]
+
+
+async def _speaker_labels(db_sessionmaker, project_id):
+    async with db_sessionmaker() as s:
+        rows = (await s.execute(select(Speaker.label).where(Speaker.project_id == project_id))).scalars().all()
+        return sorted(rows)
+
+
+def _fake_transcribe(segments, capture=None):
+    async def fake(audio_path, references=(), taken_labels=(), language="zh"):
+        if capture is not None:
+            capture.update(references=list(references), taken_labels=set(taken_labels), language=language)
+        return segments, False
+    return fake
+
+
+async def _fake_translate(texts, source_lang, target_lang, segments_context=None):
+    return [f"km:{t}" for t in texts], TranslationReport()
+
+
+# ── Stage 2 (run_analysis_pipeline) ───────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_reanalysis_failure_keeps_previous_segments(monkeypatch, uploads, background_db):
+    project_id, job_id = await _seed(background_db, segments=[
+        (0.0, 2.0, "旧的一", "edited by hand", None, ""),
+        (3.0, 5.0, "旧的二", "also edited", None, ""),
+    ])
+    _vocals(uploads, project_id, job_id)
+    monkeypatch.setattr(pipeline, "transcribe_audio", _fake_transcribe([
+        DiarizedSegment("SPEAKER_00", 0.0, 1.0, "unknown", "adult", "新"),
+    ]))
+
+    async def broken_translate(*args, **kwargs):
+        raise RuntimeError("Gemini 503")
+
+    monkeypatch.setattr(pipeline, "translate_batch_with_report", broken_translate)
+    await pipeline.run_analysis_pipeline(job_id)
+
+    rows = await _segments(background_db, job_id)
+    assert [seg.khmer_text for seg, _ in rows] == ["edited by hand", "also edited"]
+    job = await _job(background_db, job_id)
+    assert job.status == JobStatus.COMPLETED          # editor stays usable
+    assert "kept" in job.error_msg
+
+
+@pytest.mark.asyncio
+async def test_analysis_swaps_in_new_segments_and_drops_unused_auto_speakers(monkeypatch, uploads, background_db):
+    project_id, job_id = await _seed(
+        background_db,
+        speakers=[("SPEAKER_00", "SPEAKER_00", False)],
+        segments=[(0.0, 2.0, "旧", "old", "SPEAKER_00", "")],
+    )
+    _vocals(uploads, project_id, job_id)
+    monkeypatch.setattr(pipeline, "transcribe_audio", _fake_transcribe([
+        DiarizedSegment("SPEAKER_01", 0.0, 1.0, "unknown", "adult", "你好"),
+        DiarizedSegment("SPEAKER_02", 1.0, 2.0, "unknown", "adult", "再见"),
+    ]))
+    monkeypatch.setattr(pipeline, "translate_batch_with_report", _fake_translate)
+    await pipeline.run_analysis_pipeline(job_id)
+
+    rows = await _segments(background_db, job_id)
+    assert [(seg.source_text, seg.khmer_text, label) for seg, label in rows] == [
+        ("你好", "km:你好", "SPEAKER_01"), ("再见", "km:再见", "SPEAKER_02"),
+    ]
+    assert await _speaker_labels(background_db, project_id) == ["SPEAKER_01", "SPEAKER_02"]
+    job = await _job(background_db, job_id)
+    assert job.status == JobStatus.COMPLETED and job.error_msg == ""
+
+
+@pytest.mark.asyncio
+async def test_analysis_offers_named_speakers_as_references_and_reserves_taken_labels(
+        monkeypatch, uploads, background_db):
+    # Episode 1 (another job) has a speaker the user named "Lin Dong" + an unnamed auto speaker.
+    project_id, ep1 = await _seed(
+        background_db,
+        speakers=[("SPEAKER_00", "Lin Dong", False), ("SPEAKER_01", "SPEAKER_01", False)],
+        segments=[(10.0, 13.5, "我已经有工作了", "x", "SPEAKER_00", ""),
+                  (20.0, 22.0, "随便", "y", "SPEAKER_01", "")],
+    )
+    _vocals(uploads, project_id, ep1)
+    async with background_db() as s:
+        ep2 = Job(project_id=project_id, status=JobStatus.STEMS_READY, video_path="v2.mp4")
+        s.add(ep2)
+        await s.commit()
+        ep2_id = ep2.id
+    _vocals(uploads, project_id, ep2_id)
+
+    async def fake_slice(audio_path, start, end, out_path):
+        Path(out_path).write_bytes(b"RIFFref")
+
+    monkeypatch.setattr(asr, "_slice_chunk", fake_slice)
+    seen = {}
+    monkeypatch.setattr(pipeline, "transcribe_audio", _fake_transcribe(
+        [DiarizedSegment("SPEAKER_00", 0.0, 1.0, "unknown", "adult", "又见面了")], capture=seen))
+    monkeypatch.setattr(pipeline, "translate_batch_with_report", _fake_translate)
+    await pipeline.run_analysis_pipeline(ep2_id)
+
+    assert {"SPEAKER_00", "SPEAKER_01"} <= seen["taken_labels"]
+    assert [(r.label, r.text) for r in seen["references"]] == [("SPEAKER_00", "我已经有工作了")]
+    rows = await _segments(background_db, ep2_id)
+    assert rows[0][1] == "SPEAKER_00"           # matched to the existing named speaker
+    assert await _speaker_labels(background_db, project_id) == ["SPEAKER_00", "SPEAKER_01"]
+
+
+@pytest.mark.asyncio
+async def test_analysis_database_error_does_not_leave_the_job_stuck(monkeypatch, uploads, background_db):
+    project_id, job_id = await _seed(background_db, status=JobStatus.STEMS_READY)
+    _vocals(uploads, project_id, job_id)
+    # start_time=None violates NOT NULL at flush time → the session needs a rollback.
+    monkeypatch.setattr(pipeline, "transcribe_audio", _fake_transcribe([
+        DiarizedSegment("SPEAKER_00", None, 1.0, "unknown", "adult", "坏"),
+    ]))
+    monkeypatch.setattr(pipeline, "translate_batch_with_report", _fake_translate)
+    await pipeline.run_analysis_pipeline(job_id)
+    job = await _job(background_db, job_id)
+    assert job.status == JobStatus.FAILED
+    assert job.error_msg
+
+
+@pytest.mark.asyncio
+async def test_analysis_warns_about_lines_that_could_not_be_translated(monkeypatch, uploads, background_db):
+    project_id, job_id = await _seed(background_db, status=JobStatus.STEMS_READY)
+    _vocals(uploads, project_id, job_id)
+    monkeypatch.setattr(pipeline, "transcribe_audio", _fake_transcribe([
+        DiarizedSegment("SPEAKER_00", 0.0, 1.0, "unknown", "adult", "你好"),
+        DiarizedSegment("SPEAKER_00", 1.5, 2.5, "unknown", "adult", "再见"),
+    ]))
+
+    async def partly_failed(texts, *args, **kwargs):
+        return ["សួស្តី", ""], TranslationReport(fallback=0, failed=1)
+
+    monkeypatch.setattr(pipeline, "translate_batch_with_report", partly_failed)
+    await pipeline.run_analysis_pipeline(job_id)
+    job = await _job(background_db, job_id)
+    assert job.status == JobStatus.COMPLETED
+    assert "couldn't be translated" in job.error_msg
+    assert [seg.khmer_text for seg, _ in await _segments(background_db, job_id)] == ["សួស្តី", ""]
+
+
+# ── Analyze route ─────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_analyze_route_allows_reanalysis_of_a_completed_job(client, monkeypatch, uploads, background_db):
+    project_id, job_id = await _seed(background_db, segments=[(0.0, 1.0, "a", "b", None, "")])
+    _vocals(uploads, project_id, job_id)
+    started = []
+
+    async def record(job_id_arg, max_speakers=None):
+        started.append(job_id_arg)
+
+    monkeypatch.setattr(jobs_routes, "run_analysis_pipeline", record)
+    resp = await client.post(f"/api/v1/jobs/{job_id}/analyze")
+    assert resp.status_code == 202
+    assert started == [job_id]
+    assert (await _job(background_db, job_id)).status == JobStatus.DIARIZING
+
+
+@pytest.mark.asyncio
+async def test_analyze_route_refuses_a_job_that_is_already_running(client, uploads, background_db):
+    project_id, job_id = await _seed(background_db, status=JobStatus.DIARIZING)
+    _vocals(uploads, project_id, job_id)
+    resp = await client.post(f"/api/v1/jobs/{job_id}/analyze")
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_analyze_route_explains_when_stage_one_produced_no_audio(client, uploads, background_db):
+    _, job_id = await _seed(background_db, status=JobStatus.FAILED)
+    resp = await client.post(f"/api/v1/jobs/{job_id}/analyze")
+    assert resp.status_code == 400
+    assert "upload" in resp.json()["detail"].lower()
+
+
+# ── Detect speakers ───────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_detect_speakers_relabels_without_touching_text_or_audio(client, monkeypatch, uploads, background_db):
+    project_id, job_id = await _seed(
+        background_db,
+        speakers=[("SPEAKER_00", "SPEAKER_00", False)],
+        segments=[(0.0, 2.0, "老板说", "km1", "SPEAKER_00", "/tts/a.wav"),
+                  (3.0, 5.0, "员工说", "km2", "SPEAKER_00", "/tts/b.wav"),
+                  (6.0, 8.0, "老板又说", "km3", "SPEAKER_00", "")],
+    )
+    _vocals(uploads, project_id, job_id)
+    seen = {}
+    # A fresh analysis of the audio — its own timing, not the segments' — is
+    # matched to the existing segments by overlap.
+    fresh = [
+        DiarizedSegment("SPEAKER_01", 0.2, 2.4, "unknown", "adult", "老板说"),
+        DiarizedSegment("SPEAKER_02", 2.9, 5.1, "unknown", "adult", "员工说"),
+        DiarizedSegment("SPEAKER_01", 5.8, 8.0, "unknown", "adult", "老板又说"),
+    ]
+    monkeypatch.setattr(pipeline, "transcribe_audio", _fake_transcribe(fresh, capture=seen))
+    resp = await client.post(f"/api/v1/jobs/{job_id}/detect-speakers")
+    assert resp.status_code == 202
+
+    assert "SPEAKER_00" in seen["taken_labels"]
+    rows = await _segments(background_db, job_id)
+    assert [label for _, label in rows] == ["SPEAKER_01", "SPEAKER_02", "SPEAKER_01"]
+    assert [(seg.source_text, seg.khmer_text, seg.tts_audio_path) for seg, _ in rows] == [
+        ("老板说", "km1", "/tts/a.wav"), ("员工说", "km2", "/tts/b.wav"), ("老板又说", "km3", ""),
+    ]
+    assert await _speaker_labels(background_db, project_id) == ["SPEAKER_01", "SPEAKER_02"]
+    assert (await _job(background_db, job_id)).status == JobStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_detect_speakers_explains_a_missing_api_key(client, monkeypatch, uploads, background_db):
+    project_id, job_id = await _seed(background_db, segments=[(0.0, 2.0, "a", "b", None, "")])
+    _vocals(uploads, project_id, job_id)
+    monkeypatch.setattr(pipeline.settings, "GEMINI_API_KEY", "")
+    resp = await client.post(f"/api/v1/jobs/{job_id}/detect-speakers")
+    assert resp.status_code == 400
+    assert "GEMINI_API_KEY" in resp.json()["detail"]
+    assert (await _job(background_db, job_id)).status == JobStatus.COMPLETED   # untouched
+
+
+@pytest.mark.asyncio
+async def test_detect_speakers_needs_existing_segments(client, uploads, background_db):
+    project_id, job_id = await _seed(background_db)
+    _vocals(uploads, project_id, job_id)
+    resp = await client.post(f"/api/v1/jobs/{job_id}/detect-speakers")
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_detect_speakers_failure_restores_the_job(client, monkeypatch, uploads, background_db):
+    project_id, job_id = await _seed(background_db, segments=[(0.0, 2.0, "a", "b", None, "")])
+    _vocals(uploads, project_id, job_id)
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("Gemini down")
+
+    monkeypatch.setattr(pipeline, "transcribe_audio", broken)
+    resp = await client.post(f"/api/v1/jobs/{job_id}/detect-speakers")
+    assert resp.status_code == 202
+    job = await _job(background_db, job_id)
+    assert job.status == JobStatus.COMPLETED and "Gemini down" in job.error_msg
+
+
+@pytest.mark.asyncio
+async def test_detect_speakers_keeps_existing_speakers_when_nothing_was_heard(
+        client, monkeypatch, uploads, background_db):
+    project_id, job_id = await _seed(
+        background_db,
+        speakers=[("SPEAKER_00", "Lin Dong", False)],
+        segments=[(0.0, 2.0, "a", "b", "SPEAKER_00", "")],
+    )
+    _vocals(uploads, project_id, job_id)
+
+    async def nothing_heard(audio_path, references=(), taken_labels=(), language="zh"):
+        return [DiarizedSegment("SPEAKER_03", 0.0, 2.0, "unknown", "adult", "")], True
+
+    monkeypatch.setattr(pipeline, "transcribe_audio", nothing_heard)
+    await client.post(f"/api/v1/jobs/{job_id}/detect-speakers")
+    rows = await _segments(background_db, job_id)
+    assert [label for _, label in rows] == ["SPEAKER_00"]
+    job = await _job(background_db, job_id)
+    assert job.status == JobStatus.COMPLETED and job.error_msg
+
+
+# ── Restart recovery ──────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_restart_recovery_never_strands_a_job_that_has_segments(background_db):
+    _, mixing_job = await _seed(background_db, status=JobStatus.MIXING,
+                                segments=[(0.0, 1.0, "a", "b", None, "")])
+    _, extracting_job = await _seed(background_db, status=JobStatus.EXTRACTING)
+    await recover_orphaned_jobs()
+
+    mixed = await _job(background_db, mixing_job)
+    assert mixed.status == JobStatus.COMPLETED and "restart" in mixed.error_msg.lower()
+    assert (await _job(background_db, extracting_job)).status == JobStatus.FAILED

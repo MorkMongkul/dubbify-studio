@@ -13,7 +13,7 @@ from typing import List
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.models.models import Project, Job, Segment, Speaker, Overlay
+from app.models.models import Project, Job, Segment, Speaker, Overlay, ChatMessage, ChatProposedEdit
 from app.schemas.schemas import ProjectCreate, ProjectUpdate, ProjectResponse
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
@@ -22,7 +22,7 @@ _LOGO_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 @router.post("/", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
-async def create_project(payload: ProjectCreate, db: AsyncSession = Depends(get_db)):
+async def create_project(payload: ProjectCreate, db: AsyncSession = Depends(get_db, scope="function")):
     """Create a new dubbing project."""
     project = Project(**payload.model_dump())
     db.add(project)
@@ -32,14 +32,14 @@ async def create_project(payload: ProjectCreate, db: AsyncSession = Depends(get_
 
 
 @router.get("/", response_model=List[ProjectResponse])
-async def list_projects(db: AsyncSession = Depends(get_db)):
+async def list_projects(db: AsyncSession = Depends(get_db, scope="function")):
     """List all projects."""
     result = await db.execute(select(Project).order_by(Project.created_at.desc()))
     return result.scalars().all()
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
-async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
+async def get_project(project_id: str, db: AsyncSession = Depends(get_db, scope="function")):
     """Get a single project by ID."""
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
@@ -52,7 +52,7 @@ async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
 async def update_project(
     project_id: str,
     payload: ProjectUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """Update a project's name/description — inline rename in the editor header."""
     result = await db.execute(select(Project).where(Project.id == project_id))
@@ -72,7 +72,7 @@ async def update_project(
 async def upload_project_logo(
     project_id: str,
     logo: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """Upload or replace the project's watermark logo — reused on every export."""
     result = await db.execute(select(Project).where(Project.id == project_id))
@@ -99,7 +99,7 @@ async def upload_project_logo(
 
 
 @router.delete("/{project_id}/logo", response_model=ProjectResponse)
-async def delete_project_logo(project_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_project_logo(project_id: str, db: AsyncSession = Depends(get_db, scope="function")):
     """Remove the project's watermark logo."""
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
@@ -117,17 +117,21 @@ async def delete_project_logo(project_id: str, db: AsyncSession = Depends(get_db
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_project(project_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_project(project_id: str, db: AsyncSession = Depends(get_db, scope="function")):
     """Delete a project and all its associated data (jobs, segments, speakers, files)."""
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Delete children explicitly in FK-safe order (segments + overlays → jobs →
-    # speakers) rather than relying on async ORM cascade. Overlays also point at
-    # jobs.id, so skipping them left the bulk job delete violating that FK on
-    # Postgres (and silently orphaning rows on SQLite, which doesn't enforce it).
+    # Delete children explicitly in FK-safe order (chat edits/messages →
+    # segments + overlays → jobs → speakers) rather than relying on async ORM
+    # cascade. Overlays also point at jobs.id, so skipping them left the bulk
+    # job delete violating that FK on Postgres (and silently orphaning rows on
+    # SQLite, which doesn't enforce it). Chat edits reference segments AND
+    # chat messages, so they must go before both.
+    await db.execute(delete(ChatProposedEdit).where(ChatProposedEdit.project_id == project_id))
+    await db.execute(delete(ChatMessage).where(ChatMessage.project_id == project_id))
     job_ids = (await db.execute(select(Job.id).where(Job.project_id == project_id))).scalars().all()
     if job_ids:
         await db.execute(delete(Segment).where(Segment.job_id.in_(job_ids)))

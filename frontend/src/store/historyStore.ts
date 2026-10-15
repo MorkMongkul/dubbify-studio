@@ -40,9 +40,13 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
     }))
   },
 
+  // One step at a time: a second press while the first is still talking to the
+  // server would apply the same entry twice and pop one that was never undone.
+  // A step that fails is dropped (and the error rethrown for the caller to
+  // show) — left on top, it would fail again on every press and block the rest.
   undo: async () => {
-    const { past } = get()
-    if (past.length === 0) return
+    const { past, isApplying } = get()
+    if (isApplying || past.length === 0) return
     const entry = past[past.length - 1]
     set({ isApplying: true })
     try {
@@ -51,14 +55,17 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
         past: s.past.slice(0, -1),
         future: [...s.future, entry],
       }))
+    } catch (err) {
+      set((s) => ({ past: s.past.filter((e) => e !== entry) }))
+      throw err
     } finally {
       set({ isApplying: false })
     }
   },
 
   redo: async () => {
-    const { future } = get()
-    if (future.length === 0) return
+    const { future, isApplying } = get()
+    if (isApplying || future.length === 0) return
     const entry = future[future.length - 1]
     set({ isApplying: true })
     try {
@@ -67,6 +74,9 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
         future: s.future.slice(0, -1),
         past: [...s.past, entry],
       }))
+    } catch (err) {
+      set((s) => ({ future: s.future.filter((e) => e !== entry) }))
+      throw err
     } finally {
       set({ isApplying: false })
     }

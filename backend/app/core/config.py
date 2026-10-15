@@ -62,6 +62,28 @@ class Settings(BaseSettings):
     # "deep"   = Google Translate via deep-translator (fallback)
     TRANSLATION_BACKEND: str = "gemini"
 
+    # ── Assistant chat (project translation-memory chatbot) ────
+    # Deliberately separate from GEMINI_MODEL (the batch translation
+    # pipeline's model) so the two can be tuned/upgraded independently — the
+    # chat needs reliable function-calling, the batch pipeline doesn't.
+    # gemini-2.5-flash returns a hard 404 for new API keys as of this build
+    # ("no longer available to new users" — confirmed live against the real
+    # API, not just docs) — Google's own error pointed at gemini-3.6-flash.
+    GEMINI_CHAT_MODEL: str = "gemini-3.6-flash"
+    # ── ASR (speech-to-text) ────────────────────────────────────
+    # Deliberately separate from GEMINI_MODEL: translation works fine on a
+    # cheap "lite" model since the input is already clean text, but audio
+    # transcription accuracy needs a full multimodal model.
+    GEMINI_ASR_MODEL: str = "gemini-3.6-flash"
+    # Hard cap on tool-call round-trips within a single chat turn, so a model
+    # stuck in a call/respond/call-again loop can't run away indefinitely.
+    CHAT_MAX_TOOL_ROUNDS: int = 6
+    # How many prior messages to replay as context on each turn. Unbounded
+    # history would make every turn slower and more expensive the longer a
+    # project's conversation runs; this caps it at a size still generous
+    # enough to cover a real back-and-forth review session.
+    CHAT_HISTORY_LIMIT: int = 60
+
     # ── VoxCPM2 TTS — voice synthesis ────────────────────────
     # A Gradio app URL running VoxCPM (e.g. the Colab notebook's gradio.live
     # URL). Leave blank to use the free public HF Space below.
@@ -73,12 +95,20 @@ class Settings(BaseSettings):
 
     # ── Source separation (vocals / background, HF Space) ─────
     # Compute happens in the cloud via gradio_client; no local separation.
-    SEPARATION_HF_SPACE: str = "PatPatronus/vocal-separation"
-    # Model on the HF space: BS-RoFormer | Mel-RoFormer | HTDemucs-FT
-    SEPARATION_HF_MODEL: str = "BS-RoFormer"
+    SEPARATION_HF_SPACE: str = "csukuangfj/music-source-separation"
 
     # Gemini TTS speaking rate: 1.0 = normal, 1.25 = 25% faster, max 4.0
     GEMINI_TTS_SPEED: float = 1.25
+
+    # How many segments to synthesize concurrently during a batch/job TTS
+    # run. VoxCPM2's free HF Space fallback runs a real batching inference
+    # server (not a naive single-request queue), but its own maintainers'
+    # recommendation is to keep concurrency at 1 "unless you have profiled
+    # GPU memory headroom" on a Space shared with the public — we can't see
+    # from outside whether the live deployment honours that. Start low and
+    # raise it only after confirming wall-clock time actually drops without
+    # a rise in errors/timeouts for whichever backend you're using.
+    TTS_BATCH_CONCURRENCY: int = 2
 
     # ── Optional services ─────────────────────────────────────
     # HF token: raises rate limits / enables private Spaces for the
@@ -87,6 +117,16 @@ class Settings(BaseSettings):
 
     # ── CORS ──────────────────────────────────────────────────
     ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:5174,http://localhost:3000"
+
+    # ── Host check ────────────────────────────────────────────
+    # Host names the API answers to. It listens on 127.0.0.1 without a login,
+    # so a request naming any other host — a web page reaching it through DNS
+    # rebinding — is refused. Add a name here only if you really serve it under one.
+    ALLOWED_HOSTS: str = "127.0.0.1,localhost"
+
+    @property
+    def allowed_hosts(self) -> List[str]:
+        return [h.strip() for h in self.ALLOWED_HOSTS.split(",") if h.strip()]
 
     @property
     def cors_origins(self) -> List[str]:
