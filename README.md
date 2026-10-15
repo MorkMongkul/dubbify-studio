@@ -102,7 +102,7 @@ The release script builds the frontend, the backend binary (which embeds the fro
 
 ### Website
 
-`website/` is the public landing page with the download buttons: plain HTML, CSS and JavaScript, no build step. Preview it with `python3 -m http.server -d website 8080`. The *Website* workflow publishes it to GitHub Pages when it changes on `main` (one-time setup: Settings → Pages → Source: GitHub Actions). The download buttons use the latest **published** release; until one exists the page says the first release is on its way.
+`website/` is the public landing page with the download buttons: plain HTML, CSS and JavaScript, no build step. Preview it with `python3 -m http.server -d website 8080`. The *Website* workflow publishes it to GitHub Pages when it changes on `main` (one-time setup: Settings → Pages → Source: GitHub Actions). The download buttons use the latest **published** release; until one exists the page says the first release is on its way. The product shot (`website/assets/editor-*.webp`) is a real screenshot of the editor: a demo project (synthetic video and dialogue, mock mode) made in a backend started with a throwaway `DUBIFY_DATA_DIR`, so it never touches real projects. Retake it when the editor changes.
 
 ### Tests
 
