@@ -21,6 +21,9 @@ const LOG_ROTATE_BYTES: u64 = 10_000_000;
 #[derive(Default)]
 struct Backend {
     child: Mutex<Option<CommandChild>>,
+    /// This launch's backend origin, e.g. http://127.0.0.1:50303 — the only
+    /// web origin the window may load and the only one granted IPC.
+    origin: Mutex<Option<String>>,
     /// Set while the app quits, so the backend's exit isn't reported as a crash.
     exiting: AtomicBool,
     /// Set once the backend process has ended, so start-up stops waiting for it.
@@ -40,6 +43,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         // Native Save-As dialog for video export (used from the webview)
         .plugin(tauri_plugin_dialog::init())
+        .plugin(navigation_guard())
         .manage(Backend::default())
         .setup(|app| {
             app.handle().plugin(
@@ -81,6 +85,21 @@ fn start_backend(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // an earlier launch can neither block this one nor be mistaken for it.
     let port = free_port()?;
     let instance = instance_id();
+
+    // The editor is served by the backend, so it needs IPC (native Save
+    // dialog, backend events) — granted to this launch's exact origin only.
+    // A wildcard port would extend it to any other local server the window
+    // could be pointed at.
+    let origin = format!("http://127.0.0.1:{port}");
+    app.add_capability(
+        tauri::ipc::CapabilityBuilder::new("backend")
+            .remote(origin.clone())
+            .local(false)
+            .window("main")
+            .permission("core:default")
+            .permission("dialog:default"),
+    )?;
+    *app.state::<Backend>().origin.lock().unwrap() = Some(origin);
     let version = app.package_info().version.to_string();
     let log_path = rotated_log(&log_dir);
     append_log(&log_path, &format!("\n──── launch {instance} · v{version} · port {port} ────\n"));
@@ -164,6 +183,32 @@ fn start_backend(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         );
     });
     Ok(())
+}
+
+/// Keeps the window on the app's own pages: the bundled start-up page and
+/// this launch's backend. A stray link or redirect to any other server —
+/// local or remote — is refused. Dev builds load the Vite server, so the
+/// guard only applies to release builds.
+fn navigation_guard<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("navigation-guard")
+        .on_navigation(|webview, url| {
+            if cfg!(debug_assertions) {
+                return true;
+            }
+            match url.scheme() {
+                "tauri" | "about" => true,
+                "http" => webview
+                    .app_handle()
+                    .state::<Backend>()
+                    .origin
+                    .lock()
+                    .unwrap()
+                    .as_deref()
+                    .is_some_and(|origin| url.origin().ascii_serialization() == origin),
+                _ => false,
+            }
+        })
+        .build()
 }
 
 fn stop_backend(app: &AppHandle) {
