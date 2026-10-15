@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Tuple
 
 from app.core.config import settings
+from app.core.binaries import ffmpeg
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +134,7 @@ def _hf_separate_call(audio_path: str) -> Tuple[str, str]:
 async def _to_wav(src: str, dest: Path) -> bool:
     """Transcode any audio file to 44.1kHz stereo 16-bit WAV (the Space may return MP3)."""
     cmd = [
-        "ffmpeg", "-y", "-i", str(src),
+        ffmpeg(), "-y", "-i", str(src),
         "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le",
         str(dest),
     ]
@@ -186,7 +187,7 @@ async def _create_playback_m4a(source: Path, dest: Path) -> None:
     The WAV stems remain the source of truth for diarization and the final mix.
     """
     cmd = [
-        "ffmpeg", "-y",
+        ffmpeg(), "-y",
         "-i", str(source),
         "-c:a", "aac",
         "-b:a", "192k",
@@ -215,7 +216,7 @@ async def _create_preview(source: Path, dest: Path) -> None:
     Preview files are ~1.7MB (8kHz mono 110s) — Web Audio decodes them instantly.
     """
     cmd = [
-        "ffmpeg", "-y",
+        ffmpeg(), "-y",
         "-i", str(source),
         "-ar", "8000",      # 8kHz — enough resolution for waveform peaks
         "-ac", "1",         # mono

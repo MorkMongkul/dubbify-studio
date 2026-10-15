@@ -14,6 +14,7 @@ import os
 from typing import List
 from dataclasses import dataclass
 from app.core.config import settings
+from app.core.binaries import ffmpeg
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ async def _split_audio_into_chunks(
         actual_duration = min(chunk_duration_secs, total_duration - offset)
 
         cmd = [
-            "ffmpeg", "-y",
+            ffmpeg(), "-y",
             "-i", str(audio_path),
             "-ss", str(offset),
             "-t",  str(actual_duration),

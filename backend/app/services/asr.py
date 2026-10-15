@@ -44,6 +44,7 @@ import httpx
 
 from app.core.config import settings
 from app.services.diarizer import DiarizedSegment, get_audio_duration
+from app.core.binaries import ffmpeg
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +192,7 @@ async def _detect_speech_segments(audio_path: str) -> List[Tuple[float, float]]:
         return []
 
     cmd = [
-        "ffmpeg", "-i", audio_path,
+        ffmpeg(), "-i", audio_path,
         "-af", f"silencedetect=noise={SILENCE_NOISE_DB}:d={SILENCE_MIN_DURATION}",
         "-f", "null", "-",
     ]
@@ -217,7 +218,7 @@ async def _slice_chunk(audio_path: str, start: float, end: float, out_path: str)
     # FLAC (lossless) instead of WAV: a whole-scene request of WAV clips was
     # ~7 MB of base64 and hit upload timeouts on a slow connection.
     cmd = [
-        "ffmpeg", "-y", "-v", "error",
+        ffmpeg(), "-y", "-v", "error",
         "-ss", f"{start:.3f}", "-t", f"{max(0.05, end - start):.3f}",
         "-i", audio_path,
         "-ar", "16000", "-ac", "1", "-c:a", "flac",

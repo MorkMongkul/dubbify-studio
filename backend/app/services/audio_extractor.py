@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import logging
+from app.core.binaries import ffmpeg, ffprobe
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ async def probe_video(video_path: str) -> dict:
     Returns parsed JSON with all streams (video, audio, subtitle).
     """
     cmd = [
-        "ffprobe",
+        ffprobe(),
         "-v", "quiet",
         "-print_format", "json",
         "-show_streams",
@@ -118,7 +119,7 @@ async def extract_subtitle(
     output_path = output_dir / "subtitle.srt"
 
     cmd = [
-        "ffmpeg",
+        ffmpeg(),
         "-y",
         "-i", str(video_path),
         "-map", f"0:{selected['index']}",   # select specific subtitle stream
@@ -167,7 +168,7 @@ async def extract_audio(video_path: str, output_dir: str) -> str:
     audio_path = output_dir / f"{video_path.stem}_audio.wav"
 
     cmd = [
-        "ffmpeg",
+        ffmpeg(),
         "-y",                          # overwrite output if exists
         "-i", str(video_path),         # input file
         "-vn",                         # no video
@@ -205,7 +206,7 @@ async def get_video_duration(video_path: str) -> float:
         Duration in seconds, or 0.0 on failure
     """
     cmd = [
-        "ffprobe",
+        ffprobe(),
         "-v", "quiet",
         "-print_format", "json",
         "-show_format",
@@ -400,7 +401,9 @@ async def mix_dubbed_audio(
                     crop_label = f"shcrop{i}"
                     blurred_label = f"shblur{i}"
                     filter_parts.append(f"[{video_chain_label}]split=2[{base_label}][{crop_label}]")
-                    filter_parts.append(f"[{crop_label}]crop={target_w}:{target_h}:{px}:{py},boxblur=20:5[{blurred_label}]")
+                    # gblur, not boxblur: boxblur is GPL-only and missing from the
+                    # LGPL ffmpeg the desktop app ships. sigma 25 ≈ boxblur=20:5.
+                    filter_parts.append(f"[{crop_label}]crop={target_w}:{target_h}:{px}:{py},gblur=sigma=25[{blurred_label}]")
                     filter_parts.append(f"[{base_label}][{blurred_label}]overlay=x={px}:y={py}{enable}[{out_label}]")
                 else:
                     color = layer.get("color") or "black"
@@ -434,7 +437,7 @@ async def mix_dubbed_audio(
 
     def _build_cmd(video_codec_args: list[str]) -> list[str]:
         return [
-            "ffmpeg", "-y",
+            ffmpeg(), "-y",
             *inputs,
             "-filter_complex", filter_complex,
             "-map", video_map,       # original or overlaid video track
@@ -464,12 +467,18 @@ async def mix_dubbed_audio(
         # software x264 for a full film); fall back to libx264 if this ffmpeg
         # build lacks it or the hardware session fails.
         rc, err = -1, ""
+        hardware_err = ""
         if sys.platform == "darwin":
             rc, err = await _run(_build_cmd(["-c:v", "h264_videotoolbox", "-b:v", "6000k"]))
             if rc != 0:
+                hardware_err = err
                 logger.warning(f"h264_videotoolbox failed (falling back to libx264): {err[-300:]}")
         if rc != 0:
             rc, err = await _run(_build_cmd(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]))
+            if rc != 0 and hardware_err:
+                # The bundled LGPL ffmpeg has no x264, so its fallback error
+                # ("Unrecognized option 'preset'") hides the real cause.
+                err = f"VideoToolbox: {hardware_err[-1500:]}\nx264 fallback: {err[-500:]}"
 
     if rc != 0:
         raise RuntimeError(f"Audio mixing failed: {err}")
@@ -518,7 +527,7 @@ async def apply_audio_effects(
     else:
         filter_str = ",".join(filters)
         cmd = [
-            "ffmpeg", "-y",
+            ffmpeg(), "-y",
             "-i", input_path,
             "-filter_complex", f"[0:a]{filter_str}[out]",
             "-map", "[out]",

@@ -101,3 +101,5 @@ frontend/src-tauri/gen/schemas/
 backend/backups/
 .claude/settings.local.json
 .playwright-mcp/
+# Static ffmpeg/ffprobe builds bundled into desktop releases (fetched per machine)
+vendor/ffmpeg/

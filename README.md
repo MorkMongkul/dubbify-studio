@@ -86,11 +86,22 @@ Run both servers together; the Vite proxy handles all backend calls. See [fronte
 ### Desktop (Tauri)
 
 ```bash
-cd backend && ./build_sidecar.sh    # PyInstaller sidecar → frontend/src-tauri/binaries/
-cd frontend && npm run tauri build  # → .app + .dmg (Apple Silicon)
+# one-time: a build venv with the SAME chip architecture as the target
+cd backend && python3 -m venv venv_clean && venv_clean/bin/pip install -r requirements.txt -r requirements-build.txt
+
+scripts/release-macos.sh aarch64-apple-darwin                         # Apple Silicon → .app + .dmg
+VENV=venv_clean_x86_64 scripts/release-macos.sh x86_64-apple-darwin   # Intel (x86_64 venv made under Rosetta)
 ```
 
-Rebuild the sidecar after backend **or** frontend changes — it bundles `frontend/dist` and `backend/.env` into the binary.
+The release script builds the frontend, the backend binary (which embeds the frontend) and the Tauri bundle in one go, so a stale UI can't ship. Nothing secret is built in: each user enters their API keys in **Settings**, and the app keeps its database, videos, keys (`settings.env`, owner-only) and logs per user in `~/Library/Application Support/studio.dubify.desktop` and `~/Library/Logs/studio.dubify.desktop`. No web server is needed — every Mac runs its own backend; the AI services are cloud APIs.
+
+- **ffmpeg** — `scripts/build-ffmpeg.sh <target>` builds a bundleable ffmpeg once per architecture (official source, LGPL only — no GPL parts; H.264 export uses Apple's VideoToolbox) into `vendor/ffmpeg/<target>/`; the release script then ships it with its license. Without it the app uses the Mac's own ffmpeg (e.g. Homebrew — found even when the app is opened from Finder) and Settings warns when there is none.
+- **Release builds for both chips** — push a version tag (`git tag v0.1.0 && git push origin v0.1.0`) and the *Desktop release* GitHub Actions workflow builds Apple Silicon and Intel DMGs and drafts a GitHub Release with them plus the FFmpeg source. It can also be started by hand from the Actions tab. The DMGs are published as `Dubify-Studio-Apple-Silicon.dmg` and `Dubify-Studio-Intel.dmg` (fixed names the website links to); publishing the draft makes it the version the website offers.
+- **Signing / notarization** — with `APPLE_SIGNING_IDENTITY` plus `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` (locally, or as repository secrets for CI, together with `APPLE_CERTIFICATE`/`APPLE_CERTIFICATE_PASSWORD`) builds are signed and notarized. Without a Developer ID they are signed ad-hoc: on another Mac, open the app once, then allow it in **System Settings → Privacy & Security → Open Anyway**.
+
+### Website
+
+`website/` is the public landing page with the download buttons: plain HTML, CSS and JavaScript, no build step. Preview it with `python3 -m http.server -d website 8080`. The *Website* workflow publishes it to GitHub Pages when it changes on `main` (one-time setup: Settings → Pages → Source: GitHub Actions). The download buttons use the latest **published** release; until one exists the page says the first release is on its way.
 
 ### Tests
 
@@ -130,7 +141,7 @@ The product targets **Chinese → Khmer** and the UI ships that pair. The transl
 
 ## Known limitations
 
-- The desktop build currently targets **macOS Apple Silicon** only, and the sidecar embeds `backend/.env` (API keys + machine-specific paths) — built binaries are personal; don't distribute them.
+- Desktop builds are per architecture (Apple Silicon and Intel are separate downloads); the Intel build has to be made with an x86_64 Python (Rosetta).
 - Burned-in subtitles render with Noto Sans Khmer, which has **no Latin glyphs** — Khmer, digits, and punctuation render; Latin letters inside a line are dropped.
 - Subtitle sizing is deliberately automatic: you set the font size and the text-column width, and each line's block grows upward from a fixed bottom anchor. There's no manual box height — a single hand-drawn rectangle can't fit every segment's translation.
 - The "spk" max-speakers input next to Analyze is accepted but ignored (the MOSS Space has no speaker-count parameter).

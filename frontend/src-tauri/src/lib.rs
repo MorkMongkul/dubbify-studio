@@ -1,38 +1,50 @@
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::net::TcpStream;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tauri::Manager;
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
-/// Where the sidecar's stdout/stderr get mirrored so it's inspectable even
-/// when the app was launched by double-clicking (no attached terminal).
-fn sidecar_log_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let dir = PathBuf::from(home).join("Library/Logs/DubifyStudio");
-    let _ = std::fs::create_dir_all(&dir);
-    dir.join("sidecar.log")
+/// The first launch unpacks the bundled Python runtime, which can take a while.
+const READY_TIMEOUT: Duration = Duration::from_secs(180);
+/// Homebrew's folders: an app opened from Finder or the Dock gets
+/// PATH=/usr/bin:/bin:/usr/sbin:/sbin, so a Homebrew ffmpeg would be invisible.
+const HOMEBREW_PATHS: &str = "/opt/homebrew/bin:/usr/local/bin";
+/// The sidecar's stdout/stderr log is rotated past this size.
+const LOG_ROTATE_BYTES: u64 = 10_000_000;
+
+#[derive(Default)]
+struct Backend {
+    child: Mutex<Option<CommandChild>>,
+    /// This launch's backend origin, e.g. http://127.0.0.1:50303 — the only
+    /// web origin the window may load and the only one granted IPC.
+    origin: Mutex<Option<String>>,
+    /// Set while the app quits, so the backend's exit isn't reported as a crash.
+    exiting: AtomicBool,
+    /// Set once the backend process has ended, so start-up stops waiting for it.
+    terminated: AtomicBool,
 }
 
-// Fixed local port for the bundled FastAPI sidecar. Chosen to avoid common
-// dev-server collisions (Vite's 5173/5174, the backend's own dev port 8000).
-const SIDECAR_PORT: u16 = 8756;
-
-struct SidecarState(Arc<Mutex<Option<CommandChild>>>);
+/// Payload of the `backend-failed` / `backend-stopped` events the window listens for.
+#[derive(Clone, serde::Serialize)]
+struct BackendProblem {
+    message: String,
+    log_dir: String,
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let sidecar_state = SidecarState(Arc::new(Mutex::new(None)));
-
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         // Native Save-As dialog for video export (used from the webview)
         .plugin(tauri_plugin_dialog::init())
-        .manage(sidecar_state)
+        .plugin(navigation_guard())
+        .manage(Backend::default())
         .setup(|app| {
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
@@ -43,88 +55,227 @@ pub fn run() {
             if cfg!(debug_assertions) {
                 // Dev mode: the frontend is served by `npm run dev` (Vite) at
                 // devUrl, proxying /api to a backend the developer runs
-                // separately (`fastapi dev` / `uvicorn`) — same workflow as
-                // before Tauri. No sidecar to spawn here.
+                // separately (`uvicorn app.main:app`). No sidecar to spawn here.
                 return Ok(());
             }
-
-            // Production: spawn the bundled Python/FastAPI sidecar, wait for
-            // it to accept connections, then point the window at it so all
-            // of the frontend's existing relative paths (/api/v1, /uploads,
-            // video_url, output_url, ...) keep resolving against the same
-            // origin exactly like they do today.
-            let (mut rx, child) = app
-                .shell()
-                .sidecar("dubify-backend")
-                .expect("failed to create sidecar command")
-                .env("PORT", SIDECAR_PORT.to_string())
-                // Without this Python block-buffers stdout when it's a pipe, so
-                // the sidecar's startup log sat unflushed and sidecar.log read
-                // as empty — making a slow/failed launch impossible to diagnose.
-                .env("PYTHONUNBUFFERED", "1")
-                .spawn()
-                .expect("failed to spawn dubify-backend sidecar");
-
-            let log_path = sidecar_log_path();
-            log::info!("dubify-backend sidecar log: {}", log_path.display());
-            tauri::async_runtime::spawn(async move {
-                let mut file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_path)
-                    .ok();
-                while let Some(event) = rx.recv().await {
-                    let line = match event {
-                        CommandEvent::Stdout(bytes) => Some(String::from_utf8_lossy(&bytes).to_string()),
-                        CommandEvent::Stderr(bytes) => Some(String::from_utf8_lossy(&bytes).to_string()),
-                        CommandEvent::Error(err) => Some(format!("[sidecar error] {err}\n")),
-                        CommandEvent::Terminated(payload) => {
-                            Some(format!("[sidecar terminated] {:?}\n", payload))
-                        }
-                        _ => None,
-                    };
-                    if let (Some(line), Some(f)) = (line, file.as_mut()) {
-                        let _ = f.write_all(line.as_bytes());
-                        let _ = f.flush();
-                    }
-                }
-            });
-
-            let state = app.state::<SidecarState>();
-            *state.0.lock().unwrap() = Some(child);
-
-            let window = app
-                .get_webview_window("main")
-                .expect("main window not found");
-
-            std::thread::spawn(move || {
-                let addr = format!("127.0.0.1:{SIDECAR_PORT}");
-                // A cold Neon database can take ~25s before the sidecar binds,
-                // and a very cold one longer — 60s was tight enough to lose the
-                // race and strand the webview on the asset protocol, where the
-                // app renders but every /api call resolves to index.html.
-                for _ in 0..360 {
-                    if TcpStream::connect(&addr).is_ok() {
-                        let url = format!("http://127.0.0.1:{SIDECAR_PORT}/");
-                        let _ = window.eval(&format!("window.location.replace('{url}')"));
-                        return;
-                    }
-                    std::thread::sleep(Duration::from_millis(500));
-                }
-                log::error!("dubify-backend sidecar did not become ready within 180s");
-            });
-
+            start_backend(app.handle())?;
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                let state = app_handle.state::<SidecarState>();
-                let child_opt = state.0.lock().unwrap().take();
-                if let Some(child) = child_opt {
-                    let _ = child.kill();
-                }
+        .run(|app, event| {
+            // Cmd+Q arrives as Exit without ExitRequested on macOS — stop the
+            // backend on either, or it would outlive the app.
+            if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+                stop_backend(app);
             }
         });
+}
+
+/// Spawn the bundled FastAPI sidecar, then point the window at it once THIS
+/// launch's backend answers. Everything the user creates lives in the
+/// app-data folder; API keys come from the settings file there.
+fn start_backend(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let data_dir = app.path().app_data_dir()?;
+    let log_dir = app.path().app_log_dir()?;
+    fs::create_dir_all(&data_dir)?;
+    fs::create_dir_all(&log_dir)?;
+
+    // A fresh free port and instance id per launch: a backend left over from
+    // an earlier launch can neither block this one nor be mistaken for it.
+    let port = free_port()?;
+    let instance = instance_id();
+
+    // The editor is served by the backend, so it needs IPC (native Save
+    // dialog, backend events) — granted to this launch's exact origin only.
+    // A wildcard port would extend it to any other local server the window
+    // could be pointed at.
+    let origin = format!("http://127.0.0.1:{port}");
+    app.add_capability(
+        tauri::ipc::CapabilityBuilder::new("backend")
+            .remote(origin.clone())
+            .local(false)
+            .window("main")
+            .permission("core:default")
+            .permission("dialog:default"),
+    )?;
+    *app.state::<Backend>().origin.lock().unwrap() = Some(origin);
+    let version = app.package_info().version.to_string();
+    let log_path = rotated_log(&log_dir);
+    append_log(&log_path, &format!("\n──── launch {instance} · v{version} · port {port} ────\n"));
+
+    let mut command = app
+        .shell()
+        .sidecar("dubify-backend")?
+        .env("PORT", port.to_string())
+        // Without this Python block-buffers stdout into the pipe and the log stays empty.
+        .env("PYTHONUNBUFFERED", "1")
+        .env("PATH", path_with_homebrew())
+        .env("DUBIFY_DATA_DIR", &data_dir)
+        .env("DUBIFY_LOG_DIR", &log_dir)
+        .env("DUBIFY_INSTANCE_ID", &instance)
+        .env("DUBIFY_APP_VERSION", &version)
+        // The backend watches its stdin and exits when this app is gone.
+        .env("DUBIFY_EXIT_WITH_PARENT", "1");
+    for (tool, var) in [("ffmpeg", "FFMPEG_PATH"), ("ffprobe", "FFPROBE_PATH")] {
+        if let Some(path) = bundled_tool(tool) {
+            command = command.env(var, path);
+        }
+    }
+    let (mut rx, child) = command.spawn()?;
+    *app.state::<Backend>().child.lock().unwrap() = Some(child);
+    log::info!("dubify-backend started on port {port}; logs in {}", log_dir.display());
+
+    // Mirror the sidecar's output to a log file, and tell the window if it dies.
+    let handle = app.clone();
+    let log_dir_text = log_dir.display().to_string();
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
+                    append_log(&log_path, &String::from_utf8_lossy(&bytes));
+                }
+                CommandEvent::Error(err) => append_log(&log_path, &format!("[sidecar error] {err}\n")),
+                CommandEvent::Terminated(payload) => {
+                    append_log(&log_path, &format!("[sidecar terminated] {payload:?}\n"));
+                    let backend = handle.state::<Backend>();
+                    backend.terminated.store(true, Ordering::SeqCst);
+                    if !backend.exiting.load(Ordering::SeqCst) {
+                        let _ = handle.emit(
+                            "backend-stopped",
+                            BackendProblem {
+                                message: format!(
+                                    "The backend stopped unexpectedly (exit code {}).",
+                                    payload.code.map_or("unknown".to_string(), |c| c.to_string())
+                                ),
+                                log_dir: log_dir_text.clone(),
+                            },
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let window = app.get_webview_window("main").ok_or("main window not found")?;
+    let handle = app.clone();
+    let log_dir_text = log_dir.display().to_string();
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        while started.elapsed() < READY_TIMEOUT {
+            if handle.state::<Backend>().terminated.load(Ordering::SeqCst) {
+                return; // already reported as backend-stopped
+            }
+            if backend_ready(port, &instance) {
+                let _ = window.eval(&format!("window.location.replace('http://127.0.0.1:{port}/')"));
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        log::error!("dubify-backend did not become ready within {}s", READY_TIMEOUT.as_secs());
+        let _ = window.emit(
+            "backend-failed",
+            BackendProblem {
+                message: format!("The backend didn't start within {} seconds.", READY_TIMEOUT.as_secs()),
+                log_dir: log_dir_text,
+            },
+        );
+    });
+    Ok(())
+}
+
+/// Keeps the window on the app's own pages: the bundled start-up page and
+/// this launch's backend. A stray link or redirect to any other server —
+/// local or remote — is refused. Dev builds load the Vite server, so the
+/// guard only applies to release builds.
+fn navigation_guard<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("navigation-guard")
+        .on_navigation(|webview, url| {
+            if cfg!(debug_assertions) {
+                return true;
+            }
+            match url.scheme() {
+                "tauri" | "about" => true,
+                "http" => webview
+                    .app_handle()
+                    .state::<Backend>()
+                    .origin
+                    .lock()
+                    .unwrap()
+                    .as_deref()
+                    .is_some_and(|origin| url.origin().ascii_serialization() == origin),
+                _ => false,
+            }
+        })
+        .build()
+}
+
+fn stop_backend(app: &AppHandle) {
+    let backend = app.state::<Backend>();
+    backend.exiting.store(true, Ordering::SeqCst);
+    // Killing the child also drops our end of its stdin; the Python process
+    // (a child of the PyInstaller launcher) sees end-of-file and exits too.
+    let child = backend.child.lock().unwrap().take();
+    if let Some(child) = child {
+        let _ = child.kill();
+    }
+}
+
+fn free_port() -> std::io::Result<u16> {
+    Ok(TcpListener::bind("127.0.0.1:0")?.local_addr()?.port())
+}
+
+fn instance_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    format!("{nanos:x}-{:x}", std::process::id())
+}
+
+/// True once the backend on `port` answers /health/ready with this launch's
+/// instance id — anything else listening there doesn't count.
+fn backend_ready(port: u16, instance: &str) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(300)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let request = format!(
+        "GET /health/ready HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    response.contains(" 200 ") && response.contains(instance)
+}
+
+fn path_with_homebrew() -> String {
+    match std::env::var("PATH") {
+        Ok(path) if !path.is_empty() => format!("{path}:{HOMEBREW_PATHS}"),
+        _ => format!("/usr/bin:/bin:/usr/sbin:/sbin:{HOMEBREW_PATHS}"),
+    }
+}
+
+/// ffmpeg/ffprobe bundled next to the app's executable (Contents/MacOS), if this build ships them.
+fn bundled_tool(name: &str) -> Option<PathBuf> {
+    let path = std::env::current_exe().ok()?.parent()?.join(name);
+    path.is_file().then_some(path)
+}
+
+fn rotated_log(log_dir: &Path) -> PathBuf {
+    let path = log_dir.join("sidecar.log");
+    if fs::metadata(&path).map(|m| m.len() > LOG_ROTATE_BYTES).unwrap_or(false) {
+        let _ = fs::rename(&path, log_dir.join("sidecar.log.1"));
+    }
+    path
+}
+
+fn append_log(path: &Path, text: &str) {
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = file.write_all(text.as_bytes());
+    }
 }

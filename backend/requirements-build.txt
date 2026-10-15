@@ -1,0 +1,2 @@
+# Tools for building the desktop app's backend binary (not needed to run it).
+pyinstaller==6.21.0

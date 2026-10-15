@@ -50,3 +50,37 @@ export async function chooseVideoSavePath(defaultName: string): Promise<SaveTarg
     }
   }
 }
+
+/** Why the bundled backend isn't available — sent by the desktop shell. */
+export interface BackendProblem {
+  message: string
+  /** Folder holding sidecar.log and backend.log. */
+  log_dir: string
+}
+
+/**
+ * Subscribe to the desktop shell's `backend-failed` (never started) and
+ * `backend-stopped` (crashed mid-session) events. A no-op in the browser.
+ * Returns an unsubscribe function.
+ */
+export function onBackendProblem(handler: (problem: BackendProblem) => void): () => void {
+  if (!isDesktop()) return () => {}
+  let disposed = false
+  const unlisteners: Array<() => void> = []
+  void import('@tauri-apps/api/event').then(({ listen }) => {
+    for (const name of ['backend-failed', 'backend-stopped']) {
+      listen<BackendProblem>(name, (event) => handler(event.payload))
+        .then((unlisten) => (disposed ? unlisten() : unlisteners.push(unlisten)))
+        .catch((err) => console.warn(`Could not listen for ${name}`, err))
+    }
+  })
+  return () => {
+    disposed = true
+    unlisteners.forEach((unlisten) => unlisten())
+  }
+}
+
+/** True on the desktop app's built-in start-up page, before it moves to the backend. */
+export function isDesktopStartupPage(): boolean {
+  return isDesktop() && window.location.protocol === 'tauri:'
+}

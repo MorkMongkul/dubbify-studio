@@ -2,9 +2,9 @@
 // React Query hooks — data fetching, caching, polling
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions, chat } from '@/api/client'
+import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions, chat, appSettings } from '@/api/client'
 import type { VoiceCreateInput } from '@/api/client'
-import type { Segment, ProjectCreate, ProjectUpdate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice, OverlayUpdate } from '@/types'
+import type { Segment, ProjectCreate, ProjectUpdate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice, OverlayUpdate, AppSettingsUpdate } from '@/types'
 
 // ── Health ────────────────────────────────────────────────────
 export function useHealth() {
@@ -560,5 +560,18 @@ export function useRejectEdit() {
     onSuccess: (_, { projectId }) => {
       qc.invalidateQueries({ queryKey: ['chat-pending-edits', projectId] })
     },
+  })
+}
+
+// ── App settings (desktop Settings panel) ─────────────────────
+export function useAppSettings() {
+  return useQuery({ queryKey: ['app-settings'], queryFn: appSettings.get })
+}
+
+export function useUpdateAppSettings() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (data: AppSettingsUpdate) => appSettings.update(data),
+    onSuccess: (data) => qc.setQueryData(['app-settings'], data),
   })
 }
