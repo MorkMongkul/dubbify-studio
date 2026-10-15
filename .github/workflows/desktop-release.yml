@@ -8,10 +8,16 @@ name: Desktop release
 # or from the Actions tab ("Run workflow"), which only uploads the DMGs as
 # build artifacts.
 #
-# Builds are unsigned (other Macs need right-click → Open) until these
-# repository secrets exist: APPLE_CERTIFICATE (base64 .p12),
-# APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, and for notarization
-# APPLE_ID, APPLE_PASSWORD (app-specific password), APPLE_TEAM_ID.
+# The website's download buttons point at
+#   releases/latest/download/Dubify-Studio-Apple-Silicon.dmg (and -Intel.dmg),
+# so the DMGs are published under those fixed names. "latest" only counts
+# published releases: the website offers a version once its draft is published.
+#
+# Builds are ad-hoc signed (on other Macs people confirm the app once, under
+# System Settings → Privacy & Security → Open Anyway) until these repository
+# secrets exist: APPLE_CERTIFICATE (base64 .p12), APPLE_CERTIFICATE_PASSWORD,
+# APPLE_SIGNING_IDENTITY, and for notarization APPLE_ID, APPLE_PASSWORD
+# (app-specific password), APPLE_TEAM_ID.
 
 on:
   push:
@@ -107,6 +113,14 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      # Tauri names them "Dubify Studio_<version>_<arch>.dmg"; the website
+      # links to fixed names that stay the same from one version to the next.
+      - name: Give the DMGs stable names
+        run: |
+          mv dist/*_aarch64.dmg dist/Dubify-Studio-Apple-Silicon.dmg
+          mv dist/*_x64.dmg dist/Dubify-Studio-Intel.dmg
+          ls -l dist
 
       # The LGPL is satisfied by offering the FFmpeg source from the same place
       # as the binaries that include it.
