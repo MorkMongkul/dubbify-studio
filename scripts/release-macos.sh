@@ -19,6 +19,11 @@
 #   APPLE_SIGNING_IDENTITY   "Developer ID Application: <Name> (<TEAMID>)"
 #   APPLE_ID, APPLE_PASSWORD (an app-specific password), APPLE_TEAM_ID
 #     — or APPLE_API_KEY, APPLE_API_ISSUER, APPLE_API_KEY_PATH
+#
+# In-app updates: with TAURI_SIGNING_PRIVATE_KEY (and its _PASSWORD) set, the
+# build also makes a signed update package ("Dubify Studio.app.tar.gz" + .sig)
+# that installed copies accept. CI requires it; a local build without it just
+# leaves the update package out.
 # Extra flags after the target go to `tauri build` (e.g. --bundles app).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -31,7 +36,8 @@ cd "$ROOT"
 # certificate and notarize with an empty Apple ID, failing the build. Only
 # non-empty ones count.
 for var in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
-           APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH; do
+           APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH \
+           TAURI_SIGNING_PRIVATE_KEY; do
   if [ -z "${!var:-}" ]; then unset "$var"; fi
 done
 
@@ -65,9 +71,20 @@ if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
   echo "note: no Developer ID (APPLE_SIGNING_IDENTITY) — signing ad-hoc; other Macs must allow the app once." >&2
 fi
 
-(cd frontend && npm run tauri build -- --target "$TARGET" --config "$EXTRA_CONFIG" "$@")
+TAURI_ARGS=(--target "$TARGET" --config "$EXTRA_CONFIG")
+if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+  if [ -n "${CI:-}" ]; then
+    echo "error: TAURI_SIGNING_PRIVATE_KEY is not set — installed apps couldn't update to this build." >&2
+    exit 1
+  fi
+  echo "note: no TAURI_SIGNING_PRIVATE_KEY — building without an update package." >&2
+  TAURI_ARGS+=(--config '{"bundle":{"createUpdaterArtifacts":false}}')
+fi
+
+(cd frontend && npm run tauri build -- "${TAURI_ARGS[@]}" "$@")
 
 echo
 echo "▶ Built:"
 ls -1d "frontend/src-tauri/target/$TARGET/release/bundle/macos/"*.app 2>/dev/null || true
 ls -1 "frontend/src-tauri/target/$TARGET/release/bundle/dmg/"*.dmg 2>/dev/null || true
+ls -1 "frontend/src-tauri/target/$TARGET/release/bundle/macos/"*.app.tar.gz* 2>/dev/null || true

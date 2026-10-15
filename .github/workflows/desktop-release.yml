@@ -13,6 +13,10 @@ name: Desktop release
 # so the DMGs are published under those fixed names. "latest" only counts
 # published releases: the website offers a version once its draft is published.
 #
+# Installed copies update themselves: they read latest.json from the latest
+# release and install the update package for their chip, signed with the
+# TAURI_SIGNING_PRIVATE_KEY secret (the app has the matching public key).
+#
 # Builds are ad-hoc signed (on other Macs people confirm the app once, under
 # System Settings → Privacy & Security → Open Anyway) until these repository
 # secrets exist: APPLE_CERTIFICATE (base64 .p12), APPLE_CERTIFICATE_PASSWORD,
@@ -38,8 +42,10 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             runner: macos-15          # Apple Silicon
+            label: Apple-Silicon
           - target: x86_64-apple-darwin
             runner: macos-15-intel    # Intel
+            label: Intel
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
@@ -89,12 +95,26 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Signs the update package that installed copies download (in-app updates).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: scripts/release-macos.sh ${{ matrix.target }}
+
+      # The DMG for new installs, and the signed update package (named per chip
+      # so the two builds don't collide) for copies that are already installed.
+      - name: Collect the files to release
+        run: |
+          bundle="frontend/src-tauri/target/${{ matrix.target }}/release/bundle"
+          mkdir -p out
+          cp "$bundle"/dmg/*.dmg out/
+          cp "$bundle/macos/Dubify Studio.app.tar.gz" "out/Dubify-Studio-${{ matrix.label }}.app.tar.gz"
+          cp "$bundle/macos/Dubify Studio.app.tar.gz.sig" "out/Dubify-Studio-${{ matrix.label }}.app.tar.gz.sig"
+          ls -l out
 
       - uses: actions/upload-artifact@v7
         with:
           name: dubify-studio-${{ matrix.target }}
-          path: frontend/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          path: out/*
           if-no-files-found: error
 
   release:
@@ -121,6 +141,13 @@ jobs:
           mv dist/*_aarch64.dmg dist/Dubify-Studio-Apple-Silicon.dmg
           mv dist/*_x64.dmg dist/Dubify-Studio-Intel.dmg
           ls -l dist
+
+      # Installed copies read releases/latest/download/latest.json to find this
+      # version and the update package for their chip.
+      - name: Write the update manifest
+        run: |
+          python3 scripts/updater-manifest.py "$GITHUB_REF_NAME" dist > dist/latest.json
+          cat dist/latest.json
 
       # The LGPL is satisfied by offering the FFmpeg source from the same place
       # as the binaries that include it.

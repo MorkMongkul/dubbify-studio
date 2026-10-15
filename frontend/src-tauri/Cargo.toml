@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.0"
+version = "0.1.1"
 description = "Dubify Studio desktop app"
 authors = ["Dubify Studio"]
 license = ""
@@ -25,3 +25,9 @@ tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
+
+[features]
+# Test builds only: answers the update dialogs "yes" so an update can be
+# tested end to end without clicking. Never enabled for releases.
+updater-e2e = []

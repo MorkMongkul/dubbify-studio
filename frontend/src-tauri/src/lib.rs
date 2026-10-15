@@ -6,9 +6,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use tauri::menu::{Menu, MenuItem, MenuItemKind};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+
+mod updater;
 
 /// The first launch unpacks the bundled Python runtime, which can take a while.
 const READY_TIMEOUT: Duration = Duration::from_secs(180);
@@ -17,6 +20,9 @@ const READY_TIMEOUT: Duration = Duration::from_secs(180);
 const HOMEBREW_PATHS: &str = "/opt/homebrew/bin:/usr/local/bin";
 /// The sidecar's stdout/stderr log is rotated past this size.
 const LOG_ROTATE_BYTES: u64 = 10_000_000;
+/// The launch update check waits until the editor has loaded, so its prompt
+/// doesn't cover the start-up screen.
+const UPDATE_CHECK_DELAY: Duration = Duration::from_secs(4);
 
 #[derive(Default)]
 struct Backend {
@@ -43,7 +49,14 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         // Native Save-As dialog for video export (used from the webview)
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(navigation_guard())
+        .menu(app_menu)
+        .on_menu_event(|app, event| {
+            if event.id() == updater::MENU_ID {
+                updater::check(app, updater::Trigger::Menu);
+            }
+        })
         .manage(Backend::default())
         .setup(|app| {
             app.handle().plugin(
@@ -168,7 +181,9 @@ fn start_backend(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 return; // already reported as backend-stopped
             }
             if backend_ready(port, &instance) {
-                let _ = window.eval(&format!("window.location.replace('http://127.0.0.1:{port}/')"));
+                let _ = window.eval(format!("window.location.replace('http://127.0.0.1:{port}/')"));
+                std::thread::sleep(UPDATE_CHECK_DELAY);
+                updater::check(&handle, updater::Trigger::Launch);
                 return;
             }
             std::thread::sleep(Duration::from_millis(400));
@@ -209,6 +224,16 @@ fn navigation_guard<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             }
         })
         .build()
+}
+
+/// The standard macOS menus, plus "Check for Updates…" under About in the app menu.
+fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let menu = Menu::default(app)?;
+    if let Some(MenuItemKind::Submenu(app_submenu)) = menu.items()?.into_iter().next() {
+        let check = MenuItem::with_id(app, updater::MENU_ID, "Check for Updates…", true, None::<&str>)?;
+        app_submenu.insert(&check, 1)?;
+    }
+    Ok(menu)
 }
 
 fn stop_backend(app: &AppHandle) {
