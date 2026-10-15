@@ -37,7 +37,9 @@ Run both servers together for dev; the Vite proxy handles all backend calls (fro
 ### Desktop (Tauri)
 
 ```bash
+scripts/build-ffmpeg.sh aarch64-apple-darwin    # once per arch: LGPL-only ffmpeg/ffprobe → vendor/ffmpeg/<target>/ (bundled by the release script)
 scripts/release-macos.sh aarch64-apple-darwin   # frontend → backend sidecar (embeds frontend/dist) → .app/.dmg; Intel: VENV=<x86_64 venv> … x86_64-apple-darwin
+# CI: pushing a v* tag runs .github/workflows/desktop-release.yml (macos-15 + macos-15-intel) → draft GitHub Release
 cd frontend && npm run tauri dev                # dev shell: uses Vite + a backend you run yourself (no sidecar)
 ```
 
@@ -93,4 +95,5 @@ Backend Pydantic schemas (`app/schemas/schemas.py`) ↔ frontend types (`src/typ
 - Routes take the DB session as `Depends(get_db, scope="function")`: with the default request scope the session (and SQLite's only connection) stays open until the route's BackgroundTasks finish, starving them. Keep that scope on new routes.
 - The API has no login and listens on 127.0.0.1: `TrustedHostMiddleware` (`ALLOWED_HOSTS`) blocks DNS rebinding, the SPA catch-all in `main.py` only serves files inside the build, a client-supplied `tts_audio_path` must be inside the segment's own `tts/` folder, `export_path` must be an `.mp4` under the home folder or an external drive, and overlay colours are validated (they go into ffmpeg filter graphs). Never accept other server file paths from the client.
 - SQLite dev DB is capped at one writer (pool_size=1, WAL); long background pipelines write status updates, so avoid adding long-lived transactions — commit (releasing the connection) before any long `await` on an outbound AI call, as the TTS paths do.
+- The desktop app bundles an **LGPL-only ffmpeg** (`scripts/build-ffmpeg.sh`): no GPL filters (e.g. `boxblur`, `eq`, `hqdn3d`, `smartblur`) and no x264 — H.264 goes through `h264_videotoolbox`. Any new filter or encoder must exist in that build, or exports fail in the desktop app only (`test_export_filters.py` guards the blur box; check with `vendor/ffmpeg/<target>/ffmpeg -filters`).
 - `backend/uploads/` holds all media (per-project/job subdirectories) and is served at `/uploads`; segment/voice audio paths in the DB point into it.

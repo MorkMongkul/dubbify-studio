@@ -8,13 +8,14 @@
 # ffmpeg → Tauri bundle (.app and .dmg) under
 # frontend/src-tauri/target/<target>/release/bundle/.
 #
-# Bundled ffmpeg: put builds for this architecture at
-# vendor/ffmpeg/<target>/ffmpeg and .../ffprobe (not committed). Without them
-# the app uses an ffmpeg installed on the Mac (e.g. Homebrew) and tells the
-# user in Settings when there is none.
+# Bundled ffmpeg: build it once per architecture with scripts/build-ffmpeg.sh
+# (LGPL, no GPL parts) into vendor/ffmpeg/<target>/ (not committed). Without
+# it the app relies on an ffmpeg installed on the Mac (e.g. Homebrew) and says
+# so in Settings when there is none.
 #
 # Signing and notarization — needed so other Macs open the app without a
-# Gatekeeper block — happen automatically when these are set:
+# Gatekeeper prompt — happen automatically when these are set (otherwise the
+# app is signed ad-hoc and users allow it once in Privacy & Security):
 #   APPLE_SIGNING_IDENTITY   "Developer ID Application: <Name> (<TEAMID>)"
 #   APPLE_ID, APPLE_PASSWORD (an app-specific password), APPLE_TEAM_ID
 #     — or APPLE_API_KEY, APPLE_API_ISSUER, APPLE_API_KEY_PATH
@@ -35,22 +36,27 @@ echo "▶ Dubify Studio $VERSION ($(git rev-parse --short HEAD)) for $TARGET"
 SKIP_FRONTEND_BUILD=1 VENV="${VENV:-venv_clean}" backend/build_sidecar.sh "$TARGET"
 
 BIN_DIR=frontend/src-tauri/binaries
-EXTERNAL='["binaries/dubify-backend"]'
+EXTRA_CONFIG='{"bundle":{"externalBin":["binaries/dubify-backend"]}}'
 if [ -x "vendor/ffmpeg/$TARGET/ffmpeg" ] && [ -x "vendor/ffmpeg/$TARGET/ffprobe" ]; then
   cp "vendor/ffmpeg/$TARGET/ffmpeg" "$BIN_DIR/ffmpeg-$TARGET"
   cp "vendor/ffmpeg/$TARGET/ffprobe" "$BIN_DIR/ffprobe-$TARGET"
-  EXTERNAL='["binaries/dubify-backend","binaries/ffmpeg","binaries/ffprobe"]'
-  echo "▶ Bundling ffmpeg from vendor/ffmpeg/$TARGET"
+  # The LGPL requires its text (and the build details) to ship with the binaries.
+  EXTRA_CONFIG="{\"bundle\":{\"externalBin\":[\"binaries/dubify-backend\",\"binaries/ffmpeg\",\"binaries/ffprobe\"],\"resources\":{\"THIRD-PARTY-NOTICES.md\":\"THIRD-PARTY-NOTICES.md\",\"../../vendor/ffmpeg/$TARGET/LICENSE.txt\":\"licenses/ffmpeg-LICENSE.txt\",\"../../vendor/ffmpeg/$TARGET/BUILD.txt\":\"licenses/ffmpeg-BUILD.txt\"}}}"
+  echo "▶ Bundling ffmpeg from vendor/ffmpeg/$TARGET (build it with scripts/build-ffmpeg.sh)"
 else
-  echo "note: no vendor/ffmpeg/$TARGET — the app will use the Mac's own ffmpeg." >&2
+  echo "note: no vendor/ffmpeg/$TARGET — the app will rely on the Mac's own ffmpeg." >&2
+  echo "      Build a bundleable one with: scripts/build-ffmpeg.sh $TARGET" >&2
 fi
 
 if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
-  echo "note: APPLE_SIGNING_IDENTITY is not set — the app won't be signed, so other Macs will block it." >&2
+  # Ad-hoc signature ("-"): Apple Silicon refuses to run downloaded apps that
+  # aren't signed at all ("damaged"). Without a Developer ID, users still have
+  # to allow the app once: System Settings → Privacy & Security → Open Anyway.
+  export APPLE_SIGNING_IDENTITY="-"
+  echo "note: no Developer ID (APPLE_SIGNING_IDENTITY) — signing ad-hoc; other Macs must allow the app once." >&2
 fi
 
-(cd frontend && npm run tauri build -- --target "$TARGET" \
-  --config "{\"bundle\":{\"externalBin\":$EXTERNAL}}" "$@")
+(cd frontend && npm run tauri build -- --target "$TARGET" --config "$EXTRA_CONFIG" "$@")
 
 echo
 echo "▶ Built:"

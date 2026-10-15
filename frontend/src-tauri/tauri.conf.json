@@ -48,6 +48,9 @@
       "minimumSystemVersion": "11.0",
       "hardenedRuntime": true,
       "entitlements": "./Entitlements.plist"
+    },
+    "resources": {
+      "THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md"
     }
   }
 }

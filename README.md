@@ -95,8 +95,9 @@ VENV=venv_clean_x86_64 scripts/release-macos.sh x86_64-apple-darwin   # Intel (x
 
 The release script builds the frontend, the backend binary (which embeds the frontend) and the Tauri bundle in one go, so a stale UI can't ship. Nothing secret is built in: each user enters their API keys in **Settings**, and the app keeps its database, videos, keys (`settings.env`, owner-only) and logs per user in `~/Library/Application Support/studio.dubify.desktop` and `~/Library/Logs/studio.dubify.desktop`. No web server is needed — every Mac runs its own backend; the AI services are cloud APIs.
 
-- **ffmpeg** — put builds for the target at `vendor/ffmpeg/<target>/ffmpeg` and `ffprobe` to bundle them; otherwise the app uses the Mac's own (e.g. `brew install ffmpeg`, found even when the app is opened from Finder) and Settings warns when there is none.
-- **Signing / notarization** — set `APPLE_SIGNING_IDENTITY` plus `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` (or `APPLE_API_KEY`/`APPLE_API_ISSUER`/`APPLE_API_KEY_PATH`) before running the script; without them other Macs block the app.
+- **ffmpeg** — `scripts/build-ffmpeg.sh <target>` builds a bundleable ffmpeg once per architecture (official source, LGPL only — no GPL parts; H.264 export uses Apple's VideoToolbox) into `vendor/ffmpeg/<target>/`; the release script then ships it with its license. Without it the app uses the Mac's own ffmpeg (e.g. Homebrew — found even when the app is opened from Finder) and Settings warns when there is none.
+- **Release builds for both chips** — push a version tag (`git tag v0.1.0 && git push origin v0.1.0`) and the *Desktop release* GitHub Actions workflow builds Apple Silicon and Intel DMGs and drafts a GitHub Release with them plus the FFmpeg source. It can also be started by hand from the Actions tab.
+- **Signing / notarization** — with `APPLE_SIGNING_IDENTITY` plus `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` (locally, or as repository secrets for CI, together with `APPLE_CERTIFICATE`/`APPLE_CERTIFICATE_PASSWORD`) builds are signed and notarized. Without a Developer ID they are signed ad-hoc: on another Mac, open the app once, then allow it in **System Settings → Privacy & Security → Open Anyway**.
 
 ### Tests
 
