@@ -260,6 +260,7 @@ export interface AppSettingsValues {
   GEMINI_MODEL: string
   GEMINI_ASR_MODEL: string
   GEMINI_CHAT_MODEL: string
+  GEMINI_TTS_MODEL: string
   TTS_BATCH_CONCURRENCY: number
 }
 
@@ -276,6 +277,26 @@ export interface AppSettings {
 
 /** Only the fields sent change; an empty secret removes it. */
 export type AppSettingsUpdate = Partial<AppSettingsValues & { GEMINI_API_KEY: string; HF_TOKEN: string }>
+
+export type GeminiModelSetting = 'GEMINI_MODEL' | 'GEMINI_ASR_MODEL' | 'GEMINI_CHAT_MODEL' | 'GEMINI_TTS_MODEL'
+
+/** One AI job's model choice in Settings. An empty `value` means Automatic. */
+export interface GeminiModelChoice {
+  setting: GeminiModelSetting
+  label: string
+  value: string
+  /** The model Automatic stands for. */
+  automatic: string
+  /** The model actually answering — differs when a retired one was replaced. */
+  in_use: string
+  /** Models this key can see that suit this job: Google's aliases, then newest first. */
+  options: string[]
+}
+
+export interface GeminiModelTestResult {
+  ok: boolean
+  message: string
+}
 
 // ── Editor UI State ───────────────────────────────────────────────
 

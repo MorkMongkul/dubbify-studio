@@ -689,3 +689,25 @@ async def test_call_window_sends_json_schema_and_low_thinking(monkeypatch, no_sl
     assert cfg["responseMimeType"] == "application/json"
     assert "responseSchema" in cfg
     assert cfg["thinkingConfig"]["thinkingLevel"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_a_retired_transcription_model_is_replaced_without_using_up_retries(monkeypatch, no_sleep):
+    from app.services import gemini_models
+    gemini_models.reset()
+    monkeypatch.setattr(asr.settings, "GEMINI_ASR_MODEL", "gemini-3.6-flash")
+    models = []
+
+    def handler(request):
+        model = request.url.path.split("/models/")[1].split(":")[0]
+        models.append(model)
+        if model == "gemini-3.6-flash":
+            return httpx.Response(404, json={"error": {"code": 404, "message":
+                "This model models/gemini-3.6-flash is no longer available to new users."}})
+        return _gemini_ok([{"clip": 1, "no_speech": True, "turns": []}])
+
+    _use_transport(monkeypatch, handler)
+    rows = await asr._call_window([{"text": "x"}])
+    assert rows == [{"clip": 1, "no_speech": True, "turns": []}]
+    assert models == ["gemini-3.6-flash", "gemini-flash-latest"]
+    gemini_models.reset()

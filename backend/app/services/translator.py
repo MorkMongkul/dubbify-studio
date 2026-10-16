@@ -10,39 +10,49 @@ Also fixes the ASR spacing issue:
   "我 回 来了" → "我回来了" before translating
 
 Backends (set TRANSLATION_BACKEND in .env):
-  "gemini"  → Gemini 2.5 Flash with context (best quality, recommended)
+  "gemini"  → Gemini with scene context (best quality, recommended)
   "deep"    → Google Translate via deep-translator (fast, no context)
+
+Getting through failures, in order (so a line is left empty only when every
+route is down):
+  1. The model: a retired Gemini model is replaced automatically
+     (app/services/gemini_models.py) — never a reason to fall back.
+  2. Temporary errors (rate limits, overload, network) are retried with backoff.
+  3. Lines missing from Gemini's answer are asked for again on their own.
+  4. Only then the no-context Google Translate fallback — throttled, batched
+     and retried, because that free endpoint rejects bursts of requests.
+Failed lines stay "" (never the source text), and the report says why.
 
 Get your Gemini API key at: aistudio.google.com
 """
 import logging
 import asyncio
 import re
+import threading
+import time
 from dataclasses import dataclass
 
 import httpx
 from app.core.config import settings
+from app.services import gemini_models
 
 logger = logging.getLogger(__name__)
 
-# One shared client for all Gemini calls — reusing the connection pool saves a
-# TCP+TLS handshake per request. Timeouts are passed per-request.
-_http_client: httpx.AsyncClient | None = None
+# Lines per Gemini request. Khmer output is token-heavy; smaller chunks keep
+# the answer well inside the output limit (a cut-off answer drops lines).
+CHUNK_SIZE = 60
+GEMINI_MAX_OUTPUT_TOKENS = 32768
+GEMINI_ATTEMPTS = 3
+GEMINI_RETRY_DELAYS = (5.0, 20.0)     # between attempts, unless Google says how long to wait
 
 
-def _get_http() -> httpx.AsyncClient:
-    global _http_client
-    if _http_client is None or _http_client.is_closed:
-        _http_client = httpx.AsyncClient()
-    return _http_client
+class GeminiError(RuntimeError):
+    """A failed Gemini call; `transient` errors (rate limit, overload, network) are worth retrying."""
 
-def _gemini_url() -> str:
-    """Build Gemini API URL using model from settings (configurable via GEMINI_MODEL in .env)."""
-    model = getattr(settings, "GEMINI_MODEL", "gemini-2.5-flash")
-    return (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent"
-    )
+    def __init__(self, message: str, *, transient: bool, retry_after: float | None = None):
+        super().__init__(message)
+        self.transient = transient
+        self.retry_after = retry_after
 
 # Language names for the prompt
 LANG_NAMES = {
@@ -90,125 +100,50 @@ def _clean_chinese(text: str) -> str:
     return cleaned.strip()
 
 
-def _build_gemini_prompt(
-    segments: list,
-    current_index: int,
-    source_lang: str,
-    target_lang: str,
-) -> str:
-    """
-    Build a dubbing-quality prompt for Gemini.
-    Instructs Gemini to think like a voice actor, not a translator.
-    """
-    src_name = LANG_NAMES.get(source_lang, source_lang)
-    tgt_name = LANG_NAMES.get(target_lang, target_lang)
-
-    # Build conversation context (up to 12 previous lines)
-    context_lines = []
-    for i, seg in enumerate(segments[:current_index]):
-        text = _clean_chinese(seg.get("source_text", "")).strip()
-        if text:
-            speaker = seg.get("speaker_label", f"SPEAKER_{i:02d}")
-            context_lines.append(f"  [{speaker}]: {text}")
-
-    context_block = (
-        "\n".join(context_lines[-12:]) if context_lines
-        else "  (opening scene)"
-    )
-
-    current_seg     = segments[current_index]
-    current_text    = _clean_chinese(current_seg.get("source_text", ""))
-    current_speaker = current_seg.get("speaker_label", "SPEAKER_00")
-
-    prompt = f"""You are a professional voice dubbing scriptwriter specializing in {src_name} drama/film.
-Your job is to write the {tgt_name} SPOKEN LINE for a voice actor to perform — not a subtitle translation.
-
-CRITICAL RULES for dubbing scripts:
-- Write how a REAL PERSON SPEAKS, not how a book is written
-- Use SHORT, PUNCHY sentences — voice actors need to breathe
-- Match the EMOTION: angry lines sound angry, tender lines sound tender, funny lines sound funny
-- Use NATURAL EVERYDAY {tgt_name} — the kind people actually say out loud
-- NEVER use formal/literary vocabulary when casual words exist
-- Keep roughly the SAME LENGTH as the original — the actor must sync to the video
-- NO stage directions, NO explanations, NO quotation marks — just the spoken words
-- If the line is very short (one word, exclamation), keep it very short
-
-SCENE CONTEXT (what was said before):
-{context_block}
-
-LINE TO ADAPT for voice actor [{current_speaker}]:
-{current_text}
-
-Write ONLY the {tgt_name} spoken line, nothing else:"""
-
-    return prompt
-
-
-async def _translate_with_gemini(
-    text: str,
-    source_lang: str,
-    target_lang: str,
-    context_segments: list = None,
-    current_index: int = 0,
-) -> str:
-    """
-    Translate a single line using Gemini 2.5 Flash with conversation context.
-    """
-    if not text.strip():
-        return ""
-
-    clean_text = _clean_chinese(text)
-    if not clean_text:
-        return ""
-
-    if context_segments and current_index < len(context_segments):
-        prompt = _build_gemini_prompt(
-            context_segments, current_index, source_lang, target_lang
-        )
-    else:
-        src_name = LANG_NAMES.get(source_lang, source_lang)
-        tgt_name = LANG_NAMES.get(target_lang, target_lang)
-        prompt = (
-            f"You are a dubbing scriptwriter. Write the natural spoken {tgt_name} "
-            f"version of this {src_name} line for a voice actor. "
-            f"Use casual everyday speech, match the emotion, keep it short. "
-            f"Return ONLY the spoken line:\n{clean_text}"
-        )
-
-    headers = {
-        "Content-Type": "application/json",
-        "x-goog-api-key": settings.GEMINI_API_KEY,
-    }
-
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.4,      # slightly creative for natural speech
-            "maxOutputTokens": 256,  # dubbing lines are short
-        },
-    }
-
-    resp = await _get_http().post(
-        _gemini_url(), json=payload, headers=headers,
-        timeout=httpx.Timeout(30.0, connect=10.0),
-    )
-
-    if resp.status_code == 429:
-        error_body = resp.text[:500]
-        logger.warning(f"Gemini 429 response: {error_body}")
-        raise RuntimeError(f"Gemini API error 429: {error_body}")
-
-    if resp.status_code != 200:
-        raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text[:200]}")
-
-    data = resp.json()
+def _retry_after_seconds(resp: httpx.Response) -> float | None:
+    """Server-suggested wait: the Retry-After header, or Gemini's RetryInfo.retryDelay ("17s")."""
+    header = resp.headers.get("retry-after")
+    if header:
+        try:
+            return min(60.0, float(header))
+        except ValueError:
+            pass
     try:
-        result = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        # Clean up any quotes Gemini might add
-        result = result.strip('"\'')
-        return result
-    except (KeyError, IndexError) as e:
-        raise RuntimeError(f"Unexpected Gemini response: {data}")
+        for detail in resp.json().get("error", {}).get("details", []):
+            delay = str(detail.get("retryDelay", ""))
+            if delay.endswith("s"):
+                return min(60.0, float(delay[:-1]))
+    except (ValueError, AttributeError):
+        pass
+    return None
+
+
+async def _post_translation(payload: dict, timeout: httpx.Timeout) -> dict:
+    """One generateContent call for translation; raises GeminiError on any failure."""
+    try:
+        resp = await gemini_models.generate_content("translation", payload, timeout=timeout)
+    except httpx.HTTPError as e:
+        raise GeminiError(f"Gemini request failed ({type(e).__name__})", transient=True) from e
+    if resp.status_code == 200:
+        return resp.json()
+    message = f"Gemini {resp.status_code}: {gemini_models.error_message(resp.text)}"
+    if resp.status_code == 429:
+        # Depleted credits also come back as 429 — waiting won't fix those.
+        raise GeminiError(message, transient=not _is_billing_error(resp.text), retry_after=_retry_after_seconds(resp))
+    raise GeminiError(message, transient=resp.status_code >= 500)
+
+
+async def _gemini_with_retries(fn, *args):
+    """Run a Gemini call, retrying temporary failures with backoff."""
+    for attempt in range(1, GEMINI_ATTEMPTS + 1):
+        try:
+            return await fn(*args)
+        except GeminiError as e:
+            if not e.transient or attempt == GEMINI_ATTEMPTS:
+                raise
+            delay = e.retry_after if e.retry_after is not None else GEMINI_RETRY_DELAYS[min(attempt, len(GEMINI_RETRY_DELAYS)) - 1]
+            logger.warning(f"{e} — retrying in {delay:.0f}s (attempt {attempt}/{GEMINI_ATTEMPTS})")
+            await asyncio.sleep(delay)
 
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
@@ -240,6 +175,92 @@ def _translate_with_deep(text: str, source_lang: str, target_lang: str) -> str:
     return result
 
 
+# ── Google Translate fallback: batched, throttled, retried ─────────────────
+# The free endpoint behind deep-translator rejects bursts ("You made too many
+# requests") — one request per line, back to back, is exactly what fails.
+# Lines are sent together (newline-joined), requests are spaced out, and a
+# rejected request is retried after a pause.
+
+DEEP_GROUP_LINES = 20
+DEEP_GROUP_CHARS = 3500          # the endpoint's own limit is 5000 characters
+DEEP_ATTEMPTS = 3
+DEEP_BACKOFF = (3.0, 10.0)       # seconds before the 2nd and 3rd attempt
+DEEP_MIN_INTERVAL = 0.6          # seconds between requests
+
+_deep_sleep = time.sleep         # tests replace this
+_deep_lock = threading.Lock()
+_deep_last_request = 0.0
+
+
+def _deep_request(text: str, source_lang: str, target_lang: str) -> str | None:
+    """One Google Translate request with spacing and retries. None when it kept failing."""
+    global _deep_last_request
+    from deep_translator import GoogleTranslator
+    src = GOOGLE_LANG_MAP.get(source_lang, source_lang)
+    tgt = GOOGLE_LANG_MAP.get(target_lang, target_lang)
+    for attempt in range(1, DEEP_ATTEMPTS + 1):
+        with _deep_lock:
+            wait = DEEP_MIN_INTERVAL - (time.monotonic() - _deep_last_request)
+            if wait > 0:
+                _deep_sleep(wait)
+            _deep_last_request = time.monotonic()
+        try:
+            return (GoogleTranslator(source=src, target=tgt).translate(text) or "").strip()
+        except Exception as e:
+            if attempt == DEEP_ATTEMPTS:
+                logger.error(f"deep-translator failed after {attempt} attempts: {str(e)[:200]}")
+                return None
+            delay = DEEP_BACKOFF[attempt - 1]
+            logger.warning(f"deep-translator: {str(e)[:120]} — retrying in {delay:.0f}s")
+            _deep_sleep(delay)
+    return None
+
+
+def _deep_translate_many(lines: list[str], source_lang: str, target_lang: str) -> list[str]:
+    """
+    Translate many lines with as few requests as possible. A batch whose answer
+    doesn't split back into the same number of lines is redone line by line.
+    Failed or untranslated lines come back "".
+    """
+    results = [""] * len(lines)
+    todo = [(i, _clean_chinese(text)) for i, text in enumerate(lines) if text and text.strip()]
+
+    def accept(i: int, text: str | None) -> None:
+        if text and not _looks_untranslated(text, source_lang):
+            results[i] = text.strip()
+
+    group: list[tuple[int, str]] = []
+
+    def flush() -> None:
+        if not group:
+            return
+        if len(group) == 1:
+            i, text = group[0]
+            accept(i, _deep_request(text, source_lang, target_lang))
+        else:
+            answer = _deep_request("\n".join(t for _, t in group), source_lang, target_lang)
+            parts = [p for p in (answer or "").split("\n")]
+            if answer and len(parts) == len(group):
+                for (i, _), part in zip(group, parts):
+                    accept(i, part)
+            else:
+                for i, text in group:
+                    accept(i, _deep_request(text, source_lang, target_lang))
+        group.clear()
+
+    for i, text in todo:
+        if "\n" in text:
+            flush()
+            group.append((i, text.replace("\n", " ")))
+            flush()
+            continue
+        if len(group) >= DEEP_GROUP_LINES or sum(len(t) + 1 for _, t in group) + len(text) > DEEP_GROUP_CHARS:
+            flush()
+        group.append((i, text))
+    flush()
+    return results
+
+
 # ── Main entry points ──────────────────────────────────────────
 
 async def translate_text(
@@ -250,16 +271,8 @@ async def translate_text(
     """Translate a single text string (no context)."""
     if not text.strip():
         return ""
-
-    backend = settings.TRANSLATION_BACKEND.lower()
-
-    if backend == "gemini" and settings.GEMINI_API_KEY:
-        return await _translate_with_gemini(text, source_lang, target_lang)
-
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None, _translate_with_deep, text, source_lang, target_lang
-    )
+    results, _report = await translate_batch_with_report([text], source_lang, target_lang)
+    return results[0]
 
 
 async def _translate_batch_with_gemini(
@@ -364,38 +377,23 @@ LINES TO TRANSLATE:
 
 {tgt_name} translations:"""
 
-    headers = {
-        "Content-Type": "application/json",
-        "x-goog-api-key": settings.GEMINI_API_KEY,
-    }
-
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.4,
-            "maxOutputTokens": 8192,   # enough for 500+ lines
+            "maxOutputTokens": GEMINI_MAX_OUTPUT_TOKENS,
         },
     }
 
-    # Single API call for all lines
-    resp = await _get_http().post(
-        _gemini_url(), json=payload, headers=headers,
-        timeout=httpx.Timeout(120.0, connect=15.0),
-    )
-
-    if resp.status_code == 429:
-        error_body = resp.text[:500]
-        logger.warning(f"Gemini 429 response: {error_body}")
-        raise RuntimeError(f"Gemini API error 429: {error_body}")
-
-    if resp.status_code != 200:
-        raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text[:200]}")
-
-    data = resp.json()
+    data = await _post_translation(payload, httpx.Timeout(180.0, connect=15.0))
     try:
         raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except (KeyError, IndexError):
-        raise RuntimeError(f"Unexpected Gemini response: {data}")
+    except (KeyError, IndexError, TypeError):
+        blocked = (data.get("promptFeedback") or {}).get("blockReason")
+        raise GeminiError(
+            f"Gemini returned no translation{f' (blocked: {blocked})' if blocked else ''}",
+            transient=not blocked,
+        )
 
     # Parse numbered response back into list
     results = [""] * len(texts)
@@ -404,7 +402,6 @@ LINES TO TRANSLATE:
         if not line:
             continue
         # Match "1. translation" or "1) translation"
-        import re
         match = re.match(r'^(\d+)[.)]\s*(.+)$', line)
         if match:
             idx = int(match.group(1)) - 1
@@ -419,46 +416,83 @@ LINES TO TRANSLATE:
 
 @dataclass
 class TranslationReport:
-    """How a batch was translated: lines the no-context fallback had to do, and lines left empty."""
+    """How a batch was translated: lines the no-context fallback had to do, lines left empty, and why."""
     fallback: int = 0
     failed: int = 0
+    gemini_error: str = ""
 
     def warning(self) -> str:
         parts = []
         if self.failed:
             parts.append(
                 f"{self.failed} line(s) couldn't be translated and were left empty — "
-                "translate them by hand or Re-analyze."
+                "use Translate missing lines in the transcript to try again."
             )
         if self.fallback:
             parts.append(
                 f"{self.fallback} line(s) were translated by the basic fallback (no scene "
                 "context) because Gemini was unavailable — review them before generating voices."
             )
+        if parts and self.gemini_error:
+            parts.append(f"Gemini said: {self.gemini_error}")
         return " ".join(parts)
+
+
+def _needs_translation(source: str, result: str, source_lang: str) -> bool:
+    return bool(source.strip()) and (not result or _looks_untranslated(result, source_lang))
 
 
 async def _finish_lines(
     texts: list[str], results: list[str], source_lang: str, target_lang: str,
     report: TranslationReport, count_fallback: bool,
 ) -> list[str]:
-    """Run the fallback for every line that came back empty or untranslated, and count the outcome."""
-    finished = []
-    for original, result in zip(texts, results):
-        if not original.strip():
-            finished.append("")
-            continue
-        if result and not _looks_untranslated(result, source_lang):
-            finished.append(result)
-            continue
-        # deep-translator is blocking `requests` — keep it off the event loop
-        fixed = await asyncio.to_thread(_translate_with_deep, original, source_lang, target_lang)
-        if fixed:
+    """Send every line still missing a translation to the fallback (in batches), and count the outcome."""
+    finished = list(results)
+    missing = [i for i, (src, res) in enumerate(zip(texts, results)) if _needs_translation(src, res, source_lang)]
+    for i, (src, res) in enumerate(zip(texts, results)):
+        if not src.strip():
+            finished[i] = ""
+    if not missing:
+        return finished
+    # deep-translator is blocking `requests` — keep it off the event loop
+    fixed = await asyncio.to_thread(_deep_translate_many, [texts[i] for i in missing], source_lang, target_lang)
+    for i, text in zip(missing, fixed):
+        finished[i] = text
+        if text:
             report.fallback += int(count_fallback)
         else:
             report.failed += 1
-        finished.append(fixed)
     return finished
+
+
+async def _translate_chunk(
+    chunk: list[str], source_lang: str, target_lang: str, ctx: list | None, report: TranslationReport,
+) -> list[str]:
+    """Gemini for one chunk: retried call, then one more request for any lines its answer left out."""
+    try:
+        results = await _gemini_with_retries(_translate_batch_with_gemini, chunk, source_lang, target_lang, ctx)
+    except Exception as e:
+        report.gemini_error = report.gemini_error or str(e)[:300]
+        logger.error(f"Gemini translation failed: {e} — these lines go to the fallback")
+        return [""] * len(chunk)
+    results = list(results) + [""] * (len(chunk) - len(results))
+
+    missing = [i for i, (src, res) in enumerate(zip(chunk, results)) if _needs_translation(src, res, source_lang)]
+    if missing:
+        logger.warning(f"{len(missing)} line(s) missing from Gemini's answer — asking again for just those")
+        try:
+            again = await _gemini_with_retries(
+                _translate_batch_with_gemini,
+                [chunk[i] for i in missing], source_lang, target_lang,
+                [ctx[i] for i in missing] if ctx else None,
+            )
+            for i, res in zip(missing, again):
+                if not _needs_translation(chunk[i], res, source_lang):
+                    results[i] = res
+        except Exception as e:
+            report.gemini_error = report.gemini_error or str(e)[:300]
+            logger.error(f"Gemini retry for missing lines failed: {e}")
+    return results
 
 
 async def translate_batch_with_report(
@@ -468,10 +502,9 @@ async def translate_batch_with_report(
     segments_context: list = None,
 ) -> tuple[list[str], TranslationReport]:
     """
-    Translate a batch (one Gemini call per chunk of up to 150 lines) and report
-    how it went. Lines Gemini skipped or returned untranslated go through the
-    no-context fallback; lines nothing could translate are left "" — never the
-    source text.
+    Translate a batch (one Gemini call per chunk of CHUNK_SIZE lines) and report
+    how it went. See the module docstring for the order of fallbacks; lines
+    nothing could translate are left "" — never the source text.
     """
     report = TranslationReport()
     if not texts:
@@ -480,67 +513,21 @@ async def translate_batch_with_report(
     backend = settings.TRANSLATION_BACKEND.lower()
 
     if backend == "gemini" and settings.GEMINI_API_KEY:
-        CHUNK_SIZE = 150
-        all_results: list[str] = []
-        chunks = [texts[i:i + CHUNK_SIZE] for i in range(0, len(texts), CHUNK_SIZE)]
-        context_chunks = []
-        if segments_context:
-            context_chunks = [
-                segments_context[i:i + CHUNK_SIZE]
-                for i in range(0, len(segments_context), CHUNK_SIZE)
-            ]
-
-        for chunk_idx, chunk in enumerate(chunks):
-            ctx = context_chunks[chunk_idx] if context_chunks else None
+        results: list[str] = []
+        for start in range(0, len(texts), CHUNK_SIZE):
+            chunk = texts[start:start + CHUNK_SIZE]
+            ctx = segments_context[start:start + CHUNK_SIZE] if segments_context else None
             logger.info(
-                f"Translating batch {chunk_idx+1}/{len(chunks)} "
-                f"({len(chunk)} lines → {target_lang}) — 1 API call"
+                f"Translating lines {start + 1}-{start + len(chunk)} of {len(texts)} → {target_lang}"
             )
-            try:
-                chunk_results = await _translate_batch_with_gemini(chunk, source_lang, target_lang, ctx)
-                if chunk_idx < len(chunks) - 1:
-                    await asyncio.sleep(2.0)   # small gap between chunks to be safe
-            except Exception as e:
-                err_str = str(e)
-                chunk_results = [""] * len(chunk)
-                # A 429 that's actually depleted credits / billing will NEVER
-                # succeed on retry — fall back immediately instead of waiting 60s.
-                if "429" in err_str and not _is_billing_error(err_str):
-                    logger.warning(f"429 (rate limit) on chunk {chunk_idx+1} — waiting 60s then retrying...")
-                    await asyncio.sleep(60)
-                    try:
-                        chunk_results = await _translate_batch_with_gemini(chunk, source_lang, target_lang, ctx)
-                    except Exception:
-                        logger.warning(f"Chunk {chunk_idx+1} failed again — using deep-translator")
-                elif _is_billing_error(err_str):
-                    logger.error(
-                        "Gemini credits depleted — falling back to Google Translate. "
-                        "Top up at https://ai.studio/projects to restore Gemini quality."
-                    )
-                else:
-                    logger.error(f"Gemini batch failed: {e} — using deep-translator")
-            all_results.extend(await _finish_lines(
-                chunk, list(chunk_results) + [""] * (len(chunk) - len(chunk_results)),
-                source_lang, target_lang, report, count_fallback=True,
-            ))
-        return all_results, report
+            results.extend(await _translate_chunk(chunk, source_lang, target_lang, ctx, report))
+        return await _finish_lines(texts, results, source_lang, target_lang, report, count_fallback=True), report
 
     # deep-translator as the configured backend (or Gemini configured without a key)
-    sem = asyncio.Semaphore(4)
-
-    async def translate_one_deep(text: str) -> str:
-        if not text.strip():
-            return ""
-        async with sem:
-            return await asyncio.to_thread(_translate_with_deep, text, source_lang, target_lang)
-
-    results = await asyncio.gather(*[translate_one_deep(t) for t in texts])
-    for original, result in zip(texts, results):
-        if original.strip() and not result:
-            report.failed += 1
+    results = await _finish_lines(texts, [""] * len(texts), source_lang, target_lang, report, count_fallback=False)
     if backend == "gemini":
         report.fallback = sum(1 for r in results if r)   # Gemini wanted, but no key configured
-    return list(results), report
+    return results, report
 
 
 async def translate_batch(

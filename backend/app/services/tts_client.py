@@ -18,11 +18,11 @@ import soundfile as sf
 import numpy as np
 from pathlib import Path
 from app.core.config import settings
+from app.services import gemini_models
 
 logger = logging.getLogger(__name__)
 
 # Stable Gemini TTS model (dedicated audio output, not a chat model)
-GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 
 # Gemini prebuilt voices available for the TTS model
 _GEMINI_VOICES = {
@@ -64,6 +64,11 @@ def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int, output_path: str) -> None:
         wf.setsampwidth(2)   # 16-bit = 2 bytes/sample
         wf.setframerate(sample_rate)
         wf.writeframes(pcm_bytes)
+
+
+def _wav_rate(wav_path: str) -> int:
+    with wave.open(wav_path, "rb") as w:
+        return w.getframerate()
 
 
 def _get_wav_duration(wav_path: str) -> float:
@@ -359,22 +364,16 @@ class VoxCPM2Client:
 
     async def _gemini_synthesize(self, text: str, output_path: str, voice_design: str = "") -> dict:
         """
-        Generate WAV using Gemini TTS API (gemini-2.5-flash-preview-tts).
-        Gemini returns raw 16-bit PCM; we convert to a proper WAV file.
+        Generate WAV using a Gemini speech model (GEMINI_TTS_MODEL; a retired
+        one is replaced automatically — see gemini_models). Older models return
+        raw 16-bit PCM, which is wrapped into a WAV; newer ones return a finished
+        WAV, which is saved as it is.
         """
         if not settings.GEMINI_API_KEY:
             logger.warning("GEMINI_API_KEY not set — using mock TTS.")
             return await self._mock_synthesize(text, output_path)
 
         voice_name = _pick_gemini_voice(voice_design)
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{GEMINI_TTS_MODEL}:generateContent"
-        )
-        headers = {
-            "Content-Type": "application/json",
-            "x-goog-api-key": settings.GEMINI_API_KEY,
-        }
         # gemini-2.5-flash-preview-tts does not accept speakingRate in speechConfig.
         # Control pace via the instruction prompt instead.
         speed = settings.GEMINI_TTS_SPEED
@@ -406,8 +405,8 @@ class VoxCPM2Client:
         }
 
         try:
-            logger.info(f"Gemini TTS ({GEMINI_TTS_MODEL}, voice={voice_name}): {text[:60]}...")
-            resp = await self._get_http().post(url, json=payload, headers=headers, timeout=60.0)
+            logger.info(f"Gemini TTS ({gemini_models.current_model('tts')}, voice={voice_name}): {text[:60]}...")
+            resp = await gemini_models.generate_content("tts", payload, timeout=60.0)
 
             if resp.status_code == 429:
                 logger.warning("Gemini TTS rate-limited — falling back to mock")
@@ -426,7 +425,7 @@ class VoxCPM2Client:
                         continue
 
                     import base64
-                    pcm_bytes = base64.b64decode(inline["data"])
+                    audio_bytes = base64.b64decode(inline["data"])
 
                     # Parse sample rate from mimeType e.g. "audio/L16;codec=pcm;rate=24000"
                     sample_rate = 24000
@@ -440,7 +439,11 @@ class VoxCPM2Client:
 
                     out_path = Path(output_path)
                     out_path.parent.mkdir(parents=True, exist_ok=True)
-                    _pcm_to_wav(pcm_bytes, sample_rate, str(out_path))
+                    if "wav" in mime or audio_bytes[:4] == b"RIFF":
+                        out_path.write_bytes(audio_bytes)          # already a WAV file
+                        sample_rate = _wav_rate(str(out_path))
+                    else:
+                        _pcm_to_wav(audio_bytes, sample_rate, str(out_path))
 
                     duration = _get_wav_duration(str(out_path))
                     logger.info(f"Gemini TTS saved: {out_path.name} ({duration:.1f}s, {sample_rate}Hz)")

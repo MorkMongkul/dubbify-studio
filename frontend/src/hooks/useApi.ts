@@ -4,7 +4,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions, chat, appSettings } from '@/api/client'
 import type { VoiceCreateInput } from '@/api/client'
-import type { Segment, ProjectCreate, ProjectUpdate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice, OverlayUpdate, AppSettingsUpdate } from '@/types'
+import type {
+  Segment, ProjectCreate, ProjectUpdate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice, OverlayUpdate, AppSettingsUpdate, GeminiModelSetting,
+} from '@/types'
 
 // ── Health ────────────────────────────────────────────────────
 export function useHealth() {
@@ -297,6 +299,16 @@ export function useAnalyzeJob() {
   })
 }
 
+export function useTranslateMissing() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (jobId: string) => jobs.translateMissing(jobId),
+    onSuccess: (_, jobId) => {
+      qc.invalidateQueries({ queryKey: ['job', jobId] })
+    },
+  })
+}
+
 export function useDetectSpeakers() {
   const qc = useQueryClient()
   return useMutation({
@@ -568,10 +580,31 @@ export function useAppSettings() {
   return useQuery({ queryKey: ['app-settings'], queryFn: appSettings.get })
 }
 
+/** Gemini models the saved key can use — only fetched once a key is saved. */
+export function useGeminiModels(enabled: boolean) {
+  return useQuery({
+    queryKey: ['gemini-models'],
+    queryFn: appSettings.models,
+    enabled,
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+}
+
+export function useTestGeminiModel() {
+  return useMutation({
+    mutationFn: ({ setting, model }: { setting: GeminiModelSetting; model: string }) =>
+      appSettings.testModel(setting, model),
+  })
+}
+
 export function useUpdateAppSettings() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (data: AppSettingsUpdate) => appSettings.update(data),
-    onSuccess: (data) => qc.setQueryData(['app-settings'], data),
+    onSuccess: (data) => {
+      qc.setQueryData(['app-settings'], data)
+      qc.invalidateQueries({ queryKey: ['gemini-models'] })   // a new key or choice changes the list
+    },
   })
 }

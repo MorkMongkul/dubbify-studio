@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models.models import Job, Project, Segment, JobStatus
+from app.models.models import Job, Project, Segment, Speaker, JobStatus
 from app.services.audio_extractor import extract_audio, get_video_duration
 from app.services.source_separator import separate_vocals_bgm
 from app.services.asr import labels_for_spans, transcribe_audio
@@ -206,6 +206,58 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
         except Exception as e:
             logger.exception(f"Stage 2 failed for job {job_id[:8]}: {e}")
             await restore_or_fail_job(db, job_id, f"Analysis failed: {e}")
+
+
+# ── Translate missing lines ───────────────────────────────────────────────────
+
+def needs_translation(segment: Segment) -> bool:
+    """Has words to translate but no translation yet."""
+    return bool((segment.source_text or "").strip()) and not (segment.khmer_text or "").strip()
+
+
+async def run_translation(job_id: str) -> None:
+    """
+    Translate the lines that have source text but no translation — the way back
+    from a translation outage, without re-running transcription. Lines that
+    already have a translation, including the user's own edits, are never
+    touched (also not one typed while this runs).
+    """
+    from app.core.database import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as db:
+        job, project = await _load_job_and_project(db, job_id)
+        if not project:
+            return
+        try:
+            rows = (await db.execute(
+                select(Segment, Speaker.label).outerjoin(Speaker, Speaker.id == Segment.speaker_id)
+                .where(Segment.job_id == job_id).order_by(Segment.start_time)
+            )).all()
+            todo = [(seg.id, seg.source_text, label or "SPEAKER") for seg, label in rows if needs_translation(seg)]
+            if todo:
+                await db.commit()   # release the connection before the Gemini calls
+                logger.info(f"Translating {len(todo)} missing line(s) for job {job_id[:8]}")
+                texts, report = await translate_batch_with_report(
+                    [text for _, text, _ in todo], project.source_lang, project.target_lang,
+                    segments_context=[{"speaker_label": label, "source_text": text} for _, text, label in todo],
+                )
+                # Fresh from the database (not this session's earlier copies): a
+                # translation the user typed meanwhile must win.
+                current = {s.id: s for s in (await db.execute(
+                    select(Segment).where(Segment.id.in_([seg_id for seg_id, _, _ in todo]))
+                    .execution_options(populate_existing=True)
+                )).scalars().all()}
+                for (seg_id, _, _), text in zip(todo, texts):
+                    seg = current.get(seg_id)
+                    if seg is not None and text and needs_translation(seg):
+                        seg.khmer_text = text
+                warning = report.warning()
+            else:
+                warning = ""
+            await _update_job(db, job, JobStatus.COMPLETED, 100, warning)
+        except Exception as e:
+            logger.exception(f"Translating missing lines failed for job {job_id[:8]}: {e}")
+            await restore_or_fail_job(db, job_id, f"Translation failed: {e}")
 
 
 # ── Speaker detection on existing segments ────────────────────────────────────
