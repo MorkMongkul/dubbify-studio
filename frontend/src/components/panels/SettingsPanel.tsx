@@ -6,9 +6,9 @@ import { useState } from 'react'
 import { Sun, Moon, Settings2, Zap, KeyRound, HardDrive, CheckCircle2, AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
 import { useThemeStore } from '@/store/themeStore'
-import { useAppSettings, useUpdateAppSettings } from '@/hooks/useApi'
+import { useAppSettings, useGeminiModels, useTestGeminiModel, useUpdateAppSettings } from '@/hooks/useApi'
 import { cn } from '@/lib/utils'
-import type { AppSettings, AppSettingsUpdate, AppSettingsValues } from '@/types'
+import type { AppSettings, AppSettingsUpdate, AppSettingsValues, GeminiModelChoice, GeminiModelTestResult } from '@/types'
 import { PanelHeader } from './PanelShell'
 
 const inputClass =
@@ -49,6 +49,90 @@ function SecretField({
         disabled={disabled}
       />
     </label>
+  )
+}
+
+/**
+ * One dropdown per AI job, filled with the models the saved key can use.
+ * Picking a model runs a tiny real request (a listed model can still refuse to
+ * work); "Automatic" keeps the built-in choice, which replaces itself when
+ * Google retires it.
+ */
+function GeminiModelsField({
+  hasKey, disabled, value, onChange,
+}: {
+  hasKey: boolean; disabled: boolean
+  value: (choice: GeminiModelChoice) => string
+  onChange: (choice: GeminiModelChoice, model: string) => void
+}) {
+  const models = useGeminiModels(hasKey)
+  const test = useTestGeminiModel()
+  const [results, setResults] = useState<Record<string, GeminiModelTestResult | 'testing'>>({})
+
+  if (!hasKey) {
+    return <p className="text-[9.5px] text-zinc-500 leading-snug">Save your Gemini API key to choose the AI models.</p>
+  }
+  if (models.isLoading) return <p className="text-[9.5px] text-zinc-500">Loading the models your key can use…</p>
+  if (models.isError || !models.data) {
+    return (
+      <p className="text-[9.5px] text-amber-300/90 leading-snug">
+        {(models.error as Error)?.message || "Couldn't load the model list."}{' '}
+        <button type="button" onClick={() => models.refetch()} className="underline hover:text-amber-200">Try again</button>
+      </p>
+    )
+  }
+
+  const pick = (choice: GeminiModelChoice, model: string) => {
+    onChange(choice, model)
+    if (!model) {
+      setResults((r) => { const next = { ...r }; delete next[choice.setting]; return next })
+      return
+    }
+    setResults((r) => ({ ...r, [choice.setting]: 'testing' }))
+    test.mutate({ setting: choice.setting, model }, {
+      onSuccess: (result) => setResults((r) => ({ ...r, [choice.setting]: result })),
+      onError: (e) => setResults((r) => ({ ...r, [choice.setting]: { ok: false, message: (e as Error).message } })),
+    })
+  }
+
+  return (
+    <div className="space-y-2">
+      {models.data.map((choice) => {
+        const selected = value(choice)
+        const configured = choice.value || choice.automatic
+        const replaced = choice.in_use !== configured
+        const result = results[choice.setting]
+        const options = choice.value && !choice.options.includes(choice.value)
+          ? [choice.value, ...choice.options] : choice.options
+        return (
+          <label key={choice.setting} className="block space-y-1">
+            <span className="text-[10px] text-zinc-400">{choice.label}</span>
+            <select
+              className={inputClass} disabled={disabled}
+              value={selected}
+              onChange={(e) => pick(choice, e.target.value)}
+            >
+              <option value="">Automatic (recommended) — {choice.automatic}</option>
+              {options.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+            {result === 'testing' && <span className="block text-[9.5px] text-zinc-500">Checking {selected}…</span>}
+            {result && result !== 'testing' && (
+              <span className={cn('flex items-start gap-1 text-[9.5px] leading-snug',
+                result.ok ? 'text-emerald-400/90' : 'text-amber-300/90')}>
+                {result.ok ? <CheckCircle2 size={10} className="shrink-0 mt-px" /> : <AlertTriangle size={10} className="shrink-0 mt-px" />}
+                {result.message}
+              </span>
+            )}
+            {replaced && !result && (
+              <span className="flex items-start gap-1 text-[9.5px] text-amber-300/90 leading-snug">
+                <AlertTriangle size={10} className="shrink-0 mt-px" />
+                {configured} isn't available any more — using {choice.in_use}. Choose a model to make it permanent.
+              </span>
+            )}
+          </label>
+        )
+      })}
+    </div>
   )
 }
 
@@ -126,13 +210,19 @@ function AiServicesSection({ data }: { data: AppSettings }) {
             <option value="deep">Google Translate (free, no context)</option>
           </select>
         </label>
+        <div className="space-y-1.5 pt-1">
+          <span className="text-[10px] font-medium text-zinc-300">AI models</span>
+          <GeminiModelsField
+            hasKey={data.secrets.GEMINI_API_KEY}
+            disabled={disabled}
+            value={(choice) => (edits[choice.setting] ?? choice.value) as string}
+            onChange={(choice, model) => edit(choice.setting, model)}
+          />
+        </div>
         <details className="group">
           <summary className="cursor-pointer text-[10px] text-zinc-500 hover:text-zinc-300 select-none">Advanced</summary>
           <div className="space-y-2 pt-2">
             {([
-              ['GEMINI_ASR_MODEL', 'Speech recognition model'],
-              ['GEMINI_MODEL', 'Translation model'],
-              ['GEMINI_CHAT_MODEL', 'Assistant model'],
               ['VOXCPM2_HF_SPACE_FALLBACK', 'Fallback voice Space'],
             ] as const).map(([key, label]) => (
               <label key={key} className="block space-y-1">

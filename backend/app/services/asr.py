@@ -43,6 +43,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import httpx
 
 from app.core.config import settings
+from app.services import gemini_models
 from app.services.diarizer import DiarizedSegment, get_audio_duration
 from app.core.binaries import ffmpeg
 
@@ -325,11 +326,6 @@ def _build_window_parts(
     return parts
 
 
-def _gemini_asr_url() -> str:
-    model = getattr(settings, "GEMINI_ASR_MODEL", "gemini-3.6-flash")
-    return f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-
-
 def _retry_after_seconds(resp: httpx.Response) -> Optional[float]:
     """Server-suggested wait: the Retry-After header, or Gemini's RetryInfo.retryDelay ("17s")."""
     header = resp.headers.get("retry-after")
@@ -349,15 +345,22 @@ def _retry_after_seconds(resp: httpx.Response) -> Optional[float]:
 
 
 async def _post_gemini(payload: dict) -> dict:
-    """POST with a wall-clock timeout and backoff for 429/5xx/network errors."""
+    """
+    POST with a wall-clock timeout and backoff for 429/5xx/network errors.
+    A retired model is replaced (gemini_models) and retried at once — that
+    doesn't use up an attempt.
+    """
     headers = {"Content-Type": "application/json", "x-goog-api-key": settings.GEMINI_API_KEY}
     last_error: Exception = RuntimeError("Gemini ASR request was not attempted")
-    for attempt in range(1, ASR_MAX_ATTEMPTS + 1):
+    model = gemini_models.current_model("asr")
+    attempt = 0
+    while attempt < ASR_MAX_ATTEMPTS:
+        attempt += 1
         retry_after: Optional[float] = None
         try:
             async with _new_http_client(httpx.Timeout(ASR_CALL_TIMEOUT, connect=15.0)) as client:
                 resp = await asyncio.wait_for(
-                    client.post(_gemini_asr_url(), json=payload, headers=headers),
+                    client.post(gemini_models.endpoint(model), json=payload, headers=headers),
                     ASR_CALL_TIMEOUT + 10,
                 )
         except (httpx.TransportError, asyncio.TimeoutError) as e:
@@ -366,6 +369,12 @@ async def _post_gemini(payload: dict) -> dict:
             if resp.status_code == 200:
                 return resp.json()
             message = f"Gemini ASR error {resp.status_code}: {resp.text[:300]}"
+            if gemini_models.is_model_unavailable(resp.status_code, resp.text):
+                replacement = await gemini_models.switch_model("asr", model, resp.text)
+                if replacement:
+                    model = replacement
+                    attempt -= 1
+                    continue
             if resp.status_code not in _RETRYABLE_STATUS:
                 raise GeminiRequestRejected(message)
             last_error = RuntimeError(message)

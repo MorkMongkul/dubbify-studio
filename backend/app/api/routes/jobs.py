@@ -18,7 +18,9 @@ from app.core.database import get_db
 from app.core.config import settings
 from app.models.models import Job, Project, JobStatus, Segment
 from app.schemas.schemas import JobResponse, PipelineStartResponse, BgmVolumeUpdate, JobTitleUpdate
-from app.services.pipeline import run_pipeline, run_analysis_pipeline, run_speaker_detection
+from app.services.pipeline import (
+    needs_translation, run_analysis_pipeline, run_pipeline, run_speaker_detection, run_translation,
+)
 from app.services.pipeline_common import vocals_path_for
 from app.core.paths import resolve_existing
 from app.services.subtitle_pipeline import run_subtitle_pipeline, run_subtitle_analysis_pipeline
@@ -322,6 +324,35 @@ async def analyze_job(
     else:
         background_tasks.add_task(run_analysis_pipeline, job_id, max_speakers)
     return {"message": "Analysis started", "job_id": job_id, "status": JobStatus.DIARIZING.value}
+
+
+@router.post("/{job_id}/translate", status_code=status.HTTP_202_ACCEPTED)
+async def translate_missing_lines(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """
+    Translate the lines that have no translation yet — after a translation
+    outage — without re-running transcription. Translated and edited lines
+    are kept as they are.
+    """
+    job = await _lock_job(db, job_id)
+    if job.status not in _RELABELABLE_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This session is busy ({job.status.value}) — wait for it to finish.",
+        )
+    segments = (await db.execute(select(Segment).where(Segment.job_id == job_id))).scalars().all()
+    missing = sum(1 for seg in segments if needs_translation(seg))
+    if not missing:
+        raise HTTPException(status_code=400, detail="Every line already has a translation.")
+
+    job.status, job.progress, job.error_msg = JobStatus.TRANSLATING, 65, ""
+    await db.commit()
+    background_tasks.add_task(run_translation, job_id)
+    return {"message": "Translation started", "job_id": job_id,
+            "status": JobStatus.TRANSLATING.value, "lines": missing}
 
 
 @router.post("/{job_id}/detect-speakers", status_code=status.HTTP_202_ACCEPTED)

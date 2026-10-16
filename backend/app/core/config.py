@@ -75,7 +75,11 @@ class Settings(BaseSettings):
     # ── Google Gemini — translation ───────────────────────────
     # Free at: aistudio.google.com
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-2.5-flash-lite"
+    # Google's maintained alias for its current flash-lite model. Pinned
+    # version names get retired ("no longer available to new users" — that's
+    # how translation broke with gemini-2.5-flash-lite); any retired model,
+    # pinned or not, is replaced at run time by app/services/gemini_models.py.
+    GEMINI_MODEL: str = "gemini-flash-lite-latest"
 
     # ── Translation backend ───────────────────────────────────
     # "gemini" = Gemini batch translation (recommended)
@@ -118,6 +122,9 @@ class Settings(BaseSettings):
     SEPARATION_HF_SPACE: str = "csukuangfj/music-source-separation"
 
     # Gemini TTS speaking rate: 1.0 = normal, 1.25 = 25% faster, max 4.0
+    # Gemini voice model — only used when VoxCPM2 is unavailable. Retired models are
+    # replaced automatically by the newest listed speech model (app/services/gemini_models.py).
+    GEMINI_TTS_MODEL: str = "gemini-2.5-flash-preview-tts"
     GEMINI_TTS_SPEED: float = 1.25
 
     # How many segments to synthesize concurrently during a batch/job TTS

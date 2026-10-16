@@ -1,7 +1,7 @@
 // src/components/transcript/TranscriptPanel.tsx
 import { useRef, useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { AlignLeft, Loader2, ChevronRight, Sliders, Volume2, Type, RefreshCw, Mic, Plus } from 'lucide-react'
+import { AlignLeft, Loader2, ChevronRight, Sliders, Volume2, Type, RefreshCw, Mic, Plus, Languages } from 'lucide-react'
 import type { Segment, Speaker, Job } from '@/types'
 import { useEditorStore, useActiveSegmentId } from '@/store/editorStore'
 import { SegmentCardSkeleton } from '@/components/ui/Skeleton'
@@ -11,7 +11,7 @@ import { toast } from 'sonner'
 import { cn, formatTime, getSpeakerColor } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import { segments as segmentsApi } from '@/api/client'
-import { useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker } from '@/hooks/useApi'
+import { useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker, useTranslateMissing } from '@/hooks/useApi'
 import { PipelineStepper } from '@/features/upload/PipelineStepper'
 import { recordSegmentChange, recordSegmentsChange, recordSegmentCreate } from '@/lib/historyHelpers'
 
@@ -47,6 +47,21 @@ export function TranscriptPanel({
     return seg && !seg.tts_audio_path
   }).length
   const { data: availableVoices = [] } = useVoices()
+  // Lines with words but no translation — e.g. after a translation outage.
+  // They stay flagged (not just a toast) until translated, with a one-click retry.
+  const translateMissing = useTranslateMissing()
+  const missingTranslations = useMemo(
+    () => segments.filter((s) => s.source_text?.trim() && !s.khmer_text?.trim()).length,
+    [segments],
+  )
+  const translating = job?.status === 'translating'
+  const jobIdle = !job || job.status === 'completed' || job.status === 'failed'
+  const handleTranslateMissing = () => {
+    translateMissing.mutate(jobId, {
+      onSuccess: (r) => toast.success(`Translating ${r.lines} line${r.lines === 1 ? '' : 's'}…`),
+      onError: (e) => toast.error((e as Error).message || 'Could not start the translation'),
+    })
+  }
   const inspectorMode = useEditorStore((s) => s.inspectorMode)
   const focusedTimelineItemId = useEditorStore((s) => s.focusedTimelineItemId)
  
@@ -535,6 +550,32 @@ export function TranscriptPanel({
               style={{ width: `${(batchDoneCount / Math.max(1, batchGeneratingIds.length)) * 100}%` }}
             />
           </div>
+        </div>
+      )}
+
+      {inspectorMode === 'global_synthesis' && (translating || (missingTranslations > 0 && jobIdle)) && (
+        <div className="px-3 py-1.5 border-b border-zinc-800/50 shrink-0 bg-amber-950/20 flex items-center gap-2">
+          {translating ? (
+            <>
+              <Loader2 size={11} className="animate-spin text-amber-300 shrink-0" />
+              <span className="text-[10px] font-semibold text-amber-200">Translating missing lines…</span>
+            </>
+          ) : (
+            <>
+              <Languages size={11} className="text-amber-300 shrink-0" />
+              <span className="flex-1 text-[10px] text-amber-200 leading-snug">
+                {missingTranslations} line{missingTranslations === 1 ? ' has' : 's have'} no translation
+              </span>
+              <button
+                onClick={handleTranslateMissing}
+                disabled={translateMissing.isPending}
+                className="shrink-0 text-[10px] font-semibold text-amber-100 bg-amber-600/30 hover:bg-amber-600/50 px-2 py-0.5 rounded transition-colors disabled:opacity-50"
+                title="Translate only the lines without a translation — translated and edited lines stay as they are"
+              >
+                Translate missing lines
+              </button>
+            </>
+          )}
         </div>
       )}
 

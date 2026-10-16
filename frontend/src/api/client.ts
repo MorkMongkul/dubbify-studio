@@ -3,16 +3,7 @@
 
 import axios from 'axios'
 import type {
-  Project, ProjectCreate, ProjectUpdate,
-  Job, PipelineStartResponse,
-  Speaker, SpeakerUpdate, SpeakerCreate,
-  Segment, SegmentUpdate, SegmentCreate,
-  TTSResponse, HealthResponse,
-  Voice, VoiceMode,
-  Overlay, OverlayUpdate, OverlayTemplate,
-  ChatMessage, ChatSendResponse, ChatProposedEdit,
-  AppSettings,
-  AppSettingsUpdate,
+  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, Segment, SegmentUpdate, SegmentCreate, TTSResponse, HealthResponse, Voice, VoiceMode, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult,
 } from '@/types'
 
 const api = axios.create({
@@ -64,6 +55,14 @@ export const appSettings = {
 
   update: (data: AppSettingsUpdate) =>
     api.put<AppSettings>('/settings', data).then((r) => r.data),
+
+  // The Gemini models the saved key can use, per job.
+  models: () =>
+    api.get<{ choices: GeminiModelChoice[] }>('/settings/models').then((r) => r.data.choices),
+
+  // A tiny real request: a listed model can still refuse to work.
+  testModel: (setting: GeminiModelSetting, model: string) =>
+    api.post<GeminiModelTestResult>('/settings/models/test', { setting, model }).then((r) => r.data),
 }
 
 export const health = {
@@ -143,6 +142,10 @@ export const jobs = {
   // Re-detect who speaks each existing segment; text, edits and voices are kept.
   detectSpeakers: (jobId: string) =>
     api.post(`/jobs/${jobId}/detect-speakers`).then((r) => r.data),
+
+  // Translate lines that have no translation yet; translated and edited lines are kept.
+  translateMissing: (jobId: string) =>
+    api.post<{ lines: number }>(`/jobs/${jobId}/translate`).then((r) => r.data),
 
   setBgmVolume: (jobId: string, volumeDb: number) =>
     api.patch<Job>(`/jobs/${jobId}/bgm-volume`, { volume_db: volumeDb }).then((r) => r.data),

@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.2"
+version = "0.1.3"
 description = "Dubify Studio desktop app"
 authors = ["Dubify Studio"]
 license = ""

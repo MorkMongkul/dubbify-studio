@@ -30,6 +30,7 @@ from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.services import gemini_models
 from app.models.models import ChatMessage, ChatProposedEdit, Job, Project, Segment, Speaker
 
 logger = logging.getLogger(__name__)
@@ -43,22 +44,6 @@ def naive_utcnow() -> datetime:
     """
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
-
-_http_client: httpx.AsyncClient | None = None
-
-
-def _get_http() -> httpx.AsyncClient:
-    global _http_client
-    if _http_client is None or _http_client.is_closed:
-        _http_client = httpx.AsyncClient()
-    return _http_client
-
-
-def _gemini_url() -> str:
-    return (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{settings.GEMINI_CHAT_MODEL}:generateContent"
-    )
 
 
 _SYSTEM_INSTRUCTION = """You are a translation-consistency assistant for a Chinese-to-Khmer \
@@ -287,14 +272,10 @@ async def _call_gemini(contents: list[dict]) -> dict:
         "tools": [{"functionDeclarations": _TOOL_DECLARATIONS}],
         "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1024},
     }
-    headers = {"Content-Type": "application/json", "x-goog-api-key": settings.GEMINI_API_KEY}
-
-    resp = await _get_http().post(
-        _gemini_url(), json=payload, headers=headers,
-        timeout=httpx.Timeout(60.0, connect=10.0),
-    )
+    # A retired chat model is replaced automatically (gemini_models).
+    resp = await gemini_models.generate_content("chat", payload, timeout=httpx.Timeout(60.0, connect=10.0))
     if resp.status_code != 200:
-        raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text[:300]}")
+        raise RuntimeError(f"Gemini API error {resp.status_code}: {gemini_models.error_message(resp.text)}")
 
     data = resp.json()
     try:

@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.binaries import find
 from app.core.config import settings
+from app.services import gemini_models
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
 
@@ -25,9 +26,18 @@ SECRETS = ("GEMINI_API_KEY", "HF_TOKEN")
 EDITABLE = (
     "GEMINI_API_KEY", "HF_TOKEN",
     "VOXCPM2_API_URL", "VOXCPM2_HF_SPACE_FALLBACK",
-    "TRANSLATION_BACKEND", "GEMINI_MODEL", "GEMINI_ASR_MODEL", "GEMINI_CHAT_MODEL",
+    "TRANSLATION_BACKEND", "GEMINI_MODEL", "GEMINI_ASR_MODEL", "GEMINI_CHAT_MODEL", "GEMINI_TTS_MODEL",
     "TTS_BATCH_CONCURRENCY",
 )
+
+# Settings → AI models: which Gemini job each model setting is for. An empty
+# value means "Automatic" — the built-in choice (see gemini_models).
+MODEL_SETTINGS = {
+    "GEMINI_MODEL": ("translation", "Translation"),
+    "GEMINI_ASR_MODEL": ("asr", "Transcription and speakers"),
+    "GEMINI_CHAT_MODEL": ("chat", "Assistant"),
+    "GEMINI_TTS_MODEL": ("tts", "Voice fallback (when VoxCPM is unavailable)"),
+}
 
 ModelName = Annotated[str, Field(max_length=100, pattern=r"^[A-Za-z0-9._-]*$")]
 
@@ -44,6 +54,7 @@ class SettingsUpdate(BaseModel):
     GEMINI_MODEL: Optional[ModelName] = None
     GEMINI_ASR_MODEL: Optional[ModelName] = None
     GEMINI_CHAT_MODEL: Optional[ModelName] = None
+    GEMINI_TTS_MODEL: Optional[ModelName] = None
     TTS_BATCH_CONCURRENCY: Annotated[Optional[int], Field(ge=1, le=8)] = None
 
     @field_validator("GEMINI_API_KEY", "HF_TOKEN", "VOXCPM2_API_URL")
@@ -155,3 +166,69 @@ def update_settings(payload: SettingsUpdate) -> SettingsView:
         for key, value in changes.items():
             setattr(settings, key, value)
     return _view()
+
+
+# ── AI models ─────────────────────────────────────────────────────────────────
+
+class ModelChoice(BaseModel):
+    setting: str          # GEMINI_MODEL, …
+    label: str
+    value: str            # the saved choice; "" = Automatic
+    automatic: str        # the model Automatic stands for
+    in_use: str           # the model actually answering (differs when a retired one was replaced)
+    options: list[str]    # models this key can see that suit this job: aliases, then newest first
+
+
+class ModelsView(BaseModel):
+    choices: list[ModelChoice]
+
+
+class ModelTest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    setting: Literal["GEMINI_MODEL", "GEMINI_ASR_MODEL", "GEMINI_CHAT_MODEL", "GEMINI_TTS_MODEL"]
+    model: Annotated[str, Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._-]+$")]
+
+
+class ModelTestResult(BaseModel):
+    ok: bool
+    message: str
+
+
+def _require_key() -> None:
+    if not settings.GEMINI_API_KEY:
+        raise HTTPException(status_code=400, detail="Add your Gemini API key first — the models on offer depend on it.")
+
+
+@router.get("/models")
+async def list_models() -> ModelsView:
+    """The Gemini models this key can use, per job."""
+    _require_key()
+    listed = await gemini_models.list_names()
+    if not listed:
+        raise HTTPException(
+            status_code=502,
+            detail="Couldn't load the model list from Google — check the API key and your internet connection.",
+        )
+    def saved(setting: str, purpose: str) -> str:
+        value = (getattr(settings, setting) or "").strip()
+        return "" if value == gemini_models.default_model(purpose) else value   # untouched = Automatic
+
+    return ModelsView(choices=[
+        ModelChoice(
+            setting=setting,
+            label=label,
+            value=saved(setting, purpose),
+            automatic=gemini_models.default_model(purpose),
+            in_use=gemini_models.current_model(purpose),
+            options=gemini_models.options_for(purpose, listed),
+        )
+        for setting, (purpose, label) in MODEL_SETTINGS.items()
+    ])
+
+
+@router.post("/models/test")
+async def test_model(payload: ModelTest) -> ModelTestResult:
+    """Check a model with a tiny real request — a listed model can still refuse to work."""
+    _require_key()
+    ok, message = await gemini_models.probe(MODEL_SETTINGS[payload.setting][0], payload.model)
+    return ModelTestResult(ok=ok, message=message)

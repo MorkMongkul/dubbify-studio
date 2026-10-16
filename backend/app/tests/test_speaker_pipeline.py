@@ -367,3 +367,93 @@ async def test_restart_recovery_never_strands_a_job_that_has_segments(background
     mixed = await _job(background_db, mixing_job)
     assert mixed.status == JobStatus.COMPLETED and "restart" in mixed.error_msg.lower()
     assert (await _job(background_db, extracting_job)).status == JobStatus.FAILED
+
+
+# ── Translate missing lines (recovery after a translation outage) ─────────────
+
+@pytest.mark.asyncio
+async def test_translate_missing_fills_only_empty_lines_and_keeps_edits(client, monkeypatch, uploads, background_db):
+    project_id, job_id = await _seed(
+        background_db,
+        speakers=[("SPEAKER_00", "Xiaoyu", False), ("SPEAKER_01", "Jun", False)],
+        segments=[(0.0, 2.0, "你好", "", "SPEAKER_00", ""),
+                  (3.0, 5.0, "谢谢", "edited by hand", "SPEAKER_01", "/tts/b.wav"),
+                  (6.0, 8.0, "再见", "", "SPEAKER_01", ""),
+                  (9.0, 9.5, "", "", None, "")],          # no transcription: nothing to translate
+    )
+    seen = {}
+
+    async def fake_translate(texts, source_lang, target_lang, segments_context=None):
+        seen.update(texts=list(texts), labels=[c["speaker_label"] for c in segments_context])
+        return [f"km:{t}" for t in texts], TranslationReport()
+
+    monkeypatch.setattr(pipeline, "translate_batch_with_report", fake_translate)
+    resp = await client.post(f"/api/v1/jobs/{job_id}/translate")
+    assert resp.status_code == 202
+    assert seen == {"texts": ["你好", "再见"], "labels": ["SPEAKER_00", "SPEAKER_01"]}
+    rows = await _segments(background_db, job_id)
+    assert [seg.khmer_text for seg, _ in rows] == ["km:你好", "edited by hand", "km:再见", ""]
+    job = await _job(background_db, job_id)
+    assert job.status == JobStatus.COMPLETED and job.error_msg == ""
+
+
+@pytest.mark.asyncio
+async def test_translate_missing_never_overwrites_a_line_typed_while_it_ran(client, monkeypatch, uploads, background_db):
+    _project_id, job_id = await _seed(background_db, segments=[(0.0, 2.0, "你好", "", None, "")])
+
+    async def slow_translate(texts, source_lang, target_lang, segments_context=None):
+        async with background_db() as s:     # the user types a translation meanwhile
+            seg = (await s.execute(select(Segment).where(Segment.job_id == job_id))).scalar_one()
+            seg.khmer_text = "typed by the user"
+            await s.commit()
+        return ["km:你好"], TranslationReport()
+
+    monkeypatch.setattr(pipeline, "translate_batch_with_report", slow_translate)
+    await client.post(f"/api/v1/jobs/{job_id}/translate")
+    rows = await _segments(background_db, job_id)
+    assert rows[0][0].khmer_text == "typed by the user"
+
+
+@pytest.mark.asyncio
+async def test_translate_missing_reports_lines_that_still_failed(client, monkeypatch, uploads, background_db):
+    _project_id, job_id = await _seed(background_db, segments=[(0.0, 2.0, "你好", "", None, ""),
+                                                                (3.0, 4.0, "再见", "", None, "")])
+
+    async def half(texts, source_lang, target_lang, segments_context=None):
+        return ["", "km:再见"], TranslationReport(failed=1, gemini_error="Gemini 503: overloaded")
+
+    monkeypatch.setattr(pipeline, "translate_batch_with_report", half)
+    await client.post(f"/api/v1/jobs/{job_id}/translate")
+    job = await _job(background_db, job_id)
+    assert job.status == JobStatus.COMPLETED
+    assert "1 line(s) couldn't be translated" in job.error_msg and "overloaded" in job.error_msg
+
+
+@pytest.mark.asyncio
+async def test_translate_missing_with_nothing_to_do_says_so(client, uploads, background_db):
+    _project_id, job_id = await _seed(background_db, segments=[(0.0, 2.0, "你好", "km", None, "")])
+    resp = await client.post(f"/api/v1/jobs/{job_id}/translate")
+    assert resp.status_code == 400
+    assert "already" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_translate_missing_refuses_a_busy_session(client, uploads, background_db):
+    _project_id, job_id = await _seed(background_db, status=JobStatus.TRANSLATING,
+                                      segments=[(0.0, 2.0, "你好", "", None, "")])
+    resp = await client.post(f"/api/v1/jobs/{job_id}/translate")
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_translate_missing_failure_restores_the_job(client, monkeypatch, uploads, background_db):
+    _project_id, job_id = await _seed(background_db, segments=[(0.0, 2.0, "你好", "", None, "")])
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("translator crashed")
+
+    monkeypatch.setattr(pipeline, "translate_batch_with_report", broken)
+    resp = await client.post(f"/api/v1/jobs/{job_id}/translate")
+    assert resp.status_code == 202
+    job = await _job(background_db, job_id)
+    assert job.status == JobStatus.COMPLETED and "translator crashed" in job.error_msg
