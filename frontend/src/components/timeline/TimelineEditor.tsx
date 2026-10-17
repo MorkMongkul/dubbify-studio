@@ -647,11 +647,11 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
       } as React.CSSProperties}
     >
       {/* Toolbar */}
-      <div className="flex items-center justify-between gap-3 px-3 border-b border-white/[0.06] shrink-0 bg-zinc-900 select-none w-full relative h-11">
+      <div className="flex items-center justify-between gap-3 px-3 border-b border-white/[0.06] shrink-0 bg-ink-900 select-none w-full relative h-11">
         {/* Left: editing tools */}
         <div className="flex items-center gap-1.5 z-10">
           {/* Tool mode — segmented control */}
-          <div className="flex items-center gap-0.5 rounded-lg bg-zinc-950/60 border border-white/[0.07] p-0.5">
+          <div className="flex items-center gap-0.5 rounded-lg bg-ink-950/60 border border-white/[0.07] p-0.5">
             <Tooltip content="Select — drag clips · drag empty space to box-select (V)" side="bottom">
               <button
                 onClick={() => setActiveTool('select')}
@@ -751,7 +751,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
           {selectedSegmentIds.length > 0 && (
             <>
               <div className="w-px h-5 bg-white/[0.08] mx-0.5" />
-              <span className="text-[10.5px] font-semibold text-purple-300 tabular-nums select-none">
+              <span className="text-[10.5px] font-semibold text-brand-300 tabular-nums select-none">
                 {selectedSegmentIds.length} selected
               </span>
               <Tooltip content="Clear selection" side="bottom">
@@ -769,7 +769,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
 
         {/* Center: label (hidden on narrow toolbars so tools never collide) */}
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 hidden 2xl:flex items-center gap-1 pointer-events-none">
-          <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-600 select-none">Timeline</span>
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-ink-600 select-none">Timeline</span>
         </div>
 
         {/* Right: Zoom Controls */}
@@ -790,7 +790,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                 the bubble was clipped into a broken-looking fragment. */}
             <div
               className={cn(
-                "absolute top-full left-1/2 -translate-x-1/2 mt-2 px-2 py-0.5 rounded bg-zinc-900 border border-zinc-700 text-[10px] font-mono font-bold text-white shadow-md pointer-events-none transition-all duration-150 z-30 whitespace-nowrap",
+                "absolute top-full left-1/2 -translate-x-1/2 mt-2 px-2 py-0.5 rounded bg-ink-900 border border-ink-700 text-[10px] font-mono font-bold text-white shadow-md pointer-events-none transition-all duration-150 z-30 whitespace-nowrap",
                 (showZoomTooltip || isDraggingSlider)
                   ? "opacity-100 scale-100 translate-y-0"
                   : "opacity-0 scale-90 -translate-y-1"
@@ -798,8 +798,8 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
             >
               {Math.round(zoom * 100)}%
               {/* Tooltip arrow (pointing up at the slider) */}
-              <div className="absolute bottom-full left-1/2 -translate-x-1/2 -mb-[1px] w-0 h-0 border-l-[4px] border-r-[4px] border-b-[4px] border-l-transparent border-r-transparent border-b-zinc-700" />
-              <div className="absolute bottom-full left-1/2 -translate-x-1/2 -mb-[2px] w-0 h-0 border-l-[4px] border-r-[4px] border-b-[4px] border-l-transparent border-r-transparent border-b-zinc-900" />
+              <div className="absolute bottom-full left-1/2 -translate-x-1/2 -mb-[1px] w-0 h-0 border-l-[4px] border-r-[4px] border-b-[4px] border-l-transparent border-r-transparent border-b-ink-700" />
+              <div className="absolute bottom-full left-1/2 -translate-x-1/2 -mb-[2px] w-0 h-0 border-l-[4px] border-r-[4px] border-b-[4px] border-l-transparent border-r-transparent border-b-ink-900" />
             </div>
 
             <input
@@ -823,7 +823,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                 setShowZoomTooltip(false)
                 setIsDraggingSlider(false)
               }}
-              className="w-20 md:w-24 appearance-none cursor-pointer bg-zinc-800 h-[2px] rounded-lg focus:outline-none opacity-85 hover:opacity-100 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:shadow [&::-moz-range-thumb]:h-2.5 [&::-moz-range-thumb]:w-2.5 [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0"
+              className="w-20 md:w-24 appearance-none cursor-pointer bg-ink-800 h-[2px] rounded-lg focus:outline-none opacity-85 hover:opacity-100 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:shadow [&::-moz-range-thumb]:h-2.5 [&::-moz-range-thumb]:w-2.5 [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0"
             />
           </div>
 
@@ -852,10 +852,10 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
       {/* Main Timeline Area (Ruler + Tracks + Splitters) */}
       <div className="flex-1 min-h-0 flex flex-col relative">
         {/* Ruler Row */}
-        <div className="flex h-8 bg-zinc-950/30 border-b border-white/[0.06] shrink-0 select-none relative">
+        <div className="flex h-8 bg-ink-950/30 border-b border-white/[0.06] shrink-0 select-none relative">
           {/* Ruler Speaker Header Spacer */}
           <div
-            className="h-full border-r border-white/[0.04] shrink-0 bg-zinc-900/95 z-20"
+            className="h-full border-r border-white/[0.04] shrink-0 bg-ink-900/95 z-20"
             style={{ width: 'var(--speaker-width)' }}
           />
           {/* Ruler Scroll Viewport */}
@@ -880,7 +880,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                 {/* Floating Playhead Timestamp Badge — text set imperatively via ref */}
                 <div
                   ref={playheadBadgeRef}
-                  className="absolute top-[7px] left-1/2 -translate-x-1/2 bg-zinc-900 border border-red-500/50 px-2 py-0.5 rounded font-mono text-[11px] text-red-400 font-semibold shadow-md whitespace-nowrap select-none z-40 tabular-nums"
+                  className="absolute top-[7px] left-1/2 -translate-x-1/2 bg-ink-900 border border-red-500/50 px-2 py-0.5 rounded font-mono text-[11px] text-red-400 font-semibold shadow-md whitespace-nowrap select-none z-40 tabular-nums"
                 >
                   {formatPlayheadTime(useEditorStore.getState().currentTime)}
                 </div>
@@ -905,7 +905,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
             {/* Marquee (box-select) rectangle — shown/positioned imperatively */}
             <div
               ref={marqueeRef}
-              className="absolute z-40 border border-purple-400/80 bg-purple-500/10 rounded-sm pointer-events-none"
+              className="absolute z-40 border border-brand-400/80 bg-brand-500/10 rounded-sm pointer-events-none"
               style={{ display: 'none' }}
             />
 
@@ -927,12 +927,12 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
 
             {/* Background Music (BGM) Track */}
             <div
-              className="relative border-b border-timeline-grid bg-zinc-900/30"
+              className="relative border-b border-timeline-grid bg-ink-900/30"
               style={{ height: STEM_HEIGHT }}
             >
               {/* Track label (sticky left) */}
               <div
-                className="sticky left-0 z-10 h-full flex flex-col justify-center gap-1 px-2.5 py-1.5 shrink-0 bg-zinc-900/95 backdrop-blur-sm border-r border-white/[0.06]"
+                className="sticky left-0 z-10 h-full flex flex-col justify-center gap-1 px-2.5 py-1.5 shrink-0 bg-ink-900/95 backdrop-blur-sm border-r border-white/[0.06]"
                 style={{ float: 'left', width: 'var(--speaker-width)' }}
               >
                 <div className="flex items-center gap-2">
@@ -974,7 +974,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                     onMouseUp={() => handleBgmVolumeCommit(bgmVolume)}
                     onTouchEnd={() => handleBgmVolumeCommit(bgmVolume)}
                     title="BGM & SFX volume"
-                    className="flex-1 accent-sky-500 bg-zinc-800 rounded-lg cursor-pointer h-1 min-w-0 disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="flex-1 accent-sky-500 bg-ink-800 rounded-lg cursor-pointer h-1 min-w-0 disabled:opacity-40 disabled:cursor-not-allowed"
                   />
                   <span className="text-[9px] font-mono text-white/40 shrink-0 w-9 text-right tabular-nums">
                     {isSettingBgmVolume ? '…' : `${bgmVolume > 0 ? '+' : ''}${bgmVolume}dB`}
@@ -1011,18 +1011,18 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
 
             {/* Vocals (Isolated) Track */}
             <div
-              className="relative border-b border-timeline-grid bg-zinc-900/30"
+              className="relative border-b border-timeline-grid bg-ink-900/30"
               style={{ height: STEM_HEIGHT }}
             >
               {/* Track label — Analyze button lives here (sticky, always visible) */}
               <div
-                className="sticky left-0 z-10 h-full flex items-center px-2.5 gap-2 shrink-0 bg-zinc-900/95 backdrop-blur-sm border-r border-white/[0.06]"
+                className="sticky left-0 z-10 h-full flex items-center px-2.5 gap-2 shrink-0 bg-ink-900/95 backdrop-blur-sm border-r border-white/[0.06]"
                 style={{ float: 'left', width: 'var(--speaker-width)' }}
               >
                 <div className={cn(
                   "h-2.5 w-2.5 rounded-full shrink-0",
                   isStage1Processing ? "bg-emerald-500/30 animate-pulse"
-                    : vocalsReplaced   ? "bg-zinc-600"
+                    : vocalsReplaced   ? "bg-ink-600"
                     : "bg-emerald-500"
                 )} />
                 <div className="flex flex-col min-w-0 grow pr-1">
@@ -1030,7 +1030,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                     {vocalsReplaced ? 'Orig. Vocals' : 'Vocals'}
                   </span>
                   {vocalsReplaced && (
-                    <span className="text-[8px] text-zinc-600 truncate leading-tight"></span>
+                    <span className="text-[8px] text-ink-600 truncate leading-tight"></span>
                   )}
                 </div>
                 <div className="flex items-center gap-1 ml-auto shrink-0">
@@ -1061,7 +1061,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                         placeholder="spk"
                         title="Max speakers (optional) — caps over-detection. Leave blank for auto."
                         disabled={analyzing}
-                        className="w-10 px-1 py-0.5 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-200 text-[9px] focus:outline-none focus:border-emerald-500 disabled:opacity-60"
+                        className="w-10 px-1 py-0.5 rounded-full bg-ink-800 border border-ink-700 text-ink-200 text-[9px] focus:outline-none focus:border-emerald-500 disabled:opacity-60"
                       />
                       <button
                         onClick={() => {
@@ -1099,7 +1099,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                   <div className={cn(
                     "absolute inset-0 rounded border transition-all",
                     vocalsReplaced
-                      ? "bg-zinc-800/40 border-zinc-700/30 opacity-40"
+                      ? "bg-ink-800/40 border-ink-700/30 opacity-40"
                       : "bg-emerald-500/10 border-emerald-500/25"
                   )}>
                     {vocalsPreviewPath && (
@@ -1127,7 +1127,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                 >
                   {/* Track label (sticky left) */}
                   <div
-                    className="sticky left-0 z-10 h-full flex items-center px-2.5 gap-2 shrink-0 bg-zinc-900/95 backdrop-blur-sm border-r border-white/[0.06]"
+                    className="sticky left-0 z-10 h-full flex items-center px-2.5 gap-2 shrink-0 bg-ink-900/95 backdrop-blur-sm border-r border-white/[0.06]"
                     style={{ float: 'left', width: 'var(--speaker-width)' }}
                   >
                     <span className="text-[12.5px] font-medium text-white/45 truncate grow min-w-0 pr-1 select-none">
@@ -1526,7 +1526,7 @@ const InteractiveSegment = memo(function InteractiveSegment({
 
       // Cheap, non-reactive visual cue when snapped — direct style mutation,
       // no React state, consistent with the rest of this drag implementation.
-      element.style.boxShadow = snapped ? '0 0 0 2px rgba(167,139,250,0.9)' : ''
+      element.style.boxShadow = snapped ? '0 0 0 2px rgba(244,114,141,0.9)' : ''
     }
 
     const handlePointerUp = (upEvent: PointerEvent) => {
@@ -1639,7 +1639,7 @@ const InteractiveSegment = memo(function InteractiveSegment({
       className={cn(
         'timeline-segment absolute top-[6px] bottom-[6px] select-none overflow-hidden transition-all',
         activeTool === 'blade' ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing',
-        isActive && 'active border-purple-500 outline-2 outline-purple-500 ring-2 ring-purple-500/20',
+        isActive && 'active border-brand-500 outline-2 outline-brand-500 ring-2 ring-brand-500/20',
         isSplitting && 'opacity-60'
       )}
       style={{
@@ -1656,11 +1656,11 @@ const InteractiveSegment = memo(function InteractiveSegment({
         borderBottom: `1px solid ${hexToRgba(color, isApproved ? 0.6 : 0.3)}`,
         borderRadius: '8px',
         boxShadow: isActive
-          ? `0 0 12px ${hexToRgba('#7C3AED', 0.6)}`
-          : isSelected ? '0 0 8px rgba(167,139,250,0.35)' : 'none',
+          ? `0 0 12px ${hexToRgba('#F0506E', 0.6)}`
+          : isSelected ? '0 0 8px rgba(244,114,141,0.35)' : 'none',
         outline: isActive
-          ? '2px solid #7C3AED'
-          : isSelected ? '2px solid rgba(167,139,250,0.85)' : 'none',
+          ? '2px solid #F0506E'
+          : isSelected ? '2px solid rgba(244,114,141,0.85)' : 'none',
         outlineOffset: '-2px',
       }}
       onPointerDown={(e) => {
@@ -1807,7 +1807,7 @@ const InteractiveSegment = memo(function InteractiveSegment({
         <div className="absolute top-0.5 right-2.5 z-30 flex items-center gap-1">
           {seg.tts_audio_path && onRegenerate && (
             <button
-              className="h-4 w-4 rounded-full bg-zinc-700 hover:bg-zinc-600 flex items-center justify-center shadow transition-colors disabled:opacity-50"
+              className="h-4 w-4 rounded-full bg-ink-700 hover:bg-ink-600 flex items-center justify-center shadow transition-colors disabled:opacity-50"
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => { e.stopPropagation(); onRegenerate(seg.id) }}
               disabled={isRegenerating}

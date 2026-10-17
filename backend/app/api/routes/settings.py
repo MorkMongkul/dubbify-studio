@@ -120,7 +120,7 @@ def _format(value: Union[str, int]) -> str:
 def _write_settings_file(path: Path, changes: dict) -> None:
     """Update KEY=VALUE lines in place (keeping anything else), atomically, owner-only."""
     lines = path.read_text().splitlines() if path.exists() else [
-        "# Dubify Studio settings — written by the app's Settings panel.",
+        "# Movelo Studio settings — written by the app's Settings panel.",
     ]
     pending = dict(changes)
     out = []

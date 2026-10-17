@@ -29,7 +29,7 @@ def _env_file_path() -> str:
 
 class Settings(BaseSettings):
     # ── App ───────────────────────────────────────────────────
-    APP_NAME: str = "Dubbify Studio API"
+    APP_NAME: str = "Movelo Studio API"
     APP_VERSION: str = "0.1.0-dev"
     DEBUG: bool = False
 
@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     DUBIFY_LOG_DIR: str = ""       # ~/Library/Logs/<app id>
     DUBIFY_INSTANCE_ID: str = ""   # per launch — proves to the app it reached THIS backend
     DUBIFY_APP_VERSION: str = ""   # the app's own version (tauri.conf.json)
+    # Where the data folder used to be, when the app moved it (the app ID
+    # changed with the Movelo rename) — stored paths are rewritten at startup.
+    DUBIFY_PREVIOUS_DATA_DIR: str = ""
 
     @property
     def version(self) -> str:

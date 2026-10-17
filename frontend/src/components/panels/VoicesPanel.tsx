@@ -23,7 +23,7 @@ const MODES: { value: VoiceMode; label: string; blurb: string; needs: string }[]
   { value: 'ultimate', label: 'Ultimate', blurb: 'Clip + its exact transcript, for the highest-fidelity copy.', needs: 'Needs clip + text' },
 ]
 
-const PREVIEW_DEFAULT = 'សួស្តី នេះគឺជាសំឡេងសាកល្បងពី Dubify Studio។'
+const PREVIEW_DEFAULT = 'សួស្តី នេះគឺជាសំឡេងសាកល្បងពី Movelo Studio។'
 
 type ModeFilter = 'all' | VoiceMode
 
@@ -153,8 +153,8 @@ export function VoicesPanel() {
             className={cn(
               'flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded transition-colors',
               createOpen
-                ? 'text-zinc-400 hover:text-zinc-200 hover:bg-white/8'
-                : 'text-purple-400 hover:text-purple-300 hover:bg-purple-500/10'
+                ? 'text-ink-400 hover:text-ink-200 hover:bg-white/8'
+                : 'text-brand-400 hover:text-brand-300 hover:bg-brand-500/10'
             )}
           >
             {createOpen ? <X size={12} /> : <Plus size={12} />}
@@ -219,7 +219,7 @@ export function VoicesPanel() {
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder="e.g. Hero — Male, Deep"
-                    className="w-full rounded-lg bg-zinc-950/60 border border-white/10 px-2.5 h-8 text-xs text-white placeholder-white/25 focus:outline-none focus:border-brand-400 transition-all"
+                    className="w-full rounded-lg bg-ink-950/60 border border-white/10 px-2.5 h-8 text-xs text-white placeholder-white/25 focus:outline-none focus:border-brand-400 transition-all"
                   />
                 </div>
 
@@ -269,7 +269,7 @@ export function VoicesPanel() {
                       onChange={(e) => setTranscript(e.target.value)}
                       placeholder="Type the exact words spoken in your reference clip"
                       rows={2}
-                      className="w-full rounded-lg bg-zinc-950/60 border border-white/10 px-2.5 py-2 text-xs text-white placeholder-white/25 focus:outline-none focus:border-brand-400 resize-none transition-all"
+                      className="w-full rounded-lg bg-ink-950/60 border border-white/10 px-2.5 py-2 text-xs text-white placeholder-white/25 focus:outline-none focus:border-brand-400 resize-none transition-all"
                     />
                   </div>
                 )}
@@ -288,7 +288,7 @@ export function VoicesPanel() {
                       ? 'A young woman, gentle and sweet, speaks slowly'
                       : 'e.g. cheerful tone, slightly faster pace'}
                     rows={2}
-                    className="w-full rounded-lg bg-zinc-950/60 border border-white/10 px-2.5 py-2 text-xs text-white placeholder-white/25 focus:outline-none focus:border-brand-400 resize-none transition-all"
+                    className="w-full rounded-lg bg-ink-950/60 border border-white/10 px-2.5 py-2 text-xs text-white placeholder-white/25 focus:outline-none focus:border-brand-400 resize-none transition-all"
                   />
                   {mode === 'design' && !description.trim() && (
                     <p className="text-[9.5px] text-white/30 mt-1 leading-relaxed">
@@ -385,7 +385,7 @@ export function VoicesPanel() {
             value={previewText}
             onChange={(e) => setPreviewText(e.target.value)}
             placeholder="Type a line to hear…"
-            className="w-full rounded-lg bg-zinc-950/60 border border-white/10 px-2.5 h-8 text-xs text-white placeholder-white/25 focus:outline-none focus:border-brand-400 transition-all"
+            className="w-full rounded-lg bg-ink-950/60 border border-white/10 px-2.5 h-8 text-xs text-white placeholder-white/25 focus:outline-none focus:border-brand-400 transition-all"
           />
           <p className="text-[9.5px] text-white/30 mt-1">Every voice below is previewed saying this line.</p>
         </div>
@@ -393,13 +393,13 @@ export function VoicesPanel() {
         {/* ── Search + filter ─────────────────────────────────── */}
         <div className="space-y-1.5">
           <div className="relative flex items-center">
-            <Search size={11} className="absolute left-2 text-zinc-600 pointer-events-none" />
+            <Search size={11} className="absolute left-2 text-ink-600 pointer-events-none" />
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search voices…"
               aria-label="Search voices"
-              className="w-full h-7 pr-7 rounded border bg-zinc-950/60 border-zinc-800 text-[11px] text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-purple-500/50"
+              className="w-full h-7 pr-7 rounded border bg-ink-950/60 border-ink-800 text-[11px] text-ink-200 placeholder-ink-600 focus:outline-none focus:border-brand-500/50"
               style={{ paddingLeft: 26 }}
             />
             {search && (
@@ -432,7 +432,7 @@ export function VoicesPanel() {
         {isLoading ? (
           <div className="space-y-1.5">
             {[...Array(4)].map((_, i) => (
-              <div key={i} className="h-16 rounded-lg bg-zinc-800/40 animate-pulse" style={{ animationDelay: `${i * 90}ms` }} />
+              <div key={i} className="h-16 rounded-lg bg-ink-800/40 animate-pulse" style={{ animationDelay: `${i * 90}ms` }} />
             ))}
           </div>
         ) : voiceList.length === 0 ? (
@@ -484,7 +484,7 @@ export function VoicesPanel() {
                           if (e.key === 'Enter') e.currentTarget.blur()
                           if (e.key === 'Escape') setEditingVoiceId(null)
                         }}
-                        className="text-[12px] font-semibold text-white bg-zinc-950 rounded px-1.5 py-0.5 min-w-0 flex-1 focus:outline-none border border-brand-400/60"
+                        className="text-[12px] font-semibold text-white bg-ink-950 rounded px-1.5 py-0.5 min-w-0 flex-1 focus:outline-none border border-brand-400/60"
                       />
                     ) : (
                       <button

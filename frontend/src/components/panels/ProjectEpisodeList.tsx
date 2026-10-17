@@ -52,9 +52,9 @@ export function ProjectEpisodeList({ projectId, activeJobId, onImportFile }: Pro
   }
 
   return (
-    <div className="pl-4 pr-1 py-1 space-y-1 border-l border-zinc-800/60 ml-3">
+    <div className="pl-4 pr-1 py-1 space-y-1 border-l border-ink-800/60 ml-3">
       {onImportFile && (
-        <label className="flex items-center gap-2 p-1.5 rounded border border-dashed border-zinc-700/60 hover:border-purple-500/50 hover:bg-purple-500/5 cursor-pointer transition-all group">
+        <label className="flex items-center gap-2 p-1.5 rounded border border-dashed border-ink-700/60 hover:border-brand-500/50 hover:bg-brand-500/5 cursor-pointer transition-all group">
           <input
             type="file"
             className="hidden"
@@ -66,21 +66,21 @@ export function ProjectEpisodeList({ projectId, activeJobId, onImportFile }: Pro
               e.target.value = ''
             }}
           />
-          <div className="h-5 w-5 rounded-md bg-purple-500/10 border border-purple-500/20 flex items-center justify-center shrink-0">
-            <UploadCloud size={10} className="text-purple-400" />
+          <div className="h-5 w-5 rounded-md bg-brand-500/10 border border-brand-500/20 flex items-center justify-center shrink-0">
+            <UploadCloud size={10} className="text-brand-400" />
           </div>
-          <span className="text-[10px] text-zinc-400 group-hover:text-zinc-200 transition-colors">Import new video</span>
+          <span className="text-[10px] text-ink-400 group-hover:text-ink-200 transition-colors">Import new video</span>
         </label>
       )}
 
       {loadingJobs && (
-        <div className="flex items-center gap-1.5 text-zinc-600 text-[9px] py-1.5">
+        <div className="flex items-center gap-1.5 text-ink-600 text-[9px] py-1.5">
           <Loader2 size={9} className="animate-spin" /> Loading…
         </div>
       )}
 
       {!loadingJobs && projectJobs.length === 0 && (
-        <p className="text-[9px] text-zinc-700 py-1">
+        <p className="text-[9px] text-ink-700 py-1">
           {onImportFile ? 'No episodes yet — import a video above' : 'No episodes yet'}
         </p>
       )}
@@ -98,19 +98,19 @@ export function ProjectEpisodeList({ projectId, activeJobId, onImportFile }: Pro
           <div
             key={j.id}
             onClick={() => !isEditing && navigate(`/projects/${projectId}/jobs/${j.id}`)}
-            className={`group flex items-center gap-1.5 p-1.5 rounded cursor-pointer transition-all border ${isActive ? 'bg-purple-500/10 border-purple-500/30 text-white' : 'bg-zinc-800/20 border-zinc-800/40 hover:bg-zinc-800/50 hover:border-zinc-700/60'}`}
+            className={`group flex items-center gap-1.5 p-1.5 rounded cursor-pointer transition-all border ${isActive ? 'bg-brand-500/10 border-brand-500/30 text-white' : 'bg-ink-800/20 border-ink-800/40 hover:bg-ink-800/50 hover:border-ink-700/60'}`}
           >
             <div className="shrink-0">
               {isDone ? <CheckCircle2 size={11} className="text-emerald-400" />
                 : isFailed ? <AlertCircle size={11} className="text-red-400" />
                 : isStemsReadyJob ? <Scissors size={11} className="text-emerald-400" />
-                : <Loader2 size={11} className="text-purple-400 animate-spin" />}
+                : <Loader2 size={11} className="text-brand-400 animate-spin" />}
             </div>
             <div className="flex-1 min-w-0">
               {isEditing ? (
                 <input
                   autoFocus
-                  className="w-full bg-zinc-950 text-[9.5px] text-zinc-200 rounded px-1 py-0.5 focus:outline-none border border-purple-500/50"
+                  className="w-full bg-ink-950 text-[9.5px] text-ink-200 rounded px-1 py-0.5 focus:outline-none border border-brand-500/50"
                   value={editingTitle}
                   onClick={(e) => e.stopPropagation()}
                   onChange={(e) => setEditingTitle(e.target.value)}
@@ -128,7 +128,7 @@ export function ProjectEpisodeList({ projectId, activeJobId, onImportFile }: Pro
                 />
               ) : (
                 <p
-                  className={`text-[9.5px] font-medium truncate ${isActive ? 'text-white' : 'text-zinc-400'} hover:text-white`}
+                  className={`text-[9.5px] font-medium truncate ${isActive ? 'text-white' : 'text-ink-400'} hover:text-white`}
                   onClick={(e) => {
                     e.stopPropagation()
                     setEditingJobId(j.id)
@@ -151,7 +151,7 @@ export function ProjectEpisodeList({ projectId, activeJobId, onImportFile }: Pro
                 </button>
                 <button
                   onClick={() => setConfirmDeleteId(null)}
-                  className="h-5 w-5 rounded flex items-center justify-center text-zinc-400 hover:bg-white/10"
+                  className="h-5 w-5 rounded flex items-center justify-center text-ink-400 hover:bg-white/10"
                   aria-label="Cancel delete"
                 >
                   <X size={10} />
@@ -161,7 +161,7 @@ export function ProjectEpisodeList({ projectId, activeJobId, onImportFile }: Pro
               <button
                 onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(j.id) }}
                 disabled={deletingJob}
-                className={`shrink-0 p-1 rounded transition-all ${isActive ? 'opacity-60 hover:opacity-100 hover:bg-red-500/20 hover:text-red-400 text-zinc-400' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-red-500/20 hover:text-red-400 text-zinc-500'}`}
+                className={`shrink-0 p-1 rounded transition-all ${isActive ? 'opacity-60 hover:opacity-100 hover:bg-red-500/20 hover:text-red-400 text-ink-400' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-red-500/20 hover:text-red-400 text-ink-500'}`}
                 title="Delete session"
                 aria-label="Delete session"
               >

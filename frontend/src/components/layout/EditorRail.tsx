@@ -6,11 +6,12 @@
 import { useNavigate } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
 import {
-  Zap, FolderOpen, Users, ImagePlus, Mic, Bot, Settings2, Sun, Moon,
+  FolderOpen, Users, ImagePlus, Mic, Bot, Settings2, Sun, Moon,
 } from 'lucide-react'
 import { useEditorStore, type RailTab } from '@/store/editorStore'
 import { useThemeStore } from '@/store/themeStore'
 import { Tooltip } from '@/components/ui/Tooltip'
+import { MoveloStudioIcon } from '@/components/brand/Movelo'
 import { cn } from '@/lib/utils'
 
 const RAIL_ITEMS: { tab: RailTab; icon: LucideIcon; label: string }[] = [
@@ -33,7 +34,7 @@ function RailButton({
         className={cn(
           'h-9 w-9 rounded-lg flex items-center justify-center transition-colors',
           active
-            ? 'bg-purple-500/15 text-purple-300'
+            ? 'bg-brand-500/15 text-brand-300'
             : 'text-white/40 hover:text-white hover:bg-white/6'
         )}
       >
@@ -61,9 +62,9 @@ export function EditorRail() {
         <button
           onClick={() => navigate('/')}
           aria-label="Home"
-          className="h-8 w-8 rounded-lg bg-brand flex items-center justify-center mb-2 hover:scale-105 transition-transform shadow-glow-sm"
+          className="h-8 w-8 flex items-center justify-center mb-2 hover:scale-105 transition-transform"
         >
-          <Zap size={14} className="text-white" fill="white" />
+          <MoveloStudioIcon size={28} />
         </button>
       </Tooltip>
 

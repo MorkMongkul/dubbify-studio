@@ -1,4 +1,4 @@
-# Dubify Studio — Frontend
+# Movelo Studio — Frontend
 
 React 19 + TypeScript single-window editor for the dubbing studio. One screen does everything: import, transcript editing, timeline, voice generation, and export.
 

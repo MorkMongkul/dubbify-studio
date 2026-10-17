@@ -107,12 +107,12 @@ export function PipelineStepper({ job, compact = false }: PipelineStepperProps) 
                   style={{
                     background:
                       state === 'done'    ? 'rgba(16,185,129,0.08)'
-                    : state === 'active'  ? 'rgba(124,58,237,0.12)'
+                    : state === 'active'  ? 'rgba(240,80,110,0.12)'
                     : state === 'error'   ? 'rgba(239,68,68,0.08)'
                     : 'var(--color-surface-4)',
                     borderColor:
                       state === 'done'    ? 'rgba(16,185,129,0.25)'
-                    : state === 'active'  ? 'rgba(124,58,237,0.3)'
+                    : state === 'active'  ? 'rgba(240,80,110,0.3)'
                     : state === 'error'   ? 'rgba(239,68,68,0.25)'
                     : 'var(--color-border)',
                   }}
@@ -206,7 +206,7 @@ function PipelineStepperCompact({ job }: { job: Job }) {
                 state === 'error'   && 'bg-red-500/70',
                 state === 'pending' && 'bg-white/10',
               )}
-              style={state === 'active' ? { background: 'var(--color-brand, #7C3AED)' } : undefined}
+              style={state === 'active' ? { background: 'var(--color-brand, #D6305F)' } : undefined}
             >
               {state === 'active' && (
                 <motion.div

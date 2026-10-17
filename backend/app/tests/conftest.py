@@ -12,7 +12,7 @@ import tempfile
 # Before anything imports the app: environment variables override backend/.env
 # (pydantic-settings), so no test can reach the developer's real database or
 # spend real API quota. Tests that need a "configured" key set it themselves.
-_TEST_ROOT = tempfile.mkdtemp(prefix="dubify-tests-")
+_TEST_ROOT = tempfile.mkdtemp(prefix="movelo-tests-")
 os.environ.update({
     "DATABASE_URL": f"sqlite+aiosqlite:///{_TEST_ROOT}/unused.db",
     "UPLOAD_DIR": os.path.join(_TEST_ROOT, "uploads"),

@@ -468,13 +468,13 @@ export function TranscriptPanel({
     >
       {/* Header */}
       <div
-        className="flex items-center justify-between gap-2 px-3 h-9 border-b border-zinc-800/50 shrink-0 bg-zinc-900"
+        className="flex items-center justify-between gap-2 px-3 h-9 border-b border-ink-800/50 shrink-0 bg-ink-900"
       >
         <div className="flex items-center gap-1.5 min-w-0">
           {inspectorMode === 'global_synthesis' ? (
             <>
-              <AlignLeft size={12} className="text-purple-400/90 animate-pulse" />
-              <span className="text-[11px] font-bold text-purple-400/90 uppercase tracking-wider">
+              <AlignLeft size={12} className="text-brand-400/90 animate-pulse" />
+              <span className="text-[11px] font-bold text-brand-400/90 uppercase tracking-wider">
                 Transcript Inspector
               </span>
             </>
@@ -482,19 +482,19 @@ export function TranscriptPanel({
             <>
               <button
                 onClick={handleResetInspector}
-                className="text-[10px] text-zinc-400 hover:text-white mr-1 flex items-center gap-0.5"
+                className="text-[10px] text-ink-400 hover:text-white mr-1 flex items-center gap-0.5"
                 title="Back to List"
               >
                 <ChevronRight size={12} className="rotate-180" />
                 <span>Back</span>
               </button>
-              <div className="w-px h-3 bg-zinc-800/80 mx-1" />
+              <div className="w-px h-3 bg-ink-800/80 mx-1" />
               {inspectorMode === 'audio_clip_settings' ? (
-                <Volume2 size={12} className="text-purple-400" />
+                <Volume2 size={12} className="text-brand-400" />
               ) : (
-                <Type size={12} className="text-purple-400" />
+                <Type size={12} className="text-brand-400" />
               )}
-              <span className="text-[11px] font-bold text-zinc-200 uppercase tracking-wider truncate">
+              <span className="text-[11px] font-bold text-ink-200 uppercase tracking-wider truncate">
                 {inspectorMode === 'audio_clip_settings' ? activeSpeakerName : 'Subtitle Style'}
               </span>
             </>
@@ -516,7 +516,7 @@ export function TranscriptPanel({
             <button
               onClick={handleAddSegment}
               disabled={createSegment.isPending || !jobId}
-              className="flex items-center gap-1 text-[10px] font-semibold text-purple-400 hover:text-purple-300 hover:bg-purple-500/10 px-1.5 py-0.5 rounded transition-colors disabled:opacity-50"
+              className="flex items-center gap-1 text-[10px] font-semibold text-brand-400 hover:text-brand-300 hover:bg-brand-500/10 px-1.5 py-0.5 rounded transition-colors disabled:opacity-50"
               title="Add a new subtitle segment"
             >
               <Plus size={12} />
@@ -539,14 +539,14 @@ export function TranscriptPanel({
       {/* Batch generation progress — independent of selection, so it stays
           visible for the whole run even after the selection is cleared */}
       {batchSynthesizing && inspectorMode === 'global_synthesis' && (
-        <div className="px-3 py-1.5 border-b border-zinc-800/50 shrink-0 bg-purple-950/20 flex items-center gap-2">
-          <Loader2 size={11} className="animate-spin text-purple-400 shrink-0" />
-          <span className="text-[10px] font-semibold text-purple-300 whitespace-nowrap">
+        <div className="px-3 py-1.5 border-b border-ink-800/50 shrink-0 bg-brand-950/20 flex items-center gap-2">
+          <Loader2 size={11} className="animate-spin text-brand-400 shrink-0" />
+          <span className="text-[10px] font-semibold text-brand-300 whitespace-nowrap">
             Generating voices… {batchDoneCount}/{batchGeneratingIds.length}
           </span>
-          <div className="flex-1 h-1 rounded bg-zinc-800 overflow-hidden">
+          <div className="flex-1 h-1 rounded bg-ink-800 overflow-hidden">
             <div
-              className="h-full bg-purple-500 transition-all duration-500"
+              className="h-full bg-brand-500 transition-all duration-500"
               style={{ width: `${(batchDoneCount / Math.max(1, batchGeneratingIds.length)) * 100}%` }}
             />
           </div>
@@ -554,7 +554,7 @@ export function TranscriptPanel({
       )}
 
       {inspectorMode === 'global_synthesis' && (translating || (missingTranslations > 0 && jobIdle)) && (
-        <div className="px-3 py-1.5 border-b border-zinc-800/50 shrink-0 bg-amber-950/20 flex items-center gap-2">
+        <div className="px-3 py-1.5 border-b border-ink-800/50 shrink-0 bg-amber-950/20 flex items-center gap-2">
           {translating ? (
             <>
               <Loader2 size={11} className="animate-spin text-amber-300 shrink-0" />
@@ -586,9 +586,9 @@ export function TranscriptPanel({
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            className="px-3 py-2 border-b border-zinc-800/50 shrink-0 bg-purple-950/10 text-white flex items-center justify-between gap-2 overflow-hidden"
+            className="px-3 py-2 border-b border-ink-800/50 shrink-0 bg-brand-950/10 text-white flex items-center justify-between gap-2 overflow-hidden"
           >
-            <div className="flex items-center gap-1.5 text-[10px] text-purple-600 dark:text-purple-300 font-bold">
+            <div className="flex items-center gap-1.5 text-[10px] text-brand-600 dark:text-brand-300 font-bold">
               <span>{selectedSegmentIds.length} Selected</span>
             </div>
             <div className="flex items-center gap-2">
@@ -602,7 +602,7 @@ export function TranscriptPanel({
                   : pendingSelectedCount !== selectedSegmentIds.length
                   ? 'Only segments without generated audio yet are synthesized — already-done ones are left as-is'
                   : undefined}
-                className="text-[10px] bg-purple-600 hover:bg-purple-500 text-white px-2.5 py-1 rounded font-semibold transition-all flex items-center gap-1 disabled:opacity-50 cursor-pointer"
+                className="text-[10px] bg-brand-600 hover:bg-brand-500 text-white px-2.5 py-1 rounded font-semibold transition-all flex items-center gap-1 disabled:opacity-50 cursor-pointer"
               >
                 {batchSynthesizing ? <Loader2 size={10} className="animate-spin" /> : <Mic size={10} />}
                 <span>
@@ -615,7 +615,7 @@ export function TranscriptPanel({
               </button>
               <button
                 onClick={() => useEditorStore.setState({ selectedSegmentIds: [] })}
-                className="text-[10px] text-zinc-500 hover:text-zinc-300 dark:text-zinc-400 dark:hover:text-white px-1.5 py-1 cursor-pointer"
+                className="text-[10px] text-ink-500 hover:text-ink-300 dark:text-ink-400 dark:hover:text-white px-1.5 py-1 cursor-pointer"
               >
                 Clear
               </button>
@@ -686,11 +686,11 @@ export function TranscriptPanel({
         ) : inspectorMode === 'global_synthesis' ? (
           <table className="w-full text-left border-collapse text-[11px]">
             <thead>
-              <tr className="border-b border-zinc-800 bg-zinc-900/50 text-zinc-400 font-semibold select-none sticky top-0 z-10">
+              <tr className="border-b border-ink-800 bg-ink-900/50 text-ink-400 font-semibold select-none sticky top-0 z-10">
                 <th className="p-2 w-8 text-center">
                   <input
                     type="checkbox"
-                    className="rounded border-zinc-700 bg-zinc-800 text-purple-500 focus:ring-purple-500 focus:ring-offset-zinc-900 cursor-pointer h-3 w-3"
+                    className="rounded border-ink-700 bg-ink-800 text-brand-500 focus:ring-brand-500 focus:ring-offset-ink-900 cursor-pointer h-3 w-3"
                     checked={segments.length > 0 && segments.every((s) => selectedSegmentIds.includes(s.id))}
                     onChange={() => toggleSelectAllSegments(segments.map((s) => s.id))}
                   />
@@ -702,7 +702,7 @@ export function TranscriptPanel({
                 <th className="p-2 w-16 text-center">Status</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-zinc-800/40">
+            <tbody className="divide-y divide-ink-800/40">
               {segments.map((seg) => {
                 const speaker = getSpeaker(seg)
                 const spkIdx = getSpeakerIndex(seg)
@@ -723,9 +723,9 @@ export function TranscriptPanel({
                       else cardRefs.current.delete(seg.id)
                     }}
                     className={cn(
-                      "group hover:bg-zinc-900/50 transition-colors cursor-pointer",
-                      isActive && "bg-purple-500/15 dark:bg-purple-500/20 hover:bg-purple-500/20 dark:hover:bg-purple-500/25",
-                      isSelected && "bg-zinc-900"
+                      "group hover:bg-ink-900/50 transition-colors cursor-pointer",
+                      isActive && "bg-brand-500/15 dark:bg-brand-500/20 hover:bg-brand-500/20 dark:hover:bg-brand-500/25",
+                      isSelected && "bg-ink-900"
                     )}
                     onClick={() => {
                       setActiveSegment(seg.id)
@@ -743,7 +743,7 @@ export function TranscriptPanel({
                     <td className="p-2 text-center" onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
-                        className="rounded border-zinc-700 bg-zinc-800 text-purple-500 focus:ring-purple-500 focus:ring-offset-zinc-900 cursor-pointer h-3 w-3"
+                        className="rounded border-ink-700 bg-ink-800 text-brand-500 focus:ring-brand-500 focus:ring-offset-ink-900 cursor-pointer h-3 w-3"
                         checked={isSelected}
                         onChange={() => toggleSelectSegment(seg.id)}
                       />
@@ -754,7 +754,7 @@ export function TranscriptPanel({
                       <div className="flex items-center gap-1.5">
                         <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
                         <select
-                          className="bg-zinc-900 text-zinc-200 text-[10px] rounded border border-zinc-800 hover:border-zinc-700 hover:bg-zinc-800 py-0.5 px-1 focus:outline-none focus:border-purple-500/50 cursor-pointer w-full max-w-[90px] truncate"
+                          className="bg-ink-900 text-ink-200 text-[10px] rounded border border-ink-800 hover:border-ink-700 hover:bg-ink-800 py-0.5 px-1 focus:outline-none focus:border-brand-500/50 cursor-pointer w-full max-w-[90px] truncate"
                           value={seg.speaker_id ?? ''}
                           onChange={(e) => handleSpeakerSelectChange(seg.id, e.target.value)}
                         >
@@ -772,13 +772,13 @@ export function TranscriptPanel({
                     {/* Time */}
                     <td className={cn(
                       "p-2 whitespace-nowrap font-mono text-[10px] transition-colors",
-                      isActive ? "text-purple-600 dark:text-purple-400 font-bold" : "text-zinc-400"
+                      isActive ? "text-brand-600 dark:text-brand-400 font-bold" : "text-ink-400"
                     )}>
                       {formatTime(seg.start_time)} - {formatTime(seg.end_time)}
                     </td>
  
                     {/* Target Translation */}
-                    <td className="p-2 whitespace-normal break-words text-zinc-200">
+                    <td className="p-2 whitespace-normal break-words text-ink-200">
                       <textarea
                         value={seg.khmer_text || ''}
                         onChange={(e) => updateSegmentText(seg.id, e.target.value)}
@@ -791,10 +791,10 @@ export function TranscriptPanel({
                           setActiveSegment(seg.id)
                         }}
                         className={cn(
-                          "w-full bg-transparent resize-none focus:outline-none focus:ring-1 focus:ring-purple-500/50 rounded-sm py-1 px-1.5 whitespace-normal break-words transition-colors",
+                          "w-full bg-transparent resize-none focus:outline-none focus:ring-1 focus:ring-brand-500/50 rounded-sm py-1 px-1.5 whitespace-normal break-words transition-colors",
                           isActive
                             ? "text-white font-semibold"
-                            : "text-zinc-100"
+                            : "text-ink-100"
                         )}
                         rows={2}
                       />
@@ -803,7 +803,7 @@ export function TranscriptPanel({
                     {/* Voice Clone Select */}
                     <td className="p-2" onClick={(e) => e.stopPropagation()}>
                       <select
-                        className="bg-zinc-900 text-zinc-200 text-[10px] rounded border border-zinc-800 hover:border-zinc-700 hover:bg-zinc-800 py-0.5 px-1 focus:outline-none focus:border-purple-500/50 cursor-pointer w-full max-w-[100px] truncate"
+                        className="bg-ink-900 text-ink-200 text-[10px] rounded border border-ink-800 hover:border-ink-700 hover:bg-ink-800 py-0.5 px-1 focus:outline-none focus:border-brand-500/50 cursor-pointer w-full max-w-[100px] truncate"
                         value={seg.voice_id || ''}
                         onChange={(e) => handleVoiceChange(seg.id, e.target.value)}
                         title={speakerVoiceName ? `Inherits ${speakerVoiceName} from speaker` : 'No speaker voice assigned — uses voice design'}
@@ -823,7 +823,7 @@ export function TranscriptPanel({
                     <td className="p-2 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-center min-h-[22px] relative">
                         {isBatchGenerating ? (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-brand-500/10 text-brand-300 border border-brand-500/20">
                             <Loader2 size={8} className="animate-spin" />
                             Generating
                           </span>
@@ -839,7 +839,7 @@ export function TranscriptPanel({
                               onClick={() => handleSingleSynthesize(seg.id)}
                               disabled={singleSynthesizing !== null}
                               className={cn(
-                                "hidden items-center gap-0.5 px-2 py-0.5 rounded-full text-[9px] font-bold bg-purple-600 hover:bg-purple-500 text-white border border-purple-500 transition-all shadow-sm cursor-pointer disabled:opacity-50",
+                                "hidden items-center gap-0.5 px-2 py-0.5 rounded-full text-[9px] font-bold bg-brand-600 hover:bg-brand-500 text-white border border-brand-500 transition-all shadow-sm cursor-pointer disabled:opacity-50",
                                 (isActive || singleSynthesizing === seg.id) ? "inline-flex" : "group-hover:inline-flex"
                               )}
                               title="Regenerate voice"
@@ -855,7 +855,7 @@ export function TranscriptPanel({
                         ) : (
                           <>
                             <span className={cn(
-                              "inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-zinc-800 text-zinc-400 border border-zinc-750 transition-all",
+                              "inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-ink-800 text-ink-400 border border-ink-750 transition-all",
                               (isActive || singleSynthesizing === seg.id) ? "hidden" : "group-hover:hidden"
                             )}>
                               Pending
@@ -864,7 +864,7 @@ export function TranscriptPanel({
                               onClick={() => handleSingleSynthesize(seg.id)}
                               disabled={singleSynthesizing !== null}
                               className={cn(
-                                "hidden items-center gap-0.5 px-2 py-0.5 rounded-full text-[9px] font-bold bg-purple-600 hover:bg-purple-500 text-white border border-purple-500 transition-all shadow-sm cursor-pointer disabled:opacity-50",
+                                "hidden items-center gap-0.5 px-2 py-0.5 rounded-full text-[9px] font-bold bg-brand-600 hover:bg-brand-500 text-white border border-brand-500 transition-all shadow-sm cursor-pointer disabled:opacity-50",
                                 (isActive || singleSynthesizing === seg.id) ? "inline-flex" : "group-hover:inline-flex"
                               )}
                               title="Generate voice"
@@ -886,29 +886,29 @@ export function TranscriptPanel({
             </tbody>
           </table>
         ) : inspectorMode === 'audio_clip_settings' ? (
-          <div className="p-4 flex flex-col gap-4 text-xs bg-transparent h-full text-zinc-300 select-none">
+          <div className="p-4 flex flex-col gap-4 text-xs bg-transparent h-full text-ink-300 select-none">
             {/* Multi-selection notice — effects below hit every selected clip */}
             {activeSeg && selectedSegmentIds.length > 1 && selectedSegmentIds.includes(activeSeg.id) && (
-              <div className="flex items-center gap-1.5 px-2 py-1.5 rounded border border-purple-500/30 bg-purple-500/10 text-[10px] font-semibold text-purple-300">
+              <div className="flex items-center gap-1.5 px-2 py-1.5 rounded border border-brand-500/30 bg-brand-500/10 text-[10px] font-semibold text-brand-300">
                 Changes apply to all {selectedSegmentIds.length} selected clips
               </div>
             )}
             {/* Horizontal Sub-tabs */}
-            <div className="flex border-b border-zinc-800 pb-1 gap-4">
+            <div className="flex border-b border-ink-800 pb-1 gap-4">
               {(['basic', 'filter', 'speed'] as const).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveClipTab(tab)}
                   className={cn(
                     "pb-1 text-[11px] font-semibold uppercase tracking-wider relative transition-colors",
-                    activeClipTab === tab ? "text-purple-400" : "text-zinc-500 hover:text-zinc-300"
+                    activeClipTab === tab ? "text-brand-400" : "text-ink-500 hover:text-ink-300"
                   )}
                 >
                   {tab === 'basic' ? 'Basic' : tab === 'filter' ? 'Voice Filter' : 'Voice Speed'}
                   {activeClipTab === tab && (
                     <motion.div
                       layoutId="clipTabIndicator"
-                      className="absolute bottom-0 left-0 right-0 h-[2px] bg-purple-500"
+                      className="absolute bottom-0 left-0 right-0 h-[2px] bg-brand-500"
                       transition={{ type: 'spring', stiffness: 380, damping: 30 }}
                     />
                   )}
@@ -929,10 +929,10 @@ export function TranscriptPanel({
                     className="space-y-4"
                   >
                     <div className="flex items-center justify-between">
-                      <span className="font-semibold text-zinc-400 flex items-center gap-1">
+                      <span className="font-semibold text-ink-400 flex items-center gap-1">
                         <Sliders size={12} /> Volume Level
                       </span>
-                      <span className="font-mono text-purple-400 font-bold">{clipVolume > 0 ? `+${clipVolume}` : clipVolume} dB</span>
+                      <span className="font-mono text-brand-400 font-bold">{clipVolume > 0 ? `+${clipVolume}` : clipVolume} dB</span>
                     </div>
                     <div className="flex items-center gap-3">
                       <input
@@ -944,19 +944,19 @@ export function TranscriptPanel({
                         onChange={(e) => setClipVolume(Number(e.target.value))}
                         onMouseUp={() => activeSeg && handleVolumeChange(activeSeg.id, clipVolume)}
                         onTouchEnd={() => activeSeg && handleVolumeChange(activeSeg.id, clipVolume)}
-                        className="flex-1 accent-purple-500 bg-zinc-800 rounded-lg cursor-pointer h-1"
+                        className="flex-1 accent-brand-500 bg-ink-800 rounded-lg cursor-pointer h-1"
                       />
                       <button
                         onClick={() => {
                           setClipVolume(0)
                           if (activeSeg) handleVolumeChange(activeSeg.id, 0)
                         }}
-                        className="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-[10px] text-zinc-400 hover:text-white transition-colors"
+                        className="px-2 py-0.5 rounded bg-ink-900 border border-ink-800 hover:border-ink-700 text-[10px] text-ink-400 hover:text-white transition-colors"
                       >
                         Reset
                       </button>
                     </div>
-                    <div className="text-[10px] text-zinc-500 leading-normal bg-zinc-900/50 p-2.5 rounded border border-zinc-900">
+                    <div className="text-[10px] text-ink-500 leading-normal bg-ink-900/50 p-2.5 rounded border border-ink-900">
                       Adjust the volume of the synthetic audio clip. 0 dB represents original generated volume.
                     </div>
                   </motion.div>
@@ -971,7 +971,7 @@ export function TranscriptPanel({
                     transition={{ duration: 0.15 }}
                     className="space-y-3"
                   >
-                    <span className="font-semibold text-zinc-400 block mb-1">Vocal Sound Profiles</span>
+                    <span className="font-semibold text-ink-400 block mb-1">Vocal Sound Profiles</span>
                     <div className="grid grid-cols-2 gap-2">
                       {[
                         { id: 'echo', name: 'Studio Echo', desc: 'Warm acoustic space' },
@@ -991,12 +991,12 @@ export function TranscriptPanel({
                             className={cn(
                               "p-2.5 rounded text-left border transition-all flex flex-col gap-0.5",
                               isSelected
-                                ? "border-purple-500/50 bg-purple-500/5 text-purple-400 shadow-glow-sm"
-                                : "border-zinc-800/80 bg-zinc-900/60 hover:border-zinc-700 text-zinc-300"
+                                ? "border-brand-500/50 bg-brand-500/5 text-brand-400 shadow-glow-sm"
+                                : "border-ink-800/80 bg-ink-900/60 hover:border-ink-700 text-ink-300"
                             )}
                           >
                             <span className="font-semibold text-[11px]">{filter.name}</span>
-                            <span className="text-[9px] text-zinc-500">{filter.desc}</span>
+                            <span className="text-[9px] text-ink-500">{filter.desc}</span>
                           </button>
                         )
                       })}
@@ -1014,8 +1014,8 @@ export function TranscriptPanel({
                     className="space-y-4"
                   >
                     <div className="flex items-center justify-between">
-                      <span className="font-semibold text-zinc-400">Duration Speed</span>
-                      <span className="font-mono text-purple-400 font-bold">{clipSpeed.toFixed(2)}x</span>
+                      <span className="font-semibold text-ink-400">Duration Speed</span>
+                      <span className="font-mono text-brand-400 font-bold">{clipSpeed.toFixed(2)}x</span>
                     </div>
                     <input
                       type="range"
@@ -1026,7 +1026,7 @@ export function TranscriptPanel({
                       onChange={(e) => setClipSpeed(Number(e.target.value))}
                       onMouseUp={() => activeSeg && handleSpeedChange(activeSeg.id, clipSpeed)}
                       onTouchEnd={() => activeSeg && handleSpeedChange(activeSeg.id, clipSpeed)}
-                      className="w-full accent-purple-500 bg-zinc-800 rounded-lg cursor-pointer h-1"
+                      className="w-full accent-brand-500 bg-ink-800 rounded-lg cursor-pointer h-1"
                     />
                     <div className="flex gap-1.5">
                       {[0.5, 1.0, 1.5, 2.0].map((val) => (
@@ -1039,8 +1039,8 @@ export function TranscriptPanel({
                           className={cn(
                             "flex-1 py-1 rounded text-[10px] font-mono border transition-colors",
                             clipSpeed === val
-                              ? "bg-purple-500/10 border-purple-500/30 text-purple-400"
-                              : "bg-zinc-900 border-zinc-800 hover:border-zinc-700 text-zinc-400"
+                              ? "bg-brand-500/10 border-brand-500/30 text-brand-400"
+                              : "bg-ink-900 border-ink-800 hover:border-ink-700 text-ink-400"
                           )}
                         >
                           {val.toFixed(1)}x
@@ -1054,14 +1054,14 @@ export function TranscriptPanel({
           </div>
         ) : (
           /* Handle other modes: subtitle_settings */
-          <div className="p-4 flex flex-col gap-4 text-xs bg-transparent h-full text-zinc-300 select-none">
-            <span className="font-semibold text-zinc-400 block mb-1">Subtitle Styling</span>
+          <div className="p-4 flex flex-col gap-4 text-xs bg-transparent h-full text-ink-300 select-none">
+            <span className="font-semibold text-ink-400 block mb-1">Subtitle Styling</span>
 
             {/* Font Size Selector */}
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <span className="text-zinc-400">Font Size</span>
-                <span className="font-mono text-purple-400 font-bold">{fontSize} px</span>
+                <span className="text-ink-400">Font Size</span>
+                <span className="font-mono text-brand-400 font-bold">{fontSize} px</span>
               </div>
               <input
                 type="range"
@@ -1070,14 +1070,14 @@ export function TranscriptPanel({
                 step="1"
                 value={fontSize}
                 onChange={(e) => setFontSize(Number(e.target.value))}
-                className="w-full accent-purple-500 bg-zinc-800 rounded-lg cursor-pointer h-1"
+                className="w-full accent-brand-500 bg-ink-800 rounded-lg cursor-pointer h-1"
               />
             </div>
 
             {/* Text Alignment */}
             <div className="space-y-2.5">
-              <span className="text-zinc-400 block">Text Alignment</span>
-              <div className="flex border border-zinc-800 rounded overflow-hidden max-w-[200px]">
+              <span className="text-ink-400 block">Text Alignment</span>
+              <div className="flex border border-ink-800 rounded overflow-hidden max-w-[200px]">
                 {(['left', 'center', 'right'] as const).map((align) => {
                   const isSelected = textAlignment === align
                   return (
@@ -1085,10 +1085,10 @@ export function TranscriptPanel({
                       key={align}
                       onClick={() => setTextAlignment(align)}
                       className={cn(
-                        "flex-1 py-1 px-2.5 text-center font-medium capitalize text-[10px] transition-colors border-r last:border-r-0 border-zinc-800",
+                        "flex-1 py-1 px-2.5 text-center font-medium capitalize text-[10px] transition-colors border-r last:border-r-0 border-ink-800",
                         isSelected
-                          ? "bg-purple-500/10 text-purple-400 font-semibold"
-                          : "bg-zinc-900 text-zinc-400 hover:text-zinc-300"
+                          ? "bg-brand-500/10 text-brand-400 font-semibold"
+                          : "bg-ink-900 text-ink-400 hover:text-ink-300"
                       )}
                     >
                       {align}
@@ -1098,7 +1098,7 @@ export function TranscriptPanel({
               </div>
             </div>
 
-            <div className="text-[10px] text-zinc-500 leading-normal bg-zinc-900/50 p-2.5 rounded border border-zinc-900 mt-2">
+            <div className="text-[10px] text-ink-500 leading-normal bg-ink-900/50 p-2.5 rounded border border-ink-900 mt-2">
               Adjusting subtitle styles applies layout parameters globally across all translation clips.
             </div>
           </div>

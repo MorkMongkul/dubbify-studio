@@ -15,14 +15,14 @@
 # SKIP_FRONTEND_BUILD=1 skips rebuilding frontend/dist (the caller just did).
 #
 # No secrets go into the binary: API keys are entered in the app's Settings
-# and stored per user in ~/Library/Application Support/studio.dubify.desktop.
+# and stored per user in ~/Library/Application Support/com.movelo.studio.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 TARGET_TRIPLE="${1:-aarch64-apple-darwin}"
 VENV="${VENV:-venv_clean}"
 OUT_DIR="../frontend/src-tauri/binaries"
-BIN_NAME="dubify-backend-${TARGET_TRIPLE}"
+BIN_NAME="movelo-backend-${TARGET_TRIPLE}"
 
 case "$TARGET_TRIPLE" in
   aarch64-apple-darwin) WANT_ARCH=arm64 ;;
@@ -41,8 +41,8 @@ if [ "${SKIP_FRONTEND_BUILD:-0}" != "1" ]; then
   (cd ../frontend && npm run build)
 fi
 
-rm -rf build dist dubify-backend.spec
-"$VENV/bin/pyinstaller" --onefile --name dubify-backend \
+rm -rf build dist movelo-backend.spec
+"$VENV/bin/pyinstaller" --onefile --name movelo-backend \
   --add-data "app/assets:app/assets" \
   --add-data "../frontend/dist:frontend_dist" \
   --hidden-import uvicorn.protocols.http.httptools_impl \
@@ -57,7 +57,7 @@ rm -rf build dist dubify-backend.spec
   sidecar_entry.py
 
 mkdir -p "$OUT_DIR"
-cp dist/dubify-backend "$OUT_DIR/$BIN_NAME"
-rm -rf build dist dubify-backend.spec
+cp dist/movelo-backend "$OUT_DIR/$BIN_NAME"
+rm -rf build dist movelo-backend.spec
 
 echo "Sidecar written to $OUT_DIR/$BIN_NAME ($(lipo -archs "$OUT_DIR/$BIN_NAME" 2>/dev/null || echo "$WANT_ARCH"))"

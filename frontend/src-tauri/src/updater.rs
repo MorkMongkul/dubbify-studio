@@ -54,9 +54,9 @@ pub fn check(app: &AppHandle, trigger: Trigger) {
         log::error!("update failed: {message}");
         tell(
             &app,
-            "Couldn't update Dubify Studio",
+            "Couldn't update Movelo Studio",
             format!(
-                "{message}\n\nIf Dubify Studio isn't in your Applications folder, move it there and try again. \
+                "{message}\n\nIf Movelo Studio isn't in your Applications folder, move it there and try again. \
                  You can also download the latest version from {WEBSITE}"
             ),
             MessageDialogKind::Error,
@@ -80,7 +80,7 @@ async fn run(app: &AppHandle, trigger: Trigger) -> Result<(), Failure> {
             tell(
                 app,
                 "You're up to date",
-                format!("Dubify Studio {current} is the latest version."),
+                format!("Movelo Studio {current} is the latest version."),
                 MessageDialogKind::Info,
             )
             .await;
@@ -93,7 +93,7 @@ async fn run(app: &AppHandle, trigger: Trigger) -> Result<(), Failure> {
         app,
         "Update available",
         format!(
-            "Dubify Studio {} is available. You have {current}.\n\n\
+            "Movelo Studio {} is available. You have {current}.\n\n\
              Download and install it now? Your projects aren't affected.",
             update.version
         ),
@@ -106,7 +106,7 @@ async fn run(app: &AppHandle, trigger: Trigger) -> Result<(), Failure> {
     }
 
     let window = app.get_webview_window("main");
-    let title = window.as_ref().and_then(|w| w.title().ok()).unwrap_or_else(|| "Dubify Studio".into());
+    let title = window.as_ref().and_then(|w| w.title().ok()).unwrap_or_else(|| "Movelo Studio".into());
     let mut received: u64 = 0;
     let mut shown_percent = None;
     let installed = update
@@ -139,7 +139,7 @@ async fn run(app: &AppHandle, trigger: Trigger) -> Result<(), Failure> {
         app,
         "Update installed",
         format!(
-            "Dubify Studio {} is installed. Restart now to start using it.\n\n\
+            "Movelo Studio {} is installed. Restart now to start using it.\n\n\
              If an export or voice generation is running, choose Later and restart when it's finished.",
             update.version
         ),

@@ -8,8 +8,9 @@
 // instead of spinning forever. In the browser it simply waits for /health.
 import { useEffect, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Zap, AlertCircle, RefreshCw, Copy } from 'lucide-react'
+import { AlertCircle, RefreshCw, Copy } from 'lucide-react'
 import { health } from '@/api/client'
+import { MoveloStudioIcon } from '@/components/brand/Movelo'
 import { isDesktopStartupPage, onBackendProblem, type BackendProblem } from '@/lib/desktop'
 
 /** Long enough that a warm backend never flashes the splash. */
@@ -49,13 +50,9 @@ export function BackendGate({ children }: { children: ReactNode }) {
 
   return (
     <div className="h-screen w-screen flex flex-col items-center justify-center gap-4 bg-surface-0 text-white select-none">
-      <div className="h-12 w-12 rounded-2xl bg-brand flex items-center justify-center shadow-glow">
-        <Zap size={22} className="text-white" fill="white" />
-      </div>
+      <MoveloStudioIcon size={56} />
       <div className="text-center space-y-1">
-        <p className="text-sm font-bold">
-          Dubify<span className="text-brand-300">Studio</span>
-        </p>
+        <p className="font-display text-base font-semibold tracking-tight">Movelo Studio</p>
         {slow ? (
           <>
             <p className="text-[12px] text-amber-400/90 flex items-center justify-center gap-1.5">
@@ -100,7 +97,7 @@ function BackendProblemScreen({ problem }: { problem: BackendProblem }) {
         <AlertCircle size={22} className="text-red-400" />
       </div>
       <div className="text-center space-y-1.5 max-w-[380px]">
-        <p className="text-sm font-bold">Dubify Studio can't continue</p>
+        <p className="text-sm font-bold">Movelo Studio can't continue</p>
         <p className="text-[12px] text-white/70">{problem.message}</p>
         <p className="text-[11px] text-white/40 leading-relaxed">
           Quit and reopen the app. Your projects are stored on this Mac and are safe.

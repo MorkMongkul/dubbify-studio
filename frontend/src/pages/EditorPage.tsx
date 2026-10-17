@@ -1,5 +1,5 @@
 // src/pages/EditorPage.tsx
-// The unified Dubify Studio — handles everything from video import through export.
+// The unified Movelo Studio editor — handles everything from video import through export.
 //
 // Left panel:   Sessions list + Import video
 // Center:       Upload dropzone → pipeline progress → video player
@@ -12,7 +12,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { useDropzone } from 'react-dropzone'
 import {
   ChevronLeft, ChevronRight, Download,
-  Loader2, AlertCircle, Zap,
+  Loader2, AlertCircle,
   UploadCloud, Film, FileText, X,
   Activity, AlignLeft, ImagePlus, Edit2,
 } from 'lucide-react'
@@ -42,6 +42,7 @@ import { SettingsPanel } from '@/components/panels/SettingsPanel'
 import { PanelHeader, PanelEmptyState } from '@/components/panels/PanelShell'
 import { Button } from '@/components/ui/Button'
 import { Modal, InputField } from '@/components/ui/Modal'
+import { MoveloStudioLogo } from '@/components/brand/Movelo'
 import { PipelineStepper } from '@/features/upload/PipelineStepper'
 import { LANGUAGE_OPTIONS } from '@/types'
 import type { Job } from '@/types'
@@ -53,10 +54,10 @@ import { useHistoryStore } from '@/store/historyStore'
 function TranscriptPlaceholder({ onCollapse }: { onCollapse?: () => void }) {
   return (
     <div className="h-full flex flex-col bg-transparent select-none">
-      <div className="flex items-center justify-between gap-2 px-3 h-9 border-b border-zinc-800/50 shrink-0 bg-zinc-900">
+      <div className="flex items-center justify-between gap-2 px-3 h-9 border-b border-ink-800/50 shrink-0 bg-ink-900">
         <div className="flex items-center gap-1.5">
-          <AlignLeft size={12} className="text-purple-400/90" />
-          <span className="text-[11px] font-bold text-purple-400/90 uppercase tracking-wider">Transcript</span>
+          <AlignLeft size={12} className="text-brand-400/90" />
+          <span className="text-[11px] font-bold text-brand-400/90 uppercase tracking-wider">Transcript</span>
         </div>
         {onCollapse && (
           <button onClick={onCollapse} className="p-1 rounded hover:bg-white/10 text-text-muted hover:text-white transition-colors">
@@ -392,7 +393,7 @@ export default function EditorPage() {
   const [exportPrompt, setExportPrompt] = useState<{ path: string; reason: string } | null>(null)
 
   // Suggested filename: project name (or session id) + .mp4
-  const suggestedExportName = `${(currentProject?.name || `dubify-${jobId?.slice(0, 8)}`)
+  const suggestedExportName = `${(currentProject?.name || `movelo-${jobId?.slice(0, 8)}`)
     .replace(/[/\\:*?"<>|]/g, '-')
     .trim() || 'dubbed-video'}.mp4`
 
@@ -608,7 +609,7 @@ export default function EditorPage() {
           <UploadCloud size={24} />
         </div>
         <div className="space-y-1">
-          <p className="text-sm font-bold text-white">Drop a video here to start</p>
+          <p className="font-display text-sm font-bold text-white">Drop a video here to start</p>
           <p className="text-[11px] text-text-muted max-w-[220px] leading-normal">MP4, MKV, WebM, AVI, MOV supported</p>
         </div>
         <label className="inline-flex items-center justify-center h-8 px-4 rounded-lg border border-brand/20 bg-brand/5 hover:bg-brand/10 text-xs font-medium text-brand-300 cursor-pointer transition-colors">
@@ -660,10 +661,7 @@ export default function EditorPage() {
         <header className="h-10 shrink-0 flex items-center justify-between gap-1 px-3 border-b z-10" style={{ background: 'var(--color-surface-1)', borderColor: 'var(--color-border)' }} onClick={e => e.stopPropagation()}>
           <div className="flex items-center gap-2 min-w-0">
             <div className="flex items-center gap-1.5 select-none shrink-0">
-              <div className="h-5 w-5 rounded bg-brand flex items-center justify-center">
-                <Zap size={11} className="text-white" fill="white" />
-              </div>
-              <span className="text-[12px] font-bold text-white tracking-tight">Dubify<span className="text-brand-300">Studio</span></span>
+              <MoveloStudioLogo height={18} className="text-white" />
             </div>
             <div className="w-px h-4 mx-2 shrink-0" style={{ background: 'var(--color-border)' }} />
             {projectId && currentProject ? (
@@ -672,7 +670,7 @@ export default function EditorPage() {
                 {editingProjectName !== null ? (
                   <input
                     autoFocus
-                    className="bg-zinc-950 text-[11.5px] font-semibold text-white rounded px-1.5 py-0.5 w-56 focus:outline-none border border-purple-500/50"
+                    className="bg-ink-950 text-[11.5px] font-semibold text-white rounded px-1.5 py-0.5 w-56 focus:outline-none border border-brand-500/50"
                     value={editingProjectName}
                     onChange={(e) => setEditingProjectName(e.target.value)}
                     onBlur={commitProjectRename}
@@ -734,13 +732,13 @@ export default function EditorPage() {
         </header>
 
         {/* ── Main bento layout ────────────────────────────────────── */}
-        <div className="flex-1 flex flex-col min-h-0 w-full bg-zinc-950 overflow-hidden p-2 gap-2" onClick={e => e.stopPropagation()}>
+        <div className="flex-1 flex flex-col min-h-0 w-full bg-ink-950 overflow-hidden p-2 gap-2" onClick={e => e.stopPropagation()}>
 
           {/* Top row: Sessions | Video | Transcript */}
           <div className="flex-1 min-h-0 flex gap-2 overflow-hidden">
 
             {/* 1. Dynamic dock — content driven by the icon rail's selected tab */}
-            <div className="shrink-0 bg-zinc-900 rounded-lg border border-zinc-800/50 flex flex-col min-w-0 overflow-hidden" style={{ width: leftPanelWidth }}>
+            <div className="shrink-0 bg-ink-900 rounded-lg border border-ink-800/50 flex flex-col min-w-0 overflow-hidden" style={{ width: leftPanelWidth }}>
               {railTab === 'projects' ? (
                 <ProjectsPanel activeProjectId={projectId} activeJobId={jobId} onImportFile={onDropVideo} />
               ) : railTab === 'speakers' ? (
@@ -779,12 +777,12 @@ export default function EditorPage() {
             </div>
 
             {/* Left resize handle */}
-            <div className="w-1 shrink-0 rounded-full cursor-col-resize hover:bg-purple-500/60 active:bg-purple-500 transition-colors group relative flex items-center justify-center" onPointerDown={handleLeftResizeDown}>
-              <div className="w-0.5 h-8 rounded-full bg-zinc-700/60 group-hover:bg-purple-400/80 transition-colors" />
+            <div className="w-1 shrink-0 rounded-full cursor-col-resize hover:bg-brand-500/60 active:bg-brand-500 transition-colors group relative flex items-center justify-center" onPointerDown={handleLeftResizeDown}>
+              <div className="w-0.5 h-8 rounded-full bg-ink-700/60 group-hover:bg-brand-400/80 transition-colors" />
             </div>
 
             {/* 2. Center: Video/pipeline/upload */}
-            <div className="flex-1 min-w-0 bg-zinc-900 rounded-lg border border-zinc-800/50 flex flex-col relative overflow-hidden">
+            <div className="flex-1 min-w-0 bg-ink-900 rounded-lg border border-ink-800/50 flex flex-col relative overflow-hidden">
               <div className="absolute inset-0 flex items-center justify-center p-6">
                 {videoFile ? (
                   // A newly staged import always wins the center pane — the
@@ -808,7 +806,7 @@ export default function EditorPage() {
                   </div>
                 ) : jobId && job && isStage1 ? (
                   // Stage 1 running — show pipeline progress view
-                  <div className="w-full max-w-[800px] aspect-video shrink-0 bg-zinc-900 relative flex items-center justify-center overflow-hidden">
+                  <div className="w-full max-w-[800px] aspect-video shrink-0 bg-ink-900 relative flex items-center justify-center overflow-hidden">
                     {renderPipelineView(job)}
                   </div>
                 ) : jobId && job && (isStemsReady || isStage2 || isMixing || (!isRunning && !isStage1)) && videoUrl ? (
@@ -831,7 +829,7 @@ export default function EditorPage() {
               {/* Floating re-open transcript button */}
               <AnimatePresence>
                 {rightPanelCollapsed && (
-                  <motion.button key="reopen" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} className="absolute top-1/2 -translate-y-1/2 right-0 z-20 h-24 w-6 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white flex flex-col items-center justify-center gap-1 rounded-l border-y border-l border-zinc-800/50 transition-colors" onClick={() => setRightPanelCollapsed(false)}>
+                  <motion.button key="reopen" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} className="absolute top-1/2 -translate-y-1/2 right-0 z-20 h-24 w-6 bg-ink-900 hover:bg-ink-800 text-ink-400 hover:text-white flex flex-col items-center justify-center gap-1 rounded-l border-y border-l border-ink-800/50 transition-colors" onClick={() => setRightPanelCollapsed(false)}>
                     <ChevronLeft size={14} />
                     <span className="text-[9px] font-bold uppercase tracking-wider [writing-mode:vertical-lr] rotate-180 select-none">Script</span>
                   </motion.button>
@@ -842,8 +840,8 @@ export default function EditorPage() {
             {/* Right resize handle */}
             <AnimatePresence initial={false}>
               {!rightPanelCollapsed && (
-                <motion.div key="right-handle" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-1 shrink-0 rounded-full cursor-col-resize hover:bg-purple-500/60 active:bg-purple-500 transition-colors group relative flex items-center justify-center" onPointerDown={handleRightResizeDown}>
-                  <div className="w-0.5 h-8 rounded-full bg-zinc-700/60 group-hover:bg-purple-400/80 transition-colors" />
+                <motion.div key="right-handle" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-1 shrink-0 rounded-full cursor-col-resize hover:bg-brand-500/60 active:bg-brand-500 transition-colors group relative flex items-center justify-center" onPointerDown={handleRightResizeDown}>
+                  <div className="w-0.5 h-8 rounded-full bg-ink-700/60 group-hover:bg-brand-400/80 transition-colors" />
                 </motion.div>
               )}
             </AnimatePresence>
@@ -851,7 +849,7 @@ export default function EditorPage() {
             {/* 3. Right: Transcript */}
             <AnimatePresence initial={false}>
               {!rightPanelCollapsed && (
-                <motion.div key="transcript" initial={{ width: 0, opacity: 0 }} animate={{ width: rightPanelWidth, opacity: 1 }} exit={{ width: 0, opacity: 0 }} transition={{ type: 'spring', stiffness: 380, damping: 38 }} className="bg-zinc-900 rounded-lg border border-zinc-800/50 overflow-hidden flex flex-col shrink-0">
+                <motion.div key="transcript" initial={{ width: 0, opacity: 0 }} animate={{ width: rightPanelWidth, opacity: 1 }} exit={{ width: 0, opacity: 0 }} transition={{ type: 'spring', stiffness: 380, damping: 38 }} className="bg-ink-900 rounded-lg border border-ink-800/50 overflow-hidden flex flex-col shrink-0">
                   {showTranscript ? (
                     <TranscriptPanel
                       segments={displaySegs}
@@ -871,8 +869,8 @@ export default function EditorPage() {
           </div>
 
           {/* Timeline resize handle */}
-          <div className="h-1 shrink-0 rounded-full cursor-row-resize hover:bg-purple-500/60 active:bg-purple-500 transition-colors group relative flex items-center justify-center" onPointerDown={handleTimelineResizeDown}>
-            <div className="w-8 h-0.5 rounded-full bg-zinc-700/60 group-hover:bg-purple-400/80 transition-colors" />
+          <div className="h-1 shrink-0 rounded-full cursor-row-resize hover:bg-brand-500/60 active:bg-brand-500 transition-colors group relative flex items-center justify-center" onPointerDown={handleTimelineResizeDown}>
+            <div className="w-8 h-0.5 rounded-full bg-ink-700/60 group-hover:bg-brand-400/80 transition-colors" />
           </div>
 
           {/* Bottom: Timeline */}
@@ -881,7 +879,7 @@ export default function EditorPage() {
               segments={displaySegs}
               speakers={spks}
               duration={duration || (displaySegs.length > 0 ? Math.max(...displaySegs.map(s => s.end_time)) + 5 : 60)}
-              className="bg-zinc-900 rounded-lg border border-zinc-800/50 overflow-hidden shrink-0"
+              className="bg-ink-900 rounded-lg border border-ink-800/50 overflow-hidden shrink-0"
               jobId={jobId}
               projectId={projectId}
               job={job}
@@ -889,7 +887,7 @@ export default function EditorPage() {
               analyzing={analyzing}
             />
           ) : (
-            <div className="shrink-0 bg-zinc-900 rounded-lg border border-zinc-800/50 flex flex-col items-center justify-center text-center p-6" style={{ height: `${timelineHeight}px` }}>
+            <div className="shrink-0 bg-ink-900 rounded-lg border border-ink-800/50 flex flex-col items-center justify-center text-center p-6" style={{ height: `${timelineHeight}px` }}>
               <div className="h-7 w-7 rounded-lg bg-neutral-bg3 border border-border/60 flex items-center justify-center text-white/20 mb-2">
                 <Film size={13} />
               </div>

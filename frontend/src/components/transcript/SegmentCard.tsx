@@ -85,9 +85,9 @@ export function SegmentCard({ segment, speaker, speakerIndex, isActive, onSeek }
       layout
       className={cn(
         'relative rounded-xl border transition-all duration-200 overflow-hidden cursor-pointer',
-        'border-zinc-800/80 bg-zinc-900 hover:border-zinc-700 hover:bg-zinc-800/50',
-        isActive && 'border-purple-500/50 bg-purple-500/5 shadow-glow-sm hover:border-purple-500/50 hover:bg-purple-500/5',
-        isApproved && !isActive && 'border-emerald-500/20 bg-zinc-900',
+        'border-ink-800/80 bg-ink-900 hover:border-ink-700 hover:bg-ink-800/50',
+        isActive && 'border-brand-500/50 bg-brand-500/5 shadow-glow-sm hover:border-brand-500/50 hover:bg-brand-500/5',
+        isApproved && !isActive && 'border-emerald-500/20 bg-ink-900',
       )}
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
@@ -123,7 +123,7 @@ export function SegmentCard({ segment, speaker, speakerIndex, isActive, onSeek }
             {speakerName}
           </div>
           <button
-            className="text-[10px] font-mono text-zinc-400 hover:text-brand-400 transition-colors"
+            className="text-[10px] font-mono text-ink-400 hover:text-brand-400 transition-colors"
             onClick={(e) => { e.stopPropagation(); onSeek(segment.start_time) }}
           >
             {formatTimePrecise(segment.start_time)}
@@ -134,17 +134,17 @@ export function SegmentCard({ segment, speaker, speakerIndex, isActive, onSeek }
 
         {/* Original text */}
         <div className="mb-2.5">
-          <p className="text-[11px] font-bold tracking-wider text-purple-400/90 uppercase mb-1">Original</p>
-          <p className="text-xs text-zinc-300 leading-relaxed">{segment.source_text}</p>
+          <p className="text-[11px] font-bold tracking-wider text-brand-400/90 uppercase mb-1">Original</p>
+          <p className="text-xs text-ink-300 leading-relaxed">{segment.source_text}</p>
         </div>
 
         {/* Translated text / editor */}
         <div>
           <div className="flex items-center justify-between mb-1">
-            <p className="text-[11px] font-bold tracking-wider text-purple-400/90 uppercase">Translation</p>
+            <p className="text-[11px] font-bold tracking-wider text-brand-400/90 uppercase">Translation</p>
             {!isEditing && !isApproved && (
               <button
-                className="flex items-center gap-1 text-[10px] text-zinc-400 hover:text-brand-400 transition-colors"
+                className="flex items-center gap-1 text-[10px] text-ink-400 hover:text-brand-400 transition-colors"
                 onClick={handleEdit}
               >
                 <Edit3 size={10} />
@@ -164,7 +164,7 @@ export function SegmentCard({ segment, speaker, speakerIndex, isActive, onSeek }
               >
                 <textarea
                   ref={textareaRef}
-                  className="w-full rounded-lg px-2.5 py-2 text-xs text-zinc-50 bg-zinc-950 border border-zinc-800/80 resize-none overflow-hidden focus:outline-none focus:border-purple-500/50 transition-all"
+                  className="w-full rounded-lg px-2.5 py-2 text-xs text-ink-50 bg-ink-950 border border-ink-800/80 resize-none overflow-hidden focus:outline-none focus:border-brand-500/50 transition-all"
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
                   placeholder="Enter translation…"
@@ -194,7 +194,7 @@ export function SegmentCard({ segment, speaker, speakerIndex, isActive, onSeek }
                 key="text"
                 className={cn(
                   'text-xs leading-relaxed',
-                  segment.khmer_text ? 'text-white font-medium' : 'text-zinc-500 italic'
+                  segment.khmer_text ? 'text-white font-medium' : 'text-ink-500 italic'
                 )}
               >
                 {segment.khmer_text || 'No translation yet'}
@@ -206,7 +206,7 @@ export function SegmentCard({ segment, speaker, speakerIndex, isActive, onSeek }
 
       {/* Footer actions */}
       {!isEditing && (
-        <div className="px-3.5 py-2 border-t border-zinc-800/50 flex items-center justify-between">
+        <div className="px-3.5 py-2 border-t border-ink-800/50 flex items-center justify-between">
           <div className="flex items-center gap-2">
             {/* Placeholder regenerate button */}
             <button

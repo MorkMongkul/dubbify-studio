@@ -30,7 +30,7 @@ esac
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/vendor/ffmpeg/$TARGET"
-WORK="${FFMPEG_WORK_DIR:-${TMPDIR:-/tmp}/dubify-ffmpeg}"
+WORK="${FFMPEG_WORK_DIR:-${TMPDIR:-/tmp}/movelo-ffmpeg}"
 SRC="$WORK/ffmpeg-$FFMPEG_VERSION-$TARGET"
 
 if [ -x "$OUT/ffmpeg" ] && grep -q "^version: $FFMPEG_VERSION$" "$OUT/BUILD.txt" 2>/dev/null; then
@@ -88,7 +88,7 @@ cp ffmpeg ffprobe "$OUT/"
 cp COPYING.LGPLv2.1 "$OUT/LICENSE.txt"
 chmod 644 "$OUT/LICENSE.txt"
 {
-  echo "FFmpeg for Dubify Studio ($TARGET)"
+  echo "FFmpeg for Movelo Studio ($TARGET)"
   echo "version: $FFMPEG_VERSION"
   echo "license: GNU LGPL 2.1 or later (see LICENSE.txt)"
   echo "source: https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz (sha256 $FFMPEG_SHA256)"

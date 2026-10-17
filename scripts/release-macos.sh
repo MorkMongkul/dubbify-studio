@@ -21,7 +21,7 @@
 #     — or APPLE_API_KEY, APPLE_API_ISSUER, APPLE_API_KEY_PATH
 #
 # In-app updates: with TAURI_SIGNING_PRIVATE_KEY (and its _PASSWORD) set, the
-# build also makes a signed update package ("Dubify Studio.app.tar.gz" + .sig)
+# build also makes a signed update package ("Movelo Studio.app.tar.gz" + .sig)
 # that installed copies accept. CI requires it; a local build without it just
 # leaves the update package out.
 # Extra flags after the target go to `tauri build` (e.g. --bundles app).
@@ -45,18 +45,18 @@ if [ -n "$(git status --porcelain)" ]; then
   echo "warning: uncommitted changes — this build won't match any commit." >&2
 fi
 VERSION="$(node -p "require('./frontend/src-tauri/tauri.conf.json').version")"
-echo "▶ Dubify Studio $VERSION ($(git rev-parse --short HEAD)) for $TARGET"
+echo "▶ Movelo Studio $VERSION ($(git rev-parse --short HEAD)) for $TARGET"
 
 (cd frontend && npm run build)
 SKIP_FRONTEND_BUILD=1 VENV="${VENV:-venv_clean}" backend/build_sidecar.sh "$TARGET"
 
 BIN_DIR=frontend/src-tauri/binaries
-EXTRA_CONFIG='{"bundle":{"externalBin":["binaries/dubify-backend"]}}'
+EXTRA_CONFIG='{"bundle":{"externalBin":["binaries/movelo-backend"]}}'
 if [ -x "vendor/ffmpeg/$TARGET/ffmpeg" ] && [ -x "vendor/ffmpeg/$TARGET/ffprobe" ]; then
   cp "vendor/ffmpeg/$TARGET/ffmpeg" "$BIN_DIR/ffmpeg-$TARGET"
   cp "vendor/ffmpeg/$TARGET/ffprobe" "$BIN_DIR/ffprobe-$TARGET"
   # The LGPL requires its text (and the build details) to ship with the binaries.
-  EXTRA_CONFIG="{\"bundle\":{\"externalBin\":[\"binaries/dubify-backend\",\"binaries/ffmpeg\",\"binaries/ffprobe\"],\"resources\":{\"THIRD-PARTY-NOTICES.md\":\"THIRD-PARTY-NOTICES.md\",\"../../vendor/ffmpeg/$TARGET/LICENSE.txt\":\"licenses/ffmpeg-LICENSE.txt\",\"../../vendor/ffmpeg/$TARGET/BUILD.txt\":\"licenses/ffmpeg-BUILD.txt\"}}}"
+  EXTRA_CONFIG="{\"bundle\":{\"externalBin\":[\"binaries/movelo-backend\",\"binaries/ffmpeg\",\"binaries/ffprobe\"],\"resources\":{\"THIRD-PARTY-NOTICES.md\":\"THIRD-PARTY-NOTICES.md\",\"../../vendor/ffmpeg/$TARGET/LICENSE.txt\":\"licenses/ffmpeg-LICENSE.txt\",\"../../vendor/ffmpeg/$TARGET/BUILD.txt\":\"licenses/ffmpeg-BUILD.txt\"}}}"
   echo "▶ Bundling ffmpeg from vendor/ffmpeg/$TARGET (build it with scripts/build-ffmpeg.sh)"
 else
   echo "note: no vendor/ffmpeg/$TARGET — the app will rely on the Mac's own ffmpeg." >&2

@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
+mod migrate;
 mod updater;
 
 /// The first launch unpacks the bundled Python runtime, which can take a while.
@@ -45,6 +46,13 @@ struct BackendProblem {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // First of all: a copy still named "Dubify Studio.app" renames itself and
+    // starts again from its new location (see migrate.rs).
+    #[cfg(target_os = "macos")]
+    if !cfg!(debug_assertions) {
+        migrate::adopt_new_bundle_name();
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         // Native Save-As dialog for video export (used from the webview)
@@ -59,19 +67,23 @@ pub fn run() {
         })
         .manage(Backend::default())
         .setup(|app| {
+            // Release builds: move Dubify Studio's folders over before the
+            // log plugin creates the new logs folder.
+            let folders = if cfg!(debug_assertions) { None } else { Some(migrate::folders(app.handle())?) };
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log::LevelFilter::Info)
                     .build(),
             )?;
+            migrate::log_notes(folders.as_ref());
 
-            if cfg!(debug_assertions) {
+            let Some(folders) = folders else {
                 // Dev mode: the frontend is served by `npm run dev` (Vite) at
                 // devUrl, proxying /api to a backend the developer runs
                 // separately (`uvicorn app.main:app`). No sidecar to spawn here.
                 return Ok(());
-            }
-            start_backend(app.handle())?;
+            };
+            start_backend(app.handle(), folders)?;
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -88,9 +100,8 @@ pub fn run() {
 /// Spawn the bundled FastAPI sidecar, then point the window at it once THIS
 /// launch's backend answers. Everything the user creates lives in the
 /// app-data folder; API keys come from the settings file there.
-fn start_backend(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let data_dir = app.path().app_data_dir()?;
-    let log_dir = app.path().app_log_dir()?;
+fn start_backend(app: &AppHandle, folders: migrate::Folders) -> Result<(), Box<dyn std::error::Error>> {
+    let migrate::Folders { data: data_dir, logs: log_dir, previous_data, .. } = folders;
     fs::create_dir_all(&data_dir)?;
     fs::create_dir_all(&log_dir)?;
 
@@ -119,7 +130,7 @@ fn start_backend(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut command = app
         .shell()
-        .sidecar("dubify-backend")?
+        .sidecar("movelo-backend")?
         .env("PORT", port.to_string())
         // Without this Python block-buffers stdout into the pipe and the log stays empty.
         .env("PYTHONUNBUFFERED", "1")
@@ -130,6 +141,10 @@ fn start_backend(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .env("DUBIFY_APP_VERSION", &version)
         // The backend watches its stdin and exits when this app is gone.
         .env("DUBIFY_EXIT_WITH_PARENT", "1");
+    if let Some(previous) = &previous_data {
+        // The data folder moved (migrate.rs): stored paths still point there.
+        command = command.env("DUBIFY_PREVIOUS_DATA_DIR", previous);
+    }
     for (tool, var) in [("ffmpeg", "FFMPEG_PATH"), ("ffprobe", "FFPROBE_PATH")] {
         if let Some(path) = bundled_tool(tool) {
             command = command.env(var, path);
@@ -137,7 +152,7 @@ fn start_backend(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     }
     let (mut rx, child) = command.spawn()?;
     *app.state::<Backend>().child.lock().unwrap() = Some(child);
-    log::info!("dubify-backend started on port {port}; logs in {}", log_dir.display());
+    log::info!("backend started on port {port}; logs in {}", log_dir.display());
 
     // Mirror the sidecar's output to a log file, and tell the window if it dies.
     let handle = app.clone();
@@ -188,7 +203,7 @@ fn start_backend(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             }
             std::thread::sleep(Duration::from_millis(400));
         }
-        log::error!("dubify-backend did not become ready within {}s", READY_TIMEOUT.as_secs());
+        log::error!("backend did not become ready within {}s", READY_TIMEOUT.as_secs());
         let _ = window.emit(
             "backend-failed",
             BackendProblem {

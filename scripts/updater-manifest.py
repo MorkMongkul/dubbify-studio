@@ -16,8 +16,8 @@ import sys
 
 # Tauri's platform name → the update package the release job publishes for it.
 PACKAGES = {
-    "darwin-aarch64": "Dubify-Studio-Apple-Silicon.app.tar.gz",
-    "darwin-x86_64": "Dubify-Studio-Intel.app.tar.gz",
+    "darwin-aarch64": "Movelo-Studio-Apple-Silicon.app.tar.gz",
+    "darwin-x86_64": "Movelo-Studio-Intel.app.tar.gz",
 }
 
 
