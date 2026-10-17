@@ -7,8 +7,8 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  Mic, Upload, Play, Loader2, Trash2, Plus, Copy, Dices,
-  Search, SlidersHorizontal, ChevronDown, RotateCcw, X, Check, AudioLines, Square,
+  Mic, Upload, Loader2, Trash2, Plus, Copy, Dices,
+  Search, SlidersHorizontal, ChevronDown, RotateCcw, X, Check, AudioLines,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useVoices, useCreateVoice, useDeleteVoice, usePreviewVoice, useUpdateVoice } from '@/hooks/useApi'
@@ -16,6 +16,7 @@ import type { Voice, VoiceMode } from '@/types'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils'
 import { PanelHeader } from './PanelShell'
+import { VoicePlayer } from '@/components/voices/VoicePlayer'
 
 const MODES: { value: VoiceMode; label: string; blurb: string; needs: string }[] = [
   { value: 'design',   label: 'Design',   blurb: 'Create a brand-new voice from a written description alone.', needs: 'Description only' },
@@ -58,9 +59,8 @@ export function VoicesPanel() {
   const [search, setSearch] = useState('')
   const [modeFilter, setModeFilter] = useState<ModeFilter>('all')
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
-  // Built-in voices play their own clip instantly (no generation needed)
-  const [playingSampleId, setPlayingSampleId] = useState<string | null>(null)
-  const sampleRef = useRef<HTMLAudioElement | null>(null)
+  // The voice whose sample was just made — its player starts by itself
+  const [justGeneratedId, setJustGeneratedId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const needsRef = mode === 'clone' || mode === 'ultimate'
@@ -121,7 +121,7 @@ export function VoicesPanel() {
         return { ...prev, [voice.id]: url }
       })
       setPreviewTexts((prev) => ({ ...prev, [voice.id]: previewText }))
-      startPlaying(voice.id, url)
+      setJustGeneratedId(voice.id)
     } catch (e) {
       toast.error(errorMessage(e, 'Preview failed — the voice backend may be cold-starting. Try again.'))
     } finally {
@@ -136,8 +136,6 @@ export function VoicesPanel() {
     ultimate: voiceList.filter((v) => v.mode === 'ultimate').length,
   }), [voiceList])
 
-  useEffect(() => () => sampleRef.current?.pause(), [])
-
   // What a voice can play right now: a preview it already made of the current
   // line, or (with the default line) its own sample clip. Otherwise Preview
   // has to generate one first.
@@ -147,58 +145,19 @@ export function VoicesPanel() {
     return null
   }
 
-  function startPlaying(id: string, url: string) {
-    sampleRef.current?.pause()
-    const audio = new Audio(url)
-    audio.onended = () => setPlayingSampleId((cur) => (cur === id ? null : cur))
-    audio.play().catch(() => {
-      setPlayingSampleId(null)
-      toast.error("Couldn't play this voice")
-    })
-    sampleRef.current = audio
-    setPlayingSampleId(id)
-  }
-
-  const togglePlay = (id: string, url: string) => {
-    if (playingSampleId === id) {
-      sampleRef.current?.pause()
-      setPlayingSampleId(null)
-    } else {
-      startPlaying(id, url)
-    }
-  }
-
-  /** One button per voice: Play when it already has audio, Preview to make it. */
-  const voiceButton = (v: Voice, compact: boolean) => {
-    const url = playableUrl(v)
-    const size = compact ? 'h-6 px-2.5' : 'h-7 px-2.5'
-    if (url) {
-      const playing = playingSampleId === v.id
-      return (
-        <button
-          onClick={() => togglePlay(v.id, url)}
-          aria-label={playing ? `Stop ${v.name}` : `Play ${v.name}`}
-          className={cn('flex items-center gap-1 rounded-md bg-brand-400 hover:bg-brand-300 text-white text-[10px] font-semibold transition-colors', size)}
-        >
-          {playing ? <Square size={9} fill="currentColor" /> : <Play size={9} fill="currentColor" />}
-          {playing ? 'Stop' : 'Play'}
-        </button>
-      )
-    }
-    const isPreviewing = previewingId === v.id
-    return (
-      <Tooltip content="Make a sample of this voice saying the preview line (a few seconds)">
-        <button
-          onClick={() => handlePreview(v)}
-          disabled={previewingId !== null}
-          className={cn('flex items-center gap-1 rounded-md bg-brand-400 hover:bg-brand-300 text-white text-[10px] font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-colors', size)}
-        >
-          {isPreviewing ? <Loader2 size={10} className="animate-spin" /> : <AudioLines size={10} />}
-          {isPreviewing ? 'Generating…' : 'Preview'}
-        </button>
-      </Tooltip>
-    )
-  }
+  const player = (v: Voice, bars: number) => (
+    <VoicePlayer
+      key={`${v.id}:${playableUrl(v) ?? ''}`}
+      id={v.id}
+      name={v.name}
+      url={playableUrl(v)}
+      onGenerate={() => handlePreview(v)}
+      generating={previewingId === v.id}
+      busy={previewingId !== null}
+      autoPlay={justGeneratedId === v.id}
+      bars={bars}
+    />
+  )
 
   const visibleVoices = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -469,7 +428,7 @@ export function VoicesPanel() {
             placeholder="Type a line to hear…"
             className="w-full rounded-lg bg-ink-950/60 border border-white/10 px-2.5 h-8 text-xs text-white placeholder-white/25 focus:outline-none focus:border-brand-400 transition-all"
           />
-          <p className="text-[9.5px] text-white/30 mt-1">Preview makes a sample of a voice saying this line. Once a voice has a sample, Play plays it straight away.</p>
+          <p className="text-[9.5px] text-white/30 mt-1">Voices without a sample can make one saying this line (✦). Once a voice has a sample, ▶ plays it straight away.</p>
         </div>
 
         {/* ── Search + filter ─────────────────────────────────── */}
@@ -588,9 +547,7 @@ export function VoicesPanel() {
 
                   {/* Actions */}
                   <div className="flex items-center gap-1 mt-2">
-                    {voiceButton(v, false)}
-
-                    <div className="flex-1" />
+                    {player(v, 36)}
 
                     <Tooltip content="Reroll voice identity">
                       <button
@@ -684,8 +641,7 @@ export function VoicesPanel() {
                           <div key={v.id}>
                             <div className="flex items-center gap-1">
                               <span className="text-[11px] text-white/75 w-12 shrink-0">Take {v.name.slice(-1)}</span>
-                              {voiceButton(v, true)}
-                              <div className="flex-1" />
+                              {player(v, 28)}
                               <Tooltip content="Copy voice ID">
                                 <button
                                   onClick={() => { navigator.clipboard.writeText(v.id); toast.success('Voice ID copied') }}
