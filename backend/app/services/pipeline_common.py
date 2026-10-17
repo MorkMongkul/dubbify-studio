@@ -217,11 +217,24 @@ async def recover_orphaned_jobs() -> None:
         jobs = [j for j in (await db.execute(select(Job))).scalars().all() if j.status in orphanable]
         if not jobs:
             return
+        ids = [j.id for j in jobs]
         with_segments = set((await db.execute(
-            select(Segment.job_id).where(Segment.job_id.in_([j.id for j in jobs])).distinct()
+            select(Segment.job_id).where(Segment.job_id.in_(ids)).distinct()
+        )).scalars().all())
+        translated = set((await db.execute(
+            select(Segment.job_id).where(Segment.job_id.in_(ids), Segment.khmer_text != "").distinct()
         )).scalars().all())
         for job in jobs:
-            if job.id in with_segments:
+            job_dir = Path(settings.UPLOAD_DIR) / job.project_id / job.id
+            if job.status == JobStatus.SEPARATING and all(
+                (job_dir / name).exists() for name in ("vocals.wav", "no_vocals.wav")
+            ):
+                # Usually "Try again" on separation, which only replaces the
+                # stems once it has succeeded: the episode is as it was.
+                job.status = JobStatus.COMPLETED if job.id in translated else JobStatus.STEMS_READY
+                job.progress = 100 if job.id in translated else 30
+                job.error_msg = "Separating music and voices was interrupted. The episode is as it was before."
+            elif job.id in with_segments:
                 job.status, job.progress = JobStatus.COMPLETED, 100
                 job.error_msg = (
                     "Interrupted by a server restart — your segments were kept. "
@@ -231,7 +244,7 @@ async def recover_orphaned_jobs() -> None:
                 job.status = JobStatus.FAILED
                 job.error_msg = "Interrupted by server restart"
         await db.commit()
-        logger.warning(
-            f"Recovered {len(jobs)} interrupted job(s): "
-            f"{len(with_segments)} kept as completed, {len(jobs) - len(with_segments)} failed"
-        )
+        outcome = {}
+        for job in jobs:
+            outcome[job.status.value] = outcome.get(job.status.value, 0) + 1
+        logger.warning(f"Recovered {len(jobs)} interrupted job(s): {outcome}")

@@ -61,7 +61,8 @@ export function TranscriptPanel({
   // long as it's true, and offer to try again (lines and voices are kept).
   const retrySeparation = useRetrySeparation()
   const separatingAgain = job?.status === 'separating' && segments.length > 0
-  const separationFailed = job?.stems_separated === false && jobIdle
+  // Also before Analyze: transcription listens to the separated voices
+  const separationFailed = job?.stems_separated === false && (jobIdle || job.status === 'stems_ready')
   const handleRetrySeparation = () => {
     retrySeparation.mutate(jobId, {
       onError: (err) => toast.error(`Couldn't start: ${(err as Error).message}`),

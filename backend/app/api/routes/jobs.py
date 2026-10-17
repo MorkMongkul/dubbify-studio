@@ -346,10 +346,15 @@ async def retry_separation(
         )
     if not resolve_existing(job.video_path):
         raise HTTPException(status_code=400, detail="This episode's video file is missing — upload it again.")
-    has_lines = (await db.execute(
-        select(Segment.id).where(Segment.job_id == job_id).limit(1)
-    )).scalar_one_or_none() is not None
-    return_status = JobStatus.COMPLETED if has_lines else JobStatus.STEMS_READY
+    if job.status in (JobStatus.STEMS_READY, JobStatus.COMPLETED):
+        # Back to where it was: an episode waiting for Analyze keeps waiting
+        # (a subtitle episode already has its lines then).
+        return_status = job.status
+    else:
+        has_lines = (await db.execute(
+            select(Segment.id).where(Segment.job_id == job_id).limit(1)
+        )).scalar_one_or_none() is not None
+        return_status = JobStatus.COMPLETED if has_lines else JobStatus.STEMS_READY
 
     job.status, job.progress, job.error_msg = JobStatus.SEPARATING, 20, ""
     await db.commit()
