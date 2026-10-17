@@ -218,7 +218,7 @@ export function SpeakerPanel({ speakers, className, segments }: SpeakerPanelProp
                       }}
                       onBlur={() => handleVoicePromptBlur(sp)}
                       onClick={(e) => e.stopPropagation()}
-                      className="w-full bg-zinc-950/80 border border-zinc-800 text-[10px] rounded-lg p-2 text-zinc-200 focus:outline-none focus:border-purple-500/50 resize-none h-14"
+                      className="w-full bg-ink-950/80 border border-ink-800 text-[10px] rounded-lg p-2 text-ink-200 focus:outline-none focus:border-brand-500/50 resize-none h-14"
                     />
                   </div>
 
@@ -234,7 +234,7 @@ export function SpeakerPanel({ speakers, className, segments }: SpeakerPanelProp
                           { onSuccess: () => toast.success('Speaker voice updated ✓') }
                         )
                       }}
-                      className="w-full bg-zinc-950/80 border border-zinc-800 text-[10px] rounded-lg p-2 text-zinc-200 focus:outline-none focus:border-purple-500/50 cursor-pointer"
+                      className="w-full bg-ink-950/80 border border-ink-800 text-[10px] rounded-lg p-2 text-ink-200 focus:outline-none focus:border-brand-500/50 cursor-pointer"
                     >
                       <option value="">Default (use voice prompt above)</option>
                       {voiceLibrary.map((v) => (

@@ -3,17 +3,18 @@
 // In the desktop app keys are saved to the user's own settings file (never
 // shown back); during development they come from backend/.env (read-only here).
 import { useState } from 'react'
-import { Sun, Moon, Settings2, Zap, KeyRound, HardDrive, CheckCircle2, AlertTriangle } from 'lucide-react'
+import { Sun, Moon, Settings2, KeyRound, HardDrive, CheckCircle2, AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
 import { useThemeStore } from '@/store/themeStore'
 import { useAppSettings, useGeminiModels, useTestGeminiModel, useUpdateAppSettings } from '@/hooks/useApi'
 import { cn } from '@/lib/utils'
 import type { AppSettings, AppSettingsUpdate, AppSettingsValues, GeminiModelChoice, GeminiModelTestResult } from '@/types'
 import { PanelHeader } from './PanelShell'
+import { MoveloStudioIcon } from '@/components/brand/Movelo'
 
 const inputClass =
-  'w-full bg-zinc-950 text-[11px] text-zinc-200 rounded border border-zinc-700/60 px-2 py-1 ' +
-  'focus:outline-none focus:border-purple-500/60 disabled:opacity-60 placeholder:text-zinc-600'
+  'w-full bg-ink-950 text-[11px] text-ink-200 rounded border border-ink-700/60 px-2 py-1 ' +
+  'focus:outline-none focus:border-brand-500/60 disabled:opacity-60 placeholder:text-ink-600'
 
 function SecretField({
   label, isSet, value, onChange, onRemove, disabled, hint,
@@ -23,13 +24,13 @@ function SecretField({
 }) {
   return (
     <label className="block space-y-1">
-      <span className="flex items-center justify-between text-[10px] text-zinc-400">
+      <span className="flex items-center justify-between text-[10px] text-ink-400">
         {label}
         {isSet ? (
           <span className="flex items-center gap-1.5">
             <span className="text-emerald-400/80">Saved</span>
             {!disabled && (
-              <button type="button" onClick={onRemove} className="text-zinc-500 hover:text-red-400 transition-colors">
+              <button type="button" onClick={onRemove} className="text-ink-500 hover:text-red-400 transition-colors">
                 Remove
               </button>
             )}
@@ -70,9 +71,9 @@ function GeminiModelsField({
   const [results, setResults] = useState<Record<string, GeminiModelTestResult | 'testing'>>({})
 
   if (!hasKey) {
-    return <p className="text-[9.5px] text-zinc-500 leading-snug">Save your Gemini API key to choose the AI models.</p>
+    return <p className="text-[9.5px] text-ink-500 leading-snug">Save your Gemini API key to choose the AI models.</p>
   }
-  if (models.isLoading) return <p className="text-[9.5px] text-zinc-500">Loading the models your key can use…</p>
+  if (models.isLoading) return <p className="text-[9.5px] text-ink-500">Loading the models your key can use…</p>
   if (models.isError || !models.data) {
     return (
       <p className="text-[9.5px] text-amber-300/90 leading-snug">
@@ -106,7 +107,7 @@ function GeminiModelsField({
           ? [choice.value, ...choice.options] : choice.options
         return (
           <label key={choice.setting} className="block space-y-1">
-            <span className="text-[10px] text-zinc-400">{choice.label}</span>
+            <span className="text-[10px] text-ink-400">{choice.label}</span>
             <select
               className={inputClass} disabled={disabled}
               value={selected}
@@ -115,7 +116,7 @@ function GeminiModelsField({
               <option value="">Automatic (recommended) — {choice.automatic}</option>
               {options.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
-            {result === 'testing' && <span className="block text-[9.5px] text-zinc-500">Checking {selected}…</span>}
+            {result === 'testing' && <span className="block text-[9.5px] text-ink-500">Checking {selected}…</span>}
             {result && result !== 'testing' && (
               <span className={cn('flex items-start gap-1 text-[9.5px] leading-snug',
                 result.ok ? 'text-emerald-400/90' : 'text-amber-300/90')}>
@@ -168,16 +169,16 @@ function AiServicesSection({ data }: { data: AppSettings }) {
 
   return (
     <section className="space-y-2">
-      <span className="flex items-center gap-1.5 text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">
+      <span className="flex items-center gap-1.5 text-[10px] font-semibold text-ink-500 uppercase tracking-wider">
         <KeyRound size={10} /> AI services
       </span>
       {!data.editable && (
-        <p className="text-[9.5px] text-zinc-500 leading-snug">
+        <p className="text-[9.5px] text-ink-500 leading-snug">
           While developing, these come from <span className="font-mono">backend/.env</span> — edit that file and
           restart the backend.
         </p>
       )}
-      <div className="space-y-2.5 rounded-xl border border-zinc-800/60 bg-zinc-800/20 p-3">
+      <div className="space-y-2.5 rounded-xl border border-ink-800/60 bg-ink-800/20 p-3">
         <SecretField
           label="Gemini API key" isSet={data.secrets.GEMINI_API_KEY} disabled={disabled}
           value={secrets.GEMINI_API_KEY} hint="Needed for transcription, speakers and translation"
@@ -191,7 +192,7 @@ function AiServicesSection({ data }: { data: AppSettings }) {
           onRemove={() => send({ HF_TOKEN: '' }, 'Hugging Face token removed')}
         />
         <label className="block space-y-1">
-          <span className="text-[10px] text-zinc-400">VoxCPM voice server (Gradio URL)</span>
+          <span className="text-[10px] text-ink-400">VoxCPM voice server (Gradio URL)</span>
           <input
             className={inputClass} disabled={disabled} spellCheck={false}
             placeholder="Blank = free public HF Space"
@@ -200,7 +201,7 @@ function AiServicesSection({ data }: { data: AppSettings }) {
           />
         </label>
         <label className="block space-y-1">
-          <span className="text-[10px] text-zinc-400">Translation engine</span>
+          <span className="text-[10px] text-ink-400">Translation engine</span>
           <select
             className={inputClass} disabled={disabled}
             value={value('TRANSLATION_BACKEND')}
@@ -211,7 +212,7 @@ function AiServicesSection({ data }: { data: AppSettings }) {
           </select>
         </label>
         <div className="space-y-1.5 pt-1">
-          <span className="text-[10px] font-medium text-zinc-300">AI models</span>
+          <span className="text-[10px] font-medium text-ink-300">AI models</span>
           <GeminiModelsField
             hasKey={data.secrets.GEMINI_API_KEY}
             disabled={disabled}
@@ -220,13 +221,13 @@ function AiServicesSection({ data }: { data: AppSettings }) {
           />
         </div>
         <details className="group">
-          <summary className="cursor-pointer text-[10px] text-zinc-500 hover:text-zinc-300 select-none">Advanced</summary>
+          <summary className="cursor-pointer text-[10px] text-ink-500 hover:text-ink-300 select-none">Advanced</summary>
           <div className="space-y-2 pt-2">
             {([
               ['VOXCPM2_HF_SPACE_FALLBACK', 'Fallback voice Space'],
             ] as const).map(([key, label]) => (
               <label key={key} className="block space-y-1">
-                <span className="text-[10px] text-zinc-400">{label}</span>
+                <span className="text-[10px] text-ink-400">{label}</span>
                 <input
                   className={inputClass} disabled={disabled} spellCheck={false}
                   value={value(key)} onChange={(e) => edit(key, e.target.value)}
@@ -234,7 +235,7 @@ function AiServicesSection({ data }: { data: AppSettings }) {
               </label>
             ))}
             <label className="block space-y-1">
-              <span className="text-[10px] text-zinc-400">Voices generated at once (1–8)</span>
+              <span className="text-[10px] text-ink-400">Voices generated at once (1–8)</span>
               <input
                 type="number" min={1} max={8} className={inputClass} disabled={disabled}
                 value={value('TTS_BATCH_CONCURRENCY')}
@@ -247,7 +248,7 @@ function AiServicesSection({ data }: { data: AppSettings }) {
           <button
             onClick={save}
             disabled={!dirty || update.isPending}
-            className="w-full py-1 rounded bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-[10.5px] font-semibold transition-colors"
+            className="w-full py-1 rounded bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-[10.5px] font-semibold transition-colors"
           >
             {update.isPending ? 'Saving…' : 'Save'}
           </button>
@@ -260,16 +261,16 @@ function AiServicesSection({ data }: { data: AppSettings }) {
 function StorageSection({ data }: { data: AppSettings }) {
   const row = (label: string, text: string) => (
     <div className="space-y-0.5">
-      <span className="text-[9.5px] text-zinc-500">{label}</span>
-      <p className="text-[10px] font-mono text-zinc-300 break-all select-text">{text}</p>
+      <span className="text-[9.5px] text-ink-500">{label}</span>
+      <p className="text-[10px] font-mono text-ink-300 break-all select-text">{text}</p>
     </div>
   )
   return (
     <section className="space-y-2">
-      <span className="flex items-center gap-1.5 text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">
+      <span className="flex items-center gap-1.5 text-[10px] font-semibold text-ink-500 uppercase tracking-wider">
         <HardDrive size={10} /> Storage
       </span>
-      <div className="space-y-2 rounded-xl border border-zinc-800/60 bg-zinc-800/20 p-3">
+      <div className="space-y-2 rounded-xl border border-ink-800/60 bg-ink-800/20 p-3">
         {row('Database', data.storage.database === 'local' ? 'On this Mac' : 'Server database (DATABASE_URL)')}
         {row('Videos and voices', data.storage.upload_dir)}
         {data.storage.log_dir && row('Logs', data.storage.log_dir)}
@@ -277,7 +278,7 @@ function StorageSection({ data }: { data: AppSettings }) {
           {data.ffmpeg && data.ffprobe ? (
             <>
               <CheckCircle2 size={11} className="text-emerald-400 shrink-0 mt-px" />
-              <p className="text-[10px] text-zinc-400 break-all">ffmpeg found: <span className="font-mono">{data.ffmpeg}</span></p>
+              <p className="text-[10px] text-ink-400 break-all">ffmpeg found: <span className="font-mono">{data.ffmpeg}</span></p>
             </>
           ) : (
             <>
@@ -321,17 +322,17 @@ function ThemeCard({
       {/* Mini theme preview */}
       <div className={cn(
         'h-12 w-16 shrink-0 rounded-lg border overflow-hidden relative',
-        isLight ? 'bg-zinc-100 border-zinc-200' : 'bg-zinc-950 border-zinc-800'
+        isLight ? 'bg-ink-100 border-ink-200' : 'bg-ink-950 border-ink-800'
       )}>
-        <div className={cn('absolute left-0 top-0 bottom-0 w-4', isLight ? 'bg-zinc-200' : 'bg-zinc-900')}>
-          <div className={cn('mx-1 mt-1.5 h-1 rounded-full', isLight ? 'bg-zinc-400' : 'bg-zinc-700')} />
-          <div className={cn('mx-1 mt-1 h-1 rounded-full w-2/3', isLight ? 'bg-violet-400/60' : 'bg-violet-600/60')} />
+        <div className={cn('absolute left-0 top-0 bottom-0 w-4', isLight ? 'bg-ink-200' : 'bg-ink-900')}>
+          <div className={cn('mx-1 mt-1.5 h-1 rounded-full', isLight ? 'bg-ink-400' : 'bg-ink-700')} />
+          <div className={cn('mx-1 mt-1 h-1 rounded-full w-2/3', isLight ? 'bg-brand-400/60' : 'bg-brand-600/60')} />
         </div>
         <div className="absolute left-5 right-1 top-1.5 bottom-1.5 flex flex-col gap-1">
-          <div className={cn('h-1 rounded-full w-1/2', isLight ? 'bg-zinc-300' : 'bg-zinc-700')} />
+          <div className={cn('h-1 rounded-full w-1/2', isLight ? 'bg-ink-300' : 'bg-ink-700')} />
           <div className="flex gap-1 mt-0.5 flex-1">
             {[...Array(2)].map((_, i) => (
-              <div key={i} className={cn('flex-1 rounded', isLight ? 'bg-zinc-200' : 'bg-zinc-800')} />
+              <div key={i} className={cn('flex-1 rounded', isLight ? 'bg-ink-200' : 'bg-ink-800')} />
             ))}
           </div>
         </div>
@@ -368,13 +369,13 @@ export function SettingsPanel() {
           <>
             <AiServicesSection data={appSettings} />
             <StorageSection data={appSettings} />
-            <div className="h-px bg-zinc-800/60" />
+            <div className="h-px bg-ink-800/60" />
           </>
         )}
 
         {/* Appearance */}
         <section className="space-y-2">
-          <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">Appearance</span>
+          <span className="text-[10px] font-semibold text-ink-500 uppercase tracking-wider">Appearance</span>
           <div className="space-y-2">
             {THEME_OPTIONS.map((option) => (
               <ThemeCard
@@ -387,19 +388,17 @@ export function SettingsPanel() {
           </div>
         </section>
 
-        <div className="h-px bg-zinc-800/60" />
+        <div className="h-px bg-ink-800/60" />
 
         {/* About */}
         <section className="space-y-2">
-          <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">About</span>
-          <div className="rounded-xl border border-zinc-800/60 bg-zinc-800/20 p-3">
+          <span className="text-[10px] font-semibold text-ink-500 uppercase tracking-wider">About</span>
+          <div className="rounded-xl border border-ink-800/60 bg-ink-800/20 p-3">
             <div className="flex items-center gap-2 mb-2.5">
-              <div className="h-6 w-6 rounded bg-brand flex items-center justify-center">
-                <Zap size={12} className="text-white" fill="white" />
-              </div>
+              <MoveloStudioIcon size={24} />
               <div>
-                <p className="text-[11.5px] font-semibold text-white leading-tight">Dubify Studio</p>
-                <p className="text-[9.5px] text-white/40">AI Movie Dubbing Platform</p>
+                <p className="text-[11.5px] font-semibold text-white leading-tight">Movelo Studio</p>
+                <p className="text-[9.5px] text-white/40">Video editor with AI dubbing</p>
               </div>
             </div>
             <div className="space-y-1 text-[10px] text-white/40">

@@ -72,7 +72,7 @@ export function Modal({ open, onClose, title, description, children, className, 
                 <div className="flex items-start justify-between gap-3">
                   {title && (
                     <h2
-                      className="text-lg font-semibold"
+                      className="font-display text-lg font-semibold"
                       style={{ color: 'var(--color-text-primary)' }}
                     >
                       {title}

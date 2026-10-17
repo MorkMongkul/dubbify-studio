@@ -241,7 +241,7 @@ function OverlayBox({
         // No border/ring at all while unselected — it should look exactly
         // like the real video, with editing affordances only appearing once
         // this layer is actively being worked on.
-        isSelected ? 'ring-2 ring-purple-500' : 'hover:ring-1 hover:ring-white/30'
+        isSelected ? 'ring-2 ring-brand-500' : 'hover:ring-1 hover:ring-white/30'
       )}
       style={positionStyle}
       onPointerDown={(e) => handleDragPointerDown(e, 'move')}
@@ -330,21 +330,21 @@ function OverlayBox({
                 onPointerDown={(e) => handleDragPointerDown(e, 'left')}
                 title="Drag to set the text column width"
               >
-                <div className="h-8 w-1 rounded-full bg-purple-500 border border-white/70 group-hover/w:h-10 transition-all" />
+                <div className="h-8 w-1 rounded-full bg-brand-500 border border-white/70 group-hover/w:h-10 transition-all" />
               </div>
               <div
                 className="absolute right-0 top-0 bottom-0 -mr-1 w-2 cursor-ew-resize flex items-center justify-center group/w"
                 onPointerDown={(e) => handleDragPointerDown(e, 'right')}
                 title="Drag to set the text column width"
               >
-                <div className="h-8 w-1 rounded-full bg-purple-500 border border-white/70 group-hover/w:h-10 transition-all" />
+                <div className="h-8 w-1 rounded-full bg-brand-500 border border-white/70 group-hover/w:h-10 transition-all" />
               </div>
               {/* Anchor marker — the line the text always rests on */}
-              <div className="absolute -bottom-px left-0 right-0 h-px bg-purple-400/70 pointer-events-none" />
+              <div className="absolute -bottom-px left-0 right-0 h-px bg-brand-400/70 pointer-events-none" />
             </>
           ) : (
             <div
-              className="absolute -bottom-1.5 -right-1.5 h-3.5 w-3.5 rounded-sm bg-purple-500 border border-white cursor-nwse-resize"
+              className="absolute -bottom-1.5 -right-1.5 h-3.5 w-3.5 rounded-sm bg-brand-500 border border-white cursor-nwse-resize"
               onPointerDown={(e) => handleDragPointerDown(e, 'corner')}
               title="Resize"
             />

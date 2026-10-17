@@ -1,4 +1,4 @@
-# Dubify Studio — Backend API
+# Movelo Studio — Backend API
 
 FastAPI backend for the movie dubbing studio. All AI runs in the cloud (Hugging Face Spaces + Google AI Studio); locally it's just FastAPI, SQLite/Postgres, and ffmpeg.
 

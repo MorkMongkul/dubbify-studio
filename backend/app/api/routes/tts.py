@@ -379,7 +379,7 @@ def _copy_export(final_path: str, export_path: str) -> Path:
     except ValueError as e:
         raise PermissionError(str(e)) from e
     target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=".dubify-export-", suffix=".mp4")
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=".movelo-export-", suffix=".mp4")
     try:
         with os.fdopen(fd, "wb") as out, open(final_path, "rb") as src:
             shutil.copyfileobj(src, out, 8 * 1024 * 1024)

@@ -9,7 +9,7 @@ name: Desktop release
 # build artifacts.
 #
 # The website's download buttons point at
-#   releases/latest/download/Dubify-Studio-Apple-Silicon.dmg (and -Intel.dmg),
+#   releases/latest/download/Movelo-Studio-Apple-Silicon.dmg (and -Intel.dmg),
 # so the DMGs are published under those fixed names. "latest" only counts
 # published releases: the website offers a version once its draft is published.
 #
@@ -107,13 +107,13 @@ jobs:
           bundle="frontend/src-tauri/target/${{ matrix.target }}/release/bundle"
           mkdir -p out
           cp "$bundle"/dmg/*.dmg out/
-          cp "$bundle/macos/Dubify Studio.app.tar.gz" "out/Dubify-Studio-${{ matrix.label }}.app.tar.gz"
-          cp "$bundle/macos/Dubify Studio.app.tar.gz.sig" "out/Dubify-Studio-${{ matrix.label }}.app.tar.gz.sig"
+          cp "$bundle/macos/Movelo Studio.app.tar.gz" "out/Movelo-Studio-${{ matrix.label }}.app.tar.gz"
+          cp "$bundle/macos/Movelo Studio.app.tar.gz.sig" "out/Movelo-Studio-${{ matrix.label }}.app.tar.gz.sig"
           ls -l out
 
       - uses: actions/upload-artifact@v7
         with:
-          name: dubify-studio-${{ matrix.target }}
+          name: movelo-studio-${{ matrix.target }}
           path: out/*
           if-no-files-found: error
 
@@ -134,12 +134,12 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # Tauri names them "Dubify Studio_<version>_<arch>.dmg"; the website
+      # Tauri names them "Movelo Studio_<version>_<arch>.dmg"; the website
       # links to fixed names that stay the same from one version to the next.
       - name: Give the DMGs stable names
         run: |
-          mv dist/*_aarch64.dmg dist/Dubify-Studio-Apple-Silicon.dmg
-          mv dist/*_x64.dmg dist/Dubify-Studio-Intel.dmg
+          mv dist/*_aarch64.dmg dist/Movelo-Studio-Apple-Silicon.dmg
+          mv dist/*_x64.dmg dist/Movelo-Studio-Intel.dmg
           ls -l dist
 
       # Installed copies read releases/latest/download/latest.json to find this

@@ -1,5 +1,5 @@
 // src/types/index.ts
-// Central type definitions for Dubify Studio
+// Central type definitions for Movelo Studio
 
 // ── Status Enums ─────────────────────────────────────────────────
 
@@ -317,7 +317,7 @@ export interface EditorState {
 
 // ── UI Helpers ────────────────────────────────────────────────────
 
-export type StatusColor = 'violet' | 'blue' | 'green' | 'yellow' | 'red' | 'gray'
+export type StatusColor = 'brand' | 'blue' | 'green' | 'yellow' | 'red' | 'gray'
 
 export const JOB_STATUS_CONFIG: Record<JobStatus, {
   label: string
@@ -325,13 +325,13 @@ export const JOB_STATUS_CONFIG: Record<JobStatus, {
   description: string
 }> = {
   pending:      { label: 'Pending',      color: 'gray',   description: 'Waiting to start' },
-  extracting:   { label: 'Extracting',   color: 'violet', description: 'Extracting audio' },
-  separating:   { label: 'Separating',   color: 'violet', description: 'Splitting vocals from background music' },
+  extracting:   { label: 'Extracting',   color: 'brand', description: 'Extracting audio' },
+  separating:   { label: 'Separating',   color: 'brand', description: 'Splitting vocals from background music' },
   stems_ready:  { label: 'Stems Ready',  color: 'green',  description: 'Audio split — click Analyze to detect speakers' },
-  diarizing:    { label: 'Diarizing',    color: 'violet', description: 'Detecting speakers' },
-  transcribing: { label: 'Transcribing', color: 'violet', description: 'AI speech recognition' },
+  diarizing:    { label: 'Diarizing',    color: 'brand', description: 'Detecting speakers' },
+  transcribing: { label: 'Transcribing', color: 'brand', description: 'AI speech recognition' },
   translating:  { label: 'Translating',  color: 'blue',   description: 'Translating dialogue' },
-  synthesizing: { label: 'Synthesizing', color: 'violet', description: 'Generating AI voices' },
+  synthesizing: { label: 'Synthesizing', color: 'brand', description: 'Generating AI voices' },
   mixing:       { label: 'Mixing',       color: 'blue',   description: 'Mixing dubbed audio' },
   completed:    { label: 'Completed',    color: 'green',  description: 'Export ready' },
   failed:       { label: 'Failed',       color: 'red',    description: 'An error occurred' },
@@ -356,15 +356,17 @@ export const PIPELINE_STEPS: { key: JobStatus; label: string; icon: string }[] =
   { key: 'mixing',       label: 'Mix',       icon: 'music' },
 ]
 
+// Coral is the app's selection colour, so the common first speakers get
+// colours far from it; pink and red come last.
 export const SPEAKER_COLORS = [
-  '#7C3AED', // violet
   '#2563EB', // blue
   '#059669', // emerald
   '#D97706', // amber
-  '#DC2626', // red
-  '#DB2777', // pink
   '#0891B2', // cyan
+  '#7C3AED', // violet
   '#65A30D', // lime
+  '#DB2777', // pink
+  '#DC2626', // red
 ]
 
 export const LANGUAGE_OPTIONS = [

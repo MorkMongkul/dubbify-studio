@@ -64,7 +64,7 @@ export function OverlaysPanel({
   return (
     <div className="flex flex-col gap-2">
       <div className="grid grid-cols-3 gap-1.5">
-        <label className="flex flex-col items-center justify-center gap-1 p-2 rounded border border-dashed border-zinc-700/60 hover:border-purple-500/50 hover:bg-purple-500/5 cursor-pointer transition-all text-[10px] text-zinc-400">
+        <label className="flex flex-col items-center justify-center gap-1 p-2 rounded border border-dashed border-ink-700/60 hover:border-brand-500/50 hover:bg-brand-500/5 cursor-pointer transition-all text-[10px] text-ink-400">
           <input
             type="file"
             accept="image/png,image/jpeg,image/webp"
@@ -83,7 +83,7 @@ export function OverlaysPanel({
               })
           }
           disabled={hasSubtitleOverlay}
-          className="flex flex-col items-center justify-center gap-1 p-2 rounded border border-dashed border-zinc-700/60 hover:border-purple-500/50 hover:bg-purple-500/5 cursor-pointer transition-all text-[10px] text-zinc-400 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="flex flex-col items-center justify-center gap-1 p-2 rounded border border-dashed border-ink-700/60 hover:border-brand-500/50 hover:bg-brand-500/5 cursor-pointer transition-all text-[10px] text-ink-400 disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <Type size={13} />
           Subtitles
@@ -94,7 +94,7 @@ export function OverlaysPanel({
             onError: () => toast.error('Failed to add box'),
           })}
           title="A plain box — solid color or blur — useful for covering something already in the video, like a burned-in subtitle"
-          className="flex flex-col items-center justify-center gap-1 p-2 rounded border border-dashed border-zinc-700/60 hover:border-purple-500/50 hover:bg-purple-500/5 cursor-pointer transition-all text-[10px] text-zinc-400"
+          className="flex flex-col items-center justify-center gap-1 p-2 rounded border border-dashed border-ink-700/60 hover:border-brand-500/50 hover:bg-brand-500/5 cursor-pointer transition-all text-[10px] text-ink-400"
         >
           <Square size={13} />
           Box
@@ -104,29 +104,29 @@ export function OverlaysPanel({
       {/* Project-level saved logo — set once, reusable across every job/export in this project */}
       {project?.logo_url ? (
         <div className="flex items-center gap-2 px-1">
-          <img src={project.logo_url} alt="Project logo" className="h-6 w-6 rounded object-contain bg-zinc-800/50 border border-zinc-700/50" />
+          <img src={project.logo_url} alt="Project logo" className="h-6 w-6 rounded object-contain bg-ink-800/50 border border-ink-700/50" />
           <button
             onClick={() => createFromLogo.mutate(jobId, {
               onSuccess: (created) => setSelectedOverlay(created.id),
               onError: () => toast.error('Failed to add logo'),
             })}
-            className="flex items-center gap-1 text-[10px] text-purple-400 hover:text-purple-300"
+            className="flex items-center gap-1 text-[10px] text-brand-400 hover:text-brand-300"
           >
             <UploadCloud size={11} /> Use on this video
           </button>
-          <label className="text-[10px] text-zinc-500 hover:text-zinc-300 cursor-pointer ml-auto">
+          <label className="text-[10px] text-ink-500 hover:text-ink-300 cursor-pointer ml-auto">
             <input
               type="file" accept="image/png,image/jpeg,image/webp" className="hidden"
               onChange={(e) => onUploadProjectLogo(e.target.files?.[0] ?? null)}
             />
             Replace
           </label>
-          <button onClick={onRemoveProjectLogo} className="text-zinc-500 hover:text-red-400">
+          <button onClick={onRemoveProjectLogo} className="text-ink-500 hover:text-red-400">
             <Trash2 size={11} />
           </button>
         </div>
       ) : (
-        <label className="flex items-center justify-center gap-1.5 p-1.5 rounded text-[10px] text-zinc-500 hover:text-purple-300 hover:bg-purple-500/5 cursor-pointer transition-colors">
+        <label className="flex items-center justify-center gap-1.5 p-1.5 rounded text-[10px] text-ink-500 hover:text-brand-300 hover:bg-brand-500/5 cursor-pointer transition-colors">
           <input
             type="file" accept="image/png,image/jpeg,image/webp" className="hidden"
             onChange={(e) => onUploadProjectLogo(e.target.files?.[0] ?? null)}
@@ -136,16 +136,16 @@ export function OverlaysPanel({
         </label>
       )}
 
-      <div className="h-px bg-zinc-800/60 my-1" />
+      <div className="h-px bg-ink-800/60 my-1" />
 
       <TemplatesSection jobId={jobId} hasOverlays={overlays.length > 0} />
 
-      <div className="h-px bg-zinc-800/60 my-1" />
+      <div className="h-px bg-ink-800/60 my-1" />
 
       {isLoading ? (
-        <div className="text-[11px] text-zinc-600 text-center py-4">Loading…</div>
+        <div className="text-[11px] text-ink-600 text-center py-4">Loading…</div>
       ) : sorted.length === 0 ? (
-        <div className="text-[11px] text-zinc-600 text-center py-4">
+        <div className="text-[11px] text-ink-600 text-center py-4">
           No elements yet — add an image or subtitles above
         </div>
       ) : (
@@ -157,24 +157,24 @@ export function OverlaysPanel({
               className={cn(
                 'flex items-center gap-2 p-1.5 rounded border cursor-pointer transition-all',
                 selectedOverlayId === ov.id
-                  ? 'bg-purple-500/10 border-purple-500/40'
-                  : 'bg-zinc-800/30 border-zinc-800/40 hover:bg-zinc-800/60'
+                  ? 'bg-brand-500/10 border-brand-500/40'
+                  : 'bg-ink-800/30 border-ink-800/40 hover:bg-ink-800/60'
               )}
             >
               {ov.type === 'image' ? (
-                <img src={ov.media_url ?? undefined} alt="" className="h-6 w-6 rounded object-cover bg-zinc-900 shrink-0" />
+                <img src={ov.media_url ?? undefined} alt="" className="h-6 w-6 rounded object-cover bg-ink-900 shrink-0" />
               ) : (
-                <div className="h-6 w-6 rounded bg-zinc-900 flex items-center justify-center shrink-0">
-                  {ov.type === 'subtitle' ? <Type size={11} className="text-zinc-500" /> : <Square size={11} className="text-zinc-500" />}
+                <div className="h-6 w-6 rounded bg-ink-900 flex items-center justify-center shrink-0">
+                  {ov.type === 'subtitle' ? <Type size={11} className="text-ink-500" /> : <Square size={11} className="text-ink-500" />}
                 </div>
               )}
-              <span className="text-[11px] font-medium text-zinc-200 flex-1 truncate">
+              <span className="text-[11px] font-medium text-ink-200 flex-1 truncate">
                 {ov.type === 'image' ? 'Image' : ov.type === 'subtitle' ? 'Subtitles' : ov.blur ? 'Blur box' : 'Box'}
               </span>
               <button
                 onClick={(e) => { e.stopPropagation(); handleReorder(i, 'up') }}
                 disabled={i === 0}
-                className="text-zinc-500 hover:text-zinc-200 disabled:opacity-20 disabled:cursor-not-allowed"
+                className="text-ink-500 hover:text-ink-200 disabled:opacity-20 disabled:cursor-not-allowed"
                 title="Bring forward"
               >
                 <ChevronUp size={12} />
@@ -182,7 +182,7 @@ export function OverlaysPanel({
               <button
                 onClick={(e) => { e.stopPropagation(); handleReorder(i, 'down') }}
                 disabled={i === sorted.length - 1}
-                className="text-zinc-500 hover:text-zinc-200 disabled:opacity-20 disabled:cursor-not-allowed"
+                className="text-ink-500 hover:text-ink-200 disabled:opacity-20 disabled:cursor-not-allowed"
                 title="Send backward"
               >
                 <ChevronDown size={12} />
@@ -193,7 +193,7 @@ export function OverlaysPanel({
                   deleteOverlay.mutate({ id: ov.id, jobId })
                   if (selectedOverlayId === ov.id) setSelectedOverlay(null)
                 }}
-                className="text-zinc-500 hover:text-red-400"
+                className="text-ink-500 hover:text-red-400"
                 title="Delete"
               >
                 <Trash2 size={12} />
@@ -210,15 +210,15 @@ export function OverlaysPanel({
           the list layout. */}
       {selected && (
         <>
-          <div className="h-px bg-zinc-800/60 my-1" />
-          <div className="p-2 rounded border border-purple-500/30 bg-purple-500/5 space-y-2">
-            <span className="text-[9px] font-semibold uppercase tracking-widest text-purple-400/80">
+          <div className="h-px bg-ink-800/60 my-1" />
+          <div className="p-2 rounded border border-brand-500/30 bg-brand-500/5 space-y-2">
+            <span className="text-[9px] font-semibold uppercase tracking-widest text-brand-400/80">
               {selected.type === 'image' ? 'Image properties' : selected.type === 'subtitle' ? 'Subtitle properties' : 'Box properties'}
             </span>
 
             {selected.type === 'image' && (
               <div className="flex items-center gap-1.5">
-                <span className="text-[9px] text-zinc-500 w-10 shrink-0">Opacity</span>
+                <span className="text-[9px] text-ink-500 w-10 shrink-0">Opacity</span>
                 <input
                   type="range" min={0} max={1} step={0.05}
                   defaultValue={selected.opacity}
@@ -252,7 +252,7 @@ export function OverlaysPanel({
                   />
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[9px] text-zinc-500 shrink-0">Size</span>
+                  <span className="text-[9px] text-ink-500 shrink-0">Size</span>
                   <input
                     type="range" min={20} max={72} step={2}
                     defaultValue={selected.font_size}
@@ -262,7 +262,7 @@ export function OverlaysPanel({
                     title="Font size, in real video pixels — identical on every segment"
                   />
                 </div>
-                <p className="text-[9px] text-zinc-500 leading-relaxed">
+                <p className="text-[9px] text-ink-500 leading-relaxed">
                   Height is automatic: longer lines wrap and grow upward from the box's
                   bottom edge at this same size. On the video, drag the side handles to
                   set how wide the text column is.
@@ -277,7 +277,7 @@ export function OverlaysPanel({
                     onClick={() => updateOverlay.mutate({ id: selected.id, jobId, data: { blur: false } })}
                     className={cn(
                       'py-1 rounded text-[10px] font-medium transition-all border',
-                      !selected.blur ? 'bg-purple-500/20 border-purple-500/50 text-purple-300' : 'border-zinc-700 text-zinc-400 hover:border-zinc-500'
+                      !selected.blur ? 'bg-brand-500/20 border-brand-500/50 text-brand-300' : 'border-ink-700 text-ink-400 hover:border-ink-500'
                     )}
                   >
                     Solid color
@@ -286,7 +286,7 @@ export function OverlaysPanel({
                     onClick={() => updateOverlay.mutate({ id: selected.id, jobId, data: { blur: true } })}
                     className={cn(
                       'py-1 rounded text-[10px] font-medium transition-all border',
-                      selected.blur ? 'bg-purple-500/20 border-purple-500/50 text-purple-300' : 'border-zinc-700 text-zinc-400 hover:border-zinc-500'
+                      selected.blur ? 'bg-brand-500/20 border-brand-500/50 text-brand-300' : 'border-ink-700 text-ink-400 hover:border-ink-500'
                     )}
                   >
                     Blur
@@ -294,7 +294,7 @@ export function OverlaysPanel({
                 </div>
 
                 {selected.blur ? (
-                  <p className="text-[9px] text-zinc-500 leading-relaxed">
+                  <p className="text-[9px] text-ink-500 leading-relaxed">
                     Blurs whatever's in the video underneath this box — handy for hiding a burned-in original subtitle without a flat color block.
                   </p>
                 ) : (
@@ -305,7 +305,7 @@ export function OverlaysPanel({
                       onChange={(color) => updateOverlay.mutate({ id: selected.id, jobId, data: { color } })}
                     />
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[9px] text-zinc-500 w-10 shrink-0">Opacity</span>
+                      <span className="text-[9px] text-ink-500 w-10 shrink-0">Opacity</span>
                       <input
                         type="range" min={0} max={1} step={0.05}
                         defaultValue={selected.opacity}
@@ -357,23 +357,23 @@ function TemplatesSection({ jobId, hasOverlays }: { jobId: string; hasOverlays: 
 
   return (
     <div className="space-y-1">
-      <span className="text-[9px] font-semibold uppercase tracking-widest text-zinc-500 px-1">
+      <span className="text-[9px] font-semibold uppercase tracking-widest text-ink-500 px-1">
         Layout templates
       </span>
 
       {templates.map((t) => (
         <div
           key={t.id}
-          className="flex items-center gap-1.5 p-1.5 rounded border bg-zinc-800/30 border-zinc-800/40"
+          className="flex items-center gap-1.5 p-1.5 rounded border bg-ink-800/30 border-ink-800/40"
         >
           <button
             onClick={() => updateTemplate.mutate({ id: t.id, data: { is_default: !t.is_default } })}
-            className={cn('shrink-0', t.is_default ? 'text-yellow-400' : 'text-zinc-600 hover:text-zinc-300')}
+            className={cn('shrink-0', t.is_default ? 'text-yellow-400' : 'text-ink-600 hover:text-ink-300')}
             title={t.is_default ? 'Default — applied automatically to every new episode' : 'Make default for new episodes'}
           >
             <Star size={12} fill={t.is_default ? 'currentColor' : 'none'} />
           </button>
-          <span className="text-[11px] font-medium text-zinc-200 flex-1 truncate" title={`${t.item_count} element(s)`}>
+          <span className="text-[11px] font-medium text-ink-200 flex-1 truncate" title={`${t.item_count} element(s)`}>
             {t.name}
           </span>
           <button
@@ -382,7 +382,7 @@ function TemplatesSection({ jobId, hasOverlays }: { jobId: string; hasOverlays: 
               onError: () => toast.error('Failed to apply template'),
             })}
             disabled={applyTemplate.isPending}
-            className="text-[10px] text-purple-400 hover:text-purple-300 disabled:opacity-40 shrink-0"
+            className="text-[10px] text-brand-400 hover:text-brand-300 disabled:opacity-40 shrink-0"
           >
             Apply
           </button>
@@ -390,7 +390,7 @@ function TemplatesSection({ jobId, hasOverlays }: { jobId: string; hasOverlays: 
             onClick={() => deleteTemplate.mutate(t.id, {
               onError: () => toast.error('Failed to delete template'),
             })}
-            className="text-zinc-500 hover:text-red-400 shrink-0"
+            className="text-ink-500 hover:text-red-400 shrink-0"
             title="Delete template (episodes it was applied to keep their elements)"
           >
             <Trash2 size={11} />
@@ -409,12 +409,12 @@ function TemplatesSection({ jobId, hasOverlays }: { jobId: string; hasOverlays: 
               if (e.key === 'Escape') { setSaving(false); setName('') }
             }}
             placeholder="Template name…"
-            className="flex-1 min-w-0 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-1 text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/60"
+            className="flex-1 min-w-0 bg-ink-900 border border-ink-700 rounded px-1.5 py-1 text-[11px] text-ink-200 placeholder:text-ink-600 focus:outline-none focus:border-brand-500/60"
           />
           <button
             onClick={handleSave}
             disabled={!name.trim() || createTemplate.isPending}
-            className="text-[10px] text-purple-400 hover:text-purple-300 disabled:opacity-40 shrink-0"
+            className="text-[10px] text-brand-400 hover:text-brand-300 disabled:opacity-40 shrink-0"
           >
             {createTemplate.isPending ? 'Saving…' : 'Save'}
           </button>
@@ -424,7 +424,7 @@ function TemplatesSection({ jobId, hasOverlays }: { jobId: string; hasOverlays: 
           onClick={() => hasOverlays
             ? setSaving(true)
             : toast.info('Add elements to the video first, then save them as a template')}
-          className="w-full flex items-center justify-center gap-1.5 p-1.5 rounded text-[10px] text-zinc-500 hover:text-purple-300 hover:bg-purple-500/5 transition-colors"
+          className="w-full flex items-center justify-center gap-1.5 p-1.5 rounded text-[10px] text-ink-500 hover:text-brand-300 hover:bg-brand-500/5 transition-colors"
           title="Snapshot every element on this episode as a reusable layout"
         >
           <BookmarkPlus size={11} />
@@ -442,14 +442,14 @@ function ColorSwatches({
 }: { label: string; value: string; onChange: (color: string) => void; allowNone?: boolean }) {
   return (
     <div className="flex items-center gap-1" title={label}>
-      <span className="text-[9px] text-zinc-500 mr-0.5">{label}</span>
+      <span className="text-[9px] text-ink-500 mr-0.5">{label}</span>
       {allowNone && (
         <button
           onClick={() => onChange('')}
           className={cn(
             'h-4 w-4 rounded-full border-2 transition-all shrink-0 relative overflow-hidden',
             'bg-[repeating-linear-gradient(45deg,#3f3f46_0_2px,transparent_2px_4px)]',
-            value === '' ? 'border-purple-500 scale-110' : 'border-zinc-700 hover:border-zinc-500'
+            value === '' ? 'border-brand-500 scale-110' : 'border-ink-700 hover:border-ink-500'
           )}
           title="None"
         />
@@ -460,7 +460,7 @@ function ColorSwatches({
           onClick={() => onChange(c)}
           className={cn(
             'h-4 w-4 rounded-full border-2 transition-all shrink-0',
-            value === c ? 'border-purple-500 scale-110' : 'border-zinc-700 hover:border-zinc-500'
+            value === c ? 'border-brand-500 scale-110' : 'border-ink-700 hover:border-ink-500'
           )}
           style={{ background: c }}
           title={c}

@@ -53,7 +53,7 @@ def main() -> None:
     if settings.DUBIFY_LOG_DIR:
         _log_to_file(settings.DUBIFY_LOG_DIR)
     log = logging.getLogger("sidecar")
-    log.info("──── Dubify Studio backend %s starting (launch %s, %s %s) ────",
+    log.info("──── Movelo Studio backend %s starting (launch %s, %s %s) ────",
              settings.version, settings.DUBIFY_INSTANCE_ID or "-", platform.system(), platform.machine())
     log.info("data: %s | uploads: %s | database: %s",
              settings.DUBIFY_DATA_DIR or "(development)", settings.UPLOAD_DIR,

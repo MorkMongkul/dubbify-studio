@@ -58,18 +58,18 @@ export function AIStatusIndicator({ active = false, label, size = 'sm', classNam
 }
 
 // Pulsing dot indicator (e.g. for header status)
-export function StatusDot({ active, color = 'violet' }: { active: boolean; color?: string }) {
+export function StatusDot({ active, color = 'brand' }: { active: boolean; color?: string }) {
   return (
     <span className="relative flex h-2 w-2">
       {active && (
         <span
           className="absolute inline-flex h-full w-full rounded-full opacity-75 animate-ping"
-          style={{ background: color === 'violet' ? '#7C3AED' : '#10B981' }}
+          style={{ background: color === 'brand' ? '#F0506E' : '#10B981' }}
         />
       )}
       <span
         className="relative inline-flex rounded-full h-2 w-2"
-        style={{ background: active ? (color === 'violet' ? '#7C3AED' : '#10B981') : '#52525B' }}
+        style={{ background: active ? (color === 'brand' ? '#F0506E' : '#10B981') : '#5A6185' }}
       />
     </span>
   )

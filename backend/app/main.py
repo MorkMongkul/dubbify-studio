@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 import logging
 
 from app.core.config import settings
+from app.core.data_folder import follow_moved_data_folder
 from app.core.database import init_db
 from app.services.pipeline_common import recover_orphaned_jobs
 from app.api.routes import health, projects, jobs, segments, tts, voices, overlays, chat
@@ -31,6 +32,13 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.APP_NAME} v{settings.version}")
     await init_db()
     logger.info("Database tables initialised.")
+    if settings.DUBIFY_DATA_DIR and settings.DUBIFY_PREVIOUS_DATA_DIR:
+        try:
+            await follow_moved_data_folder(settings.DUBIFY_PREVIOUS_DATA_DIR, settings.DUBIFY_DATA_DIR)
+        except Exception:
+            # Not fatal: old locations still resolve (the app leaves a link
+            # behind, and resolve_media_path remaps paths under .../uploads/).
+            logger.exception("Couldn't update stored file locations after the data folder moved")
     await recover_orphaned_jobs()
     yield
     logger.info("Shutting down.")

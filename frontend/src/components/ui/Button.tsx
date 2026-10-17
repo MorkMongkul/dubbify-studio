@@ -20,7 +20,7 @@ const variantStyles: Record<Variant, string> = {
   ghost:   'bg-transparent text-text-secondary hover:bg-white/6 hover:text-text-primary border border-transparent',
   outline: 'bg-transparent text-text-primary border border-border hover:border-border-strong hover:bg-white/5',
   danger:  'bg-status-error/10 text-status-error hover:bg-status-error/20 border border-status-error/30',
-  accent:  'bg-accent text-white hover:bg-accent-hover border border-accent/30',
+  accent:  'bg-accent text-ink-950 hover:bg-accent-hover border border-accent/30',
   glass:   'glass text-text-primary hover:bg-white/8 hover:border-border-strong',
 }
 

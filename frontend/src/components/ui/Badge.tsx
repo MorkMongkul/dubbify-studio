@@ -15,22 +15,22 @@ interface BadgeProps {
 
 const variantStyles: Record<BadgeVariant, string> = {
   default: 'bg-white/8 text-text-secondary border-border',
-  violet:  'bg-brand-subtle text-brand-300 border-brand/30',
+  brand:   'bg-brand-subtle text-brand-300 border-brand/30',
   blue:    'bg-blue-500/10 text-blue-400 border-blue-500/30',
   green:   'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
   yellow:  'bg-amber-500/10 text-amber-400 border-amber-500/30',
   red:     'bg-red-500/10 text-red-400 border-red-500/30',
-  gray:    'bg-zinc-500/10 text-zinc-400 border-zinc-500/30',
+  gray:    'bg-ink-500/10 text-ink-400 border-ink-500/30',
 }
 
 const dotColors: Record<BadgeVariant, string> = {
   default: 'bg-text-muted',
-  violet:  'bg-brand-400',
+  brand:   'bg-brand-400',
   blue:    'bg-blue-400',
   green:   'bg-emerald-400',
   yellow:  'bg-amber-400',
   red:     'bg-red-400',
-  gray:    'bg-zinc-400',
+  gray:    'bg-ink-400',
 }
 
 export function Badge({ children, variant = 'default', dot, pulse, className }: BadgeProps) {
@@ -53,13 +53,13 @@ export function Badge({ children, variant = 'default', dot, pulse, className }: 
 
 const statusVariantMap: Record<JobStatus, BadgeVariant> = {
   pending:      'gray',
-  extracting:   'violet',
-  separating:   'violet',
-  stems_ready:  'violet',
-  diarizing:    'violet',
-  transcribing: 'violet',
+  extracting:   'brand',
+  separating:   'brand',
+  stems_ready:  'brand',
+  diarizing:    'brand',
+  transcribing: 'brand',
   translating:  'blue',
-  synthesizing: 'violet',
+  synthesizing: 'brand',
   mixing:       'blue',
   completed:    'green',
   failed:       'red',

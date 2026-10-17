@@ -471,7 +471,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
                 }}
               >
                 <div
-                  className="absolute left-0 top-0 h-full bg-gradient-to-r from-purple-500 to-purple-400 rounded-full transition-all"
+                  className="absolute left-0 top-0 h-full bg-gradient-to-r from-brand-500 to-brand-400 rounded-full transition-all"
                   style={{ width: `${duration ? (currentTime / duration) * 100 : 0}%` }}
                 />
                 <div

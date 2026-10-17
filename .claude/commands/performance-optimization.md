@@ -1,5 +1,5 @@
 ---
-description: Full-stack performance audit of Dubify Studio (UI, Tauri, FastAPI, network, AI workflow, FFmpeg, memory, build)
+description: Full-stack performance audit of Movelo Studio (UI, Tauri, FastAPI, network, AI workflow, FFmpeg, memory, build)
 argument-hint: [optional focus area, e.g. "timeline", "network", "ffmpeg"]
 ---
 

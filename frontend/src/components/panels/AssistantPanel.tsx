@@ -29,7 +29,7 @@ const TOOL_ICONS: Record<string, typeof Search> = {
 
 function ToolStep({ label, icon: Icon }: { label: string; icon: typeof Search }) {
   return (
-    <div className="flex items-center gap-1.5 text-[9px] text-zinc-600 pl-1 py-0.5">
+    <div className="flex items-center gap-1.5 text-[9px] text-ink-600 pl-1 py-0.5">
       <Icon size={10} className="shrink-0" />
       <span className="truncate">{label}</span>
     </div>
@@ -44,8 +44,8 @@ function ChatBubble({ message }: { message: ChatMessage }) {
         className={cn(
           'max-w-[85%] rounded-lg px-2.5 py-1.5 text-[11px] leading-relaxed whitespace-pre-wrap break-words',
           isUser
-            ? 'bg-purple-500/15 text-zinc-100'
-            : 'bg-zinc-800/60 text-zinc-200'
+            ? 'bg-brand-500/15 text-ink-100'
+            : 'bg-ink-800/60 text-ink-200'
         )}
       >
         {message.text}
@@ -105,14 +105,14 @@ export function AssistantPanel({ projectId }: AssistantPanelProps) {
         icon={Bot}
         title="Assistant"
         action={
-          <div className="flex items-center rounded-md bg-zinc-950 border border-zinc-800/60 p-0.5 text-[9px]">
+          <div className="flex items-center rounded-md bg-ink-950 border border-ink-800/60 p-0.5 text-[9px]">
             {(['manual', 'auto'] as ChatEditMode[]).map((m) => (
               <button
                 key={m}
                 onClick={() => setMode(m)}
                 className={cn(
                   'px-1.5 py-0.5 rounded transition-colors capitalize',
-                  mode === m ? 'bg-purple-500/20 text-purple-300' : 'text-zinc-600 hover:text-zinc-400'
+                  mode === m ? 'bg-brand-500/20 text-brand-300' : 'text-ink-600 hover:text-ink-400'
                 )}
                 title={m === 'manual' ? 'Edits wait for your approval below' : 'Edits apply immediately (still logged for review)'}
               >
@@ -124,16 +124,16 @@ export function AssistantPanel({ projectId }: AssistantPanelProps) {
       />
 
       {pendingEdits.length > 0 && (
-        <div className="border-b border-zinc-800/50 bg-zinc-950/40 max-h-[40%] overflow-y-auto shrink-0">
-          <div className="px-3 pt-2 pb-1 text-[9px] font-semibold text-zinc-500 uppercase tracking-wide">
+        <div className="border-b border-ink-800/50 bg-ink-950/40 max-h-[40%] overflow-y-auto shrink-0">
+          <div className="px-3 pt-2 pb-1 text-[9px] font-semibold text-ink-500 uppercase tracking-wide">
             Pending edits ({pendingEdits.length})
           </div>
           <div className="px-2 pb-2 space-y-1.5">
             {pendingEdits.map((edit) => (
-              <div key={edit.id} className="p-2 rounded bg-zinc-900/80 border border-zinc-800/60 space-y-1">
-                <p className="text-[10px] text-zinc-500 line-through decoration-zinc-700 truncate">{edit.old_khmer_text}</p>
-                <p className="text-[11px] text-zinc-200 truncate">{edit.new_khmer_text}</p>
-                <p className="text-[9px] text-zinc-600 leading-snug">{edit.reason}</p>
+              <div key={edit.id} className="p-2 rounded bg-ink-900/80 border border-ink-800/60 space-y-1">
+                <p className="text-[10px] text-ink-500 line-through decoration-ink-700 truncate">{edit.old_khmer_text}</p>
+                <p className="text-[11px] text-ink-200 truncate">{edit.new_khmer_text}</p>
+                <p className="text-[9px] text-ink-600 leading-snug">{edit.reason}</p>
                 <div className="flex gap-1 pt-0.5">
                   <button
                     onClick={() => approveEdit.mutate({ editId: edit.id, projectId })}
@@ -159,13 +159,13 @@ export function AssistantPanel({ projectId }: AssistantPanelProps) {
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-2 min-h-0">
         {loadingMessages ? (
           <div className="flex items-center justify-center py-6">
-            <Loader2 size={16} className="animate-spin text-zinc-600" />
+            <Loader2 size={16} className="animate-spin text-ink-600" />
           </div>
         ) : messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-6 text-center">
-            <Bot size={18} className="text-zinc-700 mb-2" />
-            <p className="text-[10px] text-zinc-600">Ask about this project's translations</p>
-            <p className="text-[9px] text-zinc-700 mt-0.5 max-w-[200px] leading-normal">
+            <Bot size={18} className="text-ink-700 mb-2" />
+            <p className="text-[10px] text-ink-600">Ask about this project's translations</p>
+            <p className="text-[9px] text-ink-700 mt-0.5 max-w-[200px] leading-normal">
               e.g. "How was 老公 translated in episode 2?" or "Make segment 14 sound less formal"
             </p>
           </div>
@@ -181,13 +181,13 @@ export function AssistantPanel({ projectId }: AssistantPanelProps) {
           })
         )}
         {sendMessage.isPending && (
-          <div className="flex items-center gap-1.5 text-[10px] text-zinc-600 pl-1">
+          <div className="flex items-center gap-1.5 text-[10px] text-ink-600 pl-1">
             <Loader2 size={11} className="animate-spin" /> Thinking…
           </div>
         )}
       </div>
 
-      <div className="p-2 border-t border-zinc-800/50 flex items-end gap-1.5 shrink-0">
+      <div className="p-2 border-t border-ink-800/50 flex items-end gap-1.5 shrink-0">
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -199,12 +199,12 @@ export function AssistantPanel({ projectId }: AssistantPanelProps) {
           }}
           placeholder="Ask the Assistant…"
           rows={1}
-          className="flex-1 resize-none bg-zinc-950 text-[11px] text-zinc-200 rounded-md px-2 py-1.5 border border-zinc-800/60 focus:outline-none focus:border-purple-500/50 placeholder:text-zinc-700 max-h-24"
+          className="flex-1 resize-none bg-ink-950 text-[11px] text-ink-200 rounded-md px-2 py-1.5 border border-ink-800/60 focus:outline-none focus:border-brand-500/50 placeholder:text-ink-700 max-h-24"
         />
         <button
           onClick={handleSend}
           disabled={!draft.trim() || sendMessage.isPending}
-          className="h-7 w-7 shrink-0 rounded-md bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 disabled:opacity-30 disabled:hover:bg-purple-500/20 flex items-center justify-center transition-colors"
+          className="h-7 w-7 shrink-0 rounded-md bg-brand-500/20 text-brand-300 hover:bg-brand-500/30 disabled:opacity-30 disabled:hover:bg-brand-500/20 flex items-center justify-center transition-colors"
           aria-label="Send"
         >
           <Send size={12} />

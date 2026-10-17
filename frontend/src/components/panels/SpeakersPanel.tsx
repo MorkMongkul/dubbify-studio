@@ -85,9 +85,9 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
       <PanelHeader icon={Users} title="Speakers" count={sessionSpeakers.length} />
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
         {(canRelabel || busy) && (
-          <div className="p-2 rounded bg-zinc-800/30 border border-zinc-800/40 space-y-1.5">
+          <div className="p-2 rounded bg-ink-800/30 border border-ink-800/40 space-y-1.5">
             {busy ? (
-              <p className="flex items-center gap-1.5 text-[10px] text-zinc-400">
+              <p className="flex items-center gap-1.5 text-[10px] text-ink-400">
                 <Loader2 size={11} className="animate-spin shrink-0" />
                 {job?.status === 'diarizing' ? 'Listening for speakers…' : 'Working on this session…'}
               </p>
@@ -101,17 +101,17 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
                 <button
                   onClick={runDetectSpeakers}
                   disabled={detectSpeakers.isPending}
-                  className="w-full flex items-center justify-center gap-1.5 py-1 rounded bg-purple-600 hover:bg-purple-500 disabled:opacity-60 text-white text-[10px] font-semibold transition-colors"
+                  className="w-full flex items-center justify-center gap-1.5 py-1 rounded bg-brand-600 hover:bg-brand-500 disabled:opacity-60 text-white text-[10px] font-semibold transition-colors"
                 >
                   <AudioLines size={11} />
                   Detect speakers
                 </button>
-                <p className="text-[9px] text-zinc-500 leading-snug">
+                <p className="text-[9px] text-ink-500 leading-snug">
                   Re-listens to the audio and reassigns who speaks each line. Text, translations and
                   generated voices stay as they are.
                 </p>
                 {confirmReanalyze ? (
-                  <div className="space-y-1.5 pt-1 border-t border-zinc-800/60">
+                  <div className="space-y-1.5 pt-1 border-t border-ink-800/60">
                     <p className="text-[9px] text-amber-300/90 leading-snug">
                       Replace every segment with a fresh transcription, speakers and translation?
                       Your text edits and generated voices in this session will be discarded.
@@ -125,7 +125,7 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
                       </button>
                       <button
                         onClick={() => setConfirmReanalyze(false)}
-                        className="flex-1 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[10px] transition-colors"
+                        className="flex-1 py-1 rounded bg-ink-800 hover:bg-ink-700 text-ink-300 text-[10px] transition-colors"
                       >
                         Cancel
                       </button>
@@ -135,7 +135,7 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
                   <button
                     onClick={() => setConfirmReanalyze(true)}
                     disabled={analyze.isPending}
-                    className="w-full flex items-center justify-center gap-1.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-60 text-zinc-300 text-[10px] transition-colors"
+                    className="w-full flex items-center justify-center gap-1.5 py-1 rounded bg-ink-800 hover:bg-ink-700 disabled:opacity-60 text-ink-300 text-[10px] transition-colors"
                     title="Transcribe, detect speakers and translate this session again from scratch"
                   >
                     <RefreshCw size={10} />
@@ -148,21 +148,21 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
         )}
         {sessionSpeakers.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-6 text-center">
-            <Users size={18} className="text-zinc-700 mb-2" />
-            <p className="text-[10px] text-zinc-600">No speakers yet</p>
-            <p className="text-[9px] text-zinc-700 mt-0.5">Appear here once segments are analyzed</p>
+            <Users size={18} className="text-ink-700 mb-2" />
+            <p className="text-[10px] text-ink-600">No speakers yet</p>
+            <p className="text-[9px] text-ink-700 mt-0.5">Appear here once segments are analyzed</p>
           </div>
         ) : (
           sessionSpeakers.map(({ sp: speaker, projectIndex }) => {
             const color = speaker.color ?? getSpeakerColor(projectIndex)
             return (
-              <div key={speaker.id} className="p-2 rounded bg-zinc-800/30 border border-zinc-800/40 space-y-1.5">
+              <div key={speaker.id} className="p-2 rounded bg-ink-800/30 border border-ink-800/40 space-y-1.5">
                 <div className="flex items-center gap-1.5">
                   <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
                   {editingSpeakerId === speaker.id ? (
                     <input
                       autoFocus
-                      className="bg-zinc-950 text-[11px] text-zinc-200 rounded px-1 py-0.5 flex-1 min-w-0 focus:outline-none border border-purple-500/50"
+                      className="bg-ink-950 text-[11px] text-ink-200 rounded px-1 py-0.5 flex-1 min-w-0 focus:outline-none border border-brand-500/50"
                       value={editingSpeakerName}
                       onChange={(e) => setEditingSpeakerName(e.target.value)}
                       onBlur={() => {
@@ -182,7 +182,7 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
                     />
                   ) : (
                     <span
-                      className="text-[11px] font-medium text-zinc-200 truncate flex-1 cursor-text hover:text-white transition-colors"
+                      className="text-[11px] font-medium text-ink-200 truncate flex-1 cursor-text hover:text-white transition-colors"
                       onClick={() => {
                         setEditingSpeakerId(speaker.id)
                         setEditingSpeakerName(speaker.display_name || getSpeakerDisplayName(speaker, projectIndex))
@@ -194,7 +194,7 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
                   )}
                 </div>
                 <select
-                  className="w-full bg-zinc-900 text-zinc-300 text-[10px] rounded border border-zinc-700/60 hover:border-zinc-600 py-1 px-1.5 focus:outline-none focus:border-purple-500/50 cursor-pointer"
+                  className="w-full bg-ink-900 text-ink-300 text-[10px] rounded border border-ink-700/60 hover:border-ink-600 py-1 px-1.5 focus:outline-none focus:border-brand-500/50 cursor-pointer"
                   value={speaker.voice_id || ''}
                   onChange={(e) => {
                     const before = speaker.voice_id ?? null
