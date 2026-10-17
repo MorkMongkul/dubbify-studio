@@ -171,6 +171,8 @@ export interface Voice {
   // computed by backend
   has_reference?: boolean
   reference_audio_url?: string | null
+  /** Ships with the app: can't be renamed, edited or deleted. */
+  builtin?: boolean
 }
 
 export interface Segment {

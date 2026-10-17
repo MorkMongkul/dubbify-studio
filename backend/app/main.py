@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.core.data_folder import follow_moved_data_folder
 from app.core.database import init_db
 from app.services.pipeline_common import recover_orphaned_jobs
+from app.services.builtin_voices import seed_builtin_voices
 from app.api.routes import health, projects, jobs, segments, tts, voices, overlays, chat
 from app.api.routes import settings as settings_routes
 
@@ -39,6 +40,11 @@ async def lifespan(app: FastAPI):
             # Not fatal: old locations still resolve (the app leaves a link
             # behind, and resolve_media_path remaps paths under .../uploads/).
             logger.exception("Couldn't update stored file locations after the data folder moved")
+    try:
+        await seed_builtin_voices()
+    except Exception:
+        # Not fatal: the editor works without them; the next launch retries.
+        logger.exception("Couldn't install the built-in voices")
     await recover_orphaned_jobs()
     yield
     logger.info("Shutting down.")

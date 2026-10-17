@@ -27,6 +27,7 @@ from app.core.config import settings
 from app.models.models import Voice, VoiceMode, Segment, Speaker
 from app.schemas.schemas import VoiceResponse, VoiceUpdate, VoicePreviewRequest
 from app.services.tts_client import tts_client
+from app.services.builtin_voices import is_builtin
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,14 @@ router = APIRouter(prefix="/voices", tags=["Voice Library"])
 
 VOICES_DIR = Path(settings.UPLOAD_DIR) / "voices"
 _REF_EXTS = {".wav", ".mp3", ".m4a", ".flac", ".ogg"}
+
+
+def _refuse_builtin(voice_id: str) -> None:
+    if is_builtin(voice_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Built-in voices can't be changed or deleted. Create your own voice to customise one.",
+        )
 
 # Neutral Khmer line used to bake a design voice into a reference clip.
 BAKE_TEXT = "សួស្តី ខ្ញុំជាសំឡេងដែលបង្កើតឡើងសម្រាប់ការដាប់ភាសាខ្មែរ។"
@@ -186,6 +195,7 @@ async def update_voice(
     voice_id: str, payload: VoiceUpdate, db: AsyncSession = Depends(get_db, scope="function")
 ):
     """Update a voice's metadata (name, description, transcript, params, mode)."""
+    _refuse_builtin(voice_id)
     result = await db.execute(select(Voice).where(Voice.id == voice_id))
     voice = result.scalar_one_or_none()
     if not voice:
@@ -217,6 +227,7 @@ async def upload_reference(
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """Upload or replace a voice's reference audio clip."""
+    _refuse_builtin(voice_id)
     result = await db.execute(select(Voice).where(Voice.id == voice_id))
     voice = result.scalar_one_or_none()
     if not voice:
@@ -231,6 +242,7 @@ async def upload_reference(
 @router.delete("/{voice_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_voice(voice_id: str, db: AsyncSession = Depends(get_db, scope="function")):
     """Delete a voice and its reference audio."""
+    _refuse_builtin(voice_id)
     result = await db.execute(select(Voice).where(Voice.id == voice_id))
     voice = result.scalar_one_or_none()
     if not voice:
@@ -274,6 +286,7 @@ async def preview_voice(
     result_data = await tts_client.synthesize(
         text=payload.text,
         voice_design="" if has_transcript else voice.description,
+        description=voice.description,
         output_path=str(out_path),
         cfg_value=voice.cfg_value,
         inference_timesteps=voice.inference_timesteps,

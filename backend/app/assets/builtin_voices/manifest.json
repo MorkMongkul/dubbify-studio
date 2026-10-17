@@ -1,0 +1,567 @@
+{
+ "version": 1,
+ "settings": {
+  "cfg_value": 2.8,
+  "inference_timesteps": 15
+ },
+ "voices": [
+  {
+   "id": "builtin-01-young-male-lead-a",
+   "name": "Young male lead A",
+   "character": "Young male lead",
+   "description": "A young man in his early twenties with a warm, clear and bright voice, gentle and confident, medium pitch, natural pace.",
+   "transcript": "ខ្ញុំមិនដែលភ្លេចថ្ងៃដែលយើងជួបគ្នាលើកដំបូងនោះទេ។ ចាប់ពីថ្ងៃនេះទៅ ខ្ញុំនឹងនៅក្បែរអ្នកជានិច្ច។",
+   "file": "builtin-01-young-male-lead-a.flac",
+   "duration_s": 5.47
+  },
+  {
+   "id": "builtin-01-young-male-lead-b",
+   "name": "Young male lead B",
+   "character": "Young male lead",
+   "description": "A young man in his early twenties with a warm, clear and bright voice, gentle and confident, medium pitch, natural pace.",
+   "transcript": "ខ្ញុំមិនដែលភ្លេចថ្ងៃដែលយើងជួបគ្នាលើកដំបូងនោះទេ។ ចាប់ពីថ្ងៃនេះទៅ ខ្ញុំនឹងនៅក្បែរអ្នកជានិច្ច។",
+   "file": "builtin-01-young-male-lead-b.flac",
+   "duration_s": 5.78
+  },
+  {
+   "id": "builtin-01-young-male-lead-c",
+   "name": "Young male lead C",
+   "character": "Young male lead",
+   "description": "A young man in his early twenties with a warm, clear and bright voice, gentle and confident, medium pitch, natural pace.",
+   "transcript": "ខ្ញុំមិនដែលភ្លេចថ្ងៃដែលយើងជួបគ្នាលើកដំបូងនោះទេ។ ចាប់ពីថ្ងៃនេះទៅ ខ្ញុំនឹងនៅក្បែរអ្នកជានិច្ច។",
+   "file": "builtin-01-young-male-lead-c.flac",
+   "duration_s": 5.3
+  },
+  {
+   "id": "builtin-02-young-female-lead-a",
+   "name": "Young female lead A",
+   "character": "Young female lead",
+   "description": "A young woman in her early twenties with a sweet, bright and gentle voice, soft and lively, medium-high pitch.",
+   "transcript": "តើបងពិតជាចាំខ្ញុំមែនទេ? ខ្ញុំគិតថាបងភ្លេចខ្ញុំបាត់ទៅហើយ។ ថ្ងៃនេះខ្ញុំសប្បាយចិត្តណាស់។",
+   "file": "builtin-02-young-female-lead-a.flac",
+   "duration_s": 5.64
+  },
+  {
+   "id": "builtin-02-young-female-lead-b",
+   "name": "Young female lead B",
+   "character": "Young female lead",
+   "description": "A young woman in her early twenties with a sweet, bright and gentle voice, soft and lively, medium-high pitch.",
+   "transcript": "តើបងពិតជាចាំខ្ញុំមែនទេ? ខ្ញុំគិតថាបងភ្លេចខ្ញុំបាត់ទៅហើយ។ ថ្ងៃនេះខ្ញុំសប្បាយចិត្តណាស់។",
+   "file": "builtin-02-young-female-lead-b.flac",
+   "duration_s": 7.08
+  },
+  {
+   "id": "builtin-02-young-female-lead-c",
+   "name": "Young female lead C",
+   "character": "Young female lead",
+   "description": "A young woman in her early twenties with a sweet, bright and gentle voice, soft and lively, medium-high pitch.",
+   "transcript": "តើបងពិតជាចាំខ្ញុំមែនទេ? ខ្ញុំគិតថាបងភ្លេចខ្ញុំបាត់ទៅហើយ។ ថ្ងៃនេះខ្ញុំសប្បាយចិត្តណាស់។",
+   "file": "builtin-02-young-female-lead-c.flac",
+   "duration_s": 5.78
+  },
+  {
+   "id": "builtin-03-cold-ceo-a",
+   "name": "Cold CEO / hero A",
+   "character": "Cold CEO / hero",
+   "description": "A man in his late twenties with a low, calm, cool and controlled voice, deep and smooth, speaking slowly with quiet authority.",
+   "transcript": "ខ្ញុំមិនចូលចិត្តនិយាយច្រើនទេ។ ធ្វើការងាររបស់អ្នកឲ្យបានល្អ ហើយកុំធ្វើឲ្យខ្ញុំខកចិត្តម្ដងទៀត។",
+   "file": "builtin-03-cold-ceo-a.flac",
+   "duration_s": 7.08
+  },
+  {
+   "id": "builtin-03-cold-ceo-b",
+   "name": "Cold CEO / hero B",
+   "character": "Cold CEO / hero",
+   "description": "A man in his late twenties with a low, calm, cool and controlled voice, deep and smooth, speaking slowly with quiet authority.",
+   "transcript": "ខ្ញុំមិនចូលចិត្តនិយាយច្រើនទេ។ ធ្វើការងាររបស់អ្នកឲ្យបានល្អ ហើយកុំធ្វើឲ្យខ្ញុំខកចិត្តម្ដងទៀត។",
+   "file": "builtin-03-cold-ceo-b.flac",
+   "duration_s": 6.26
+  },
+  {
+   "id": "builtin-03-cold-ceo-c",
+   "name": "Cold CEO / hero C",
+   "character": "Cold CEO / hero",
+   "description": "A man in his late twenties with a low, calm, cool and controlled voice, deep and smooth, speaking slowly with quiet authority.",
+   "transcript": "ខ្ញុំមិនចូលចិត្តនិយាយច្រើនទេ។ ធ្វើការងាររបស់អ្នកឲ្យបានល្អ ហើយកុំធ្វើឲ្យខ្ញុំខកចិត្តម្ដងទៀត។",
+   "file": "builtin-03-cold-ceo-c.flac",
+   "duration_s": 5.95
+  },
+  {
+   "id": "builtin-04-strong-heroine-a",
+   "name": "Strong heroine A",
+   "character": "Strong heroine",
+   "description": "A woman in her mid twenties with a firm, clear and determined voice, strong but warm, medium pitch.",
+   "transcript": "ខ្ញុំមិនខ្លាចទេ។ ទោះបីជាផ្លូវនេះពិបាកយ៉ាងណាក៏ដោយ ខ្ញុំនឹងដើរទៅមុខរហូតដល់ទីបញ្ចប់។",
+   "file": "builtin-04-strong-heroine-a.flac",
+   "duration_s": 6.72
+  },
+  {
+   "id": "builtin-04-strong-heroine-b",
+   "name": "Strong heroine B",
+   "character": "Strong heroine",
+   "description": "A woman in her mid twenties with a firm, clear and determined voice, strong but warm, medium pitch.",
+   "transcript": "ខ្ញុំមិនខ្លាចទេ។ ទោះបីជាផ្លូវនេះពិបាកយ៉ាងណាក៏ដោយ ខ្ញុំនឹងដើរទៅមុខរហូតដល់ទីបញ្ចប់។",
+   "file": "builtin-04-strong-heroine-b.flac",
+   "duration_s": 5.76
+  },
+  {
+   "id": "builtin-04-strong-heroine-c",
+   "name": "Strong heroine C",
+   "character": "Strong heroine",
+   "description": "A woman in her mid twenties with a firm, clear and determined voice, strong but warm, medium pitch.",
+   "transcript": "ខ្ញុំមិនខ្លាចទេ។ ទោះបីជាផ្លូវនេះពិបាកយ៉ាងណាក៏ដោយ ខ្ញុំនឹងដើរទៅមុខរហូតដល់ទីបញ្ចប់។",
+   "file": "builtin-04-strong-heroine-c.flac",
+   "duration_s": 5.76
+  },
+  {
+   "id": "builtin-05-gentle-second-lead-a",
+   "name": "Gentle second lead A",
+   "character": "Gentle second lead",
+   "description": "A young man with a soft, kind and tender voice, a warm tenor, speaking gently and slowly.",
+   "transcript": "កុំយំអី។ មានរឿងអ្វី ប្រាប់ខ្ញុំមក។ ខ្ញុំនឹងជួយអ្នកគ្រប់ពេល ទោះបីជាអ្នកមិនស្រឡាញ់ខ្ញុំក៏ដោយ។",
+   "file": "builtin-05-gentle-second-lead-a.flac",
+   "duration_s": 7.84
+  },
+  {
+   "id": "builtin-05-gentle-second-lead-b",
+   "name": "Gentle second lead B",
+   "character": "Gentle second lead",
+   "description": "A young man with a soft, kind and tender voice, a warm tenor, speaking gently and slowly.",
+   "transcript": "កុំយំអី។ មានរឿងអ្វី ប្រាប់ខ្ញុំមក។ ខ្ញុំនឹងជួយអ្នកគ្រប់ពេល ទោះបីជាអ្នកមិនស្រឡាញ់ខ្ញុំក៏ដោយ។",
+   "file": "builtin-05-gentle-second-lead-b.flac",
+   "duration_s": 7.84
+  },
+  {
+   "id": "builtin-05-gentle-second-lead-c",
+   "name": "Gentle second lead C",
+   "character": "Gentle second lead",
+   "description": "A young man with a soft, kind and tender voice, a warm tenor, speaking gently and slowly.",
+   "transcript": "កុំយំអី។ មានរឿងអ្វី ប្រាប់ខ្ញុំមក។ ខ្ញុំនឹងជួយអ្នកគ្រប់ពេល ទោះបីជាអ្នកមិនស្រឡាញ់ខ្ញុំក៏ដោយ។",
+   "file": "builtin-05-gentle-second-lead-c.flac",
+   "duration_s": 7.36
+  },
+  {
+   "id": "builtin-06-scheming-woman-a",
+   "name": "Scheming woman A",
+   "character": "Scheming woman",
+   "description": "A woman in her late twenties with a smooth, sly and silky voice, slightly sharp and mocking, elegant.",
+   "transcript": "អូ៎ បងស្រីពិតជាឆ្លាតណាស់។ ប៉ុន្តែកុំភ្លេចថា នៅក្នុងផ្ទះនេះ គ្មាននរណាម្នាក់អាចឈ្នះខ្ញុំបានទេ។",
+   "file": "builtin-06-scheming-woman-a.flac",
+   "duration_s": 7.52
+  },
+  {
+   "id": "builtin-06-scheming-woman-b",
+   "name": "Scheming woman B",
+   "character": "Scheming woman",
+   "description": "A woman in her late twenties with a smooth, sly and silky voice, slightly sharp and mocking, elegant.",
+   "transcript": "អូ៎ បងស្រីពិតជាឆ្លាតណាស់។ ប៉ុន្តែកុំភ្លេចថា នៅក្នុងផ្ទះនេះ គ្មាននរណាម្នាក់អាចឈ្នះខ្ញុំបានទេ។",
+   "file": "builtin-06-scheming-woman-b.flac",
+   "duration_s": 7.52
+  },
+  {
+   "id": "builtin-06-scheming-woman-c",
+   "name": "Scheming woman C",
+   "character": "Scheming woman",
+   "description": "A woman in her late twenties with a smooth, sly and silky voice, slightly sharp and mocking, elegant.",
+   "transcript": "អូ៎ បងស្រីពិតជាឆ្លាតណាស់។ ប៉ុន្តែកុំភ្លេចថា នៅក្នុងផ្ទះនេះ គ្មាននរណាម្នាក់អាចឈ្នះខ្ញុំបានទេ។",
+   "file": "builtin-06-scheming-woman-c.flac",
+   "duration_s": 7.52
+  },
+  {
+   "id": "builtin-07-villain-a",
+   "name": "Villain A",
+   "character": "Villain",
+   "description": "A middle-aged man with a deep, dark, gravelly and menacing voice, speaking slowly and coldly.",
+   "transcript": "អ្នកគិតថាអាចរត់ផុតពីខ្ញុំបានឬ? ល្ងង់ណាស់។ យប់នេះ អ្វីៗទាំងអស់នឹងត្រូវបញ្ចប់។",
+   "file": "builtin-07-villain-a.flac",
+   "duration_s": 7.36
+  },
+  {
+   "id": "builtin-07-villain-b",
+   "name": "Villain B",
+   "character": "Villain",
+   "description": "A middle-aged man with a deep, dark, gravelly and menacing voice, speaking slowly and coldly.",
+   "transcript": "អ្នកគិតថាអាចរត់ផុតពីខ្ញុំបានឬ? ល្ងង់ណាស់។ យប់នេះ អ្វីៗទាំងអស់នឹងត្រូវបញ្ចប់។",
+   "file": "builtin-07-villain-b.flac",
+   "duration_s": 6.72
+  },
+  {
+   "id": "builtin-07-villain-c",
+   "name": "Villain C",
+   "character": "Villain",
+   "description": "A middle-aged man with a deep, dark, gravelly and menacing voice, speaking slowly and coldly.",
+   "transcript": "អ្នកគិតថាអាចរត់ផុតពីខ្ញុំបានឬ? ល្ងង់ណាស់។ យប់នេះ អ្វីៗទាំងអស់នឹងត្រូវបញ្ចប់។",
+   "file": "builtin-07-villain-c.flac",
+   "duration_s": 6.24
+  },
+  {
+   "id": "builtin-08-father-a",
+   "name": "Father A",
+   "character": "Father",
+   "description": "A man in his fifties with a steady, mature and authoritative baritone voice, warm but serious.",
+   "transcript": "កូនអើយ ជីវិតមិនងាយស្រួលទេ។ ពុកគ្រាន់តែចង់ឲ្យកូនរៀនឲ្យពូកែ ហើយក្លាយជាមនុស្សល្អ។",
+   "file": "builtin-08-father-a.flac",
+   "duration_s": 7.52
+  },
+  {
+   "id": "builtin-08-father-b",
+   "name": "Father B",
+   "character": "Father",
+   "description": "A man in his fifties with a steady, mature and authoritative baritone voice, warm but serious.",
+   "transcript": "កូនអើយ ជីវិតមិនងាយស្រួលទេ។ ពុកគ្រាន់តែចង់ឲ្យកូនរៀនឲ្យពូកែ ហើយក្លាយជាមនុស្សល្អ។",
+   "file": "builtin-08-father-b.flac",
+   "duration_s": 8.64
+  },
+  {
+   "id": "builtin-08-father-c",
+   "name": "Father C",
+   "character": "Father",
+   "description": "A man in his fifties with a steady, mature and authoritative baritone voice, warm but serious.",
+   "transcript": "កូនអើយ ជីវិតមិនងាយស្រួលទេ។ ពុកគ្រាន់តែចង់ឲ្យកូនរៀនឲ្យពូកែ ហើយក្លាយជាមនុស្សល្អ។",
+   "file": "builtin-08-father-c.flac",
+   "duration_s": 8.32
+  },
+  {
+   "id": "builtin-09-mother-a",
+   "name": "Mother A",
+   "character": "Mother",
+   "description": "A woman in her fifties with a warm, caring and gentle voice, medium pitch, loving and patient.",
+   "transcript": "កូនសម្លាញ់ ញ៉ាំបាយសិនទៅ។ ម៉ាក់ធ្វើម្ហូបដែលកូនចូលចិត្តជាងគេ។ កុំធ្វើការហត់ពេកណា៎។",
+   "file": "builtin-09-mother-a.flac",
+   "duration_s": 6.08
+  },
+  {
+   "id": "builtin-09-mother-b",
+   "name": "Mother B",
+   "character": "Mother",
+   "description": "A woman in her fifties with a warm, caring and gentle voice, medium pitch, loving and patient.",
+   "transcript": "កូនសម្លាញ់ ញ៉ាំបាយសិនទៅ។ ម៉ាក់ធ្វើម្ហូបដែលកូនចូលចិត្តជាងគេ។ កុំធ្វើការហត់ពេកណា៎។",
+   "file": "builtin-09-mother-b.flac",
+   "duration_s": 7.04
+  },
+  {
+   "id": "builtin-09-mother-c",
+   "name": "Mother C",
+   "character": "Mother",
+   "description": "A woman in her fifties with a warm, caring and gentle voice, medium pitch, loving and patient.",
+   "transcript": "កូនសម្លាញ់ ញ៉ាំបាយសិនទៅ។ ម៉ាក់ធ្វើម្ហូបដែលកូនចូលចិត្តជាងគេ។ កុំធ្វើការហត់ពេកណា៎។",
+   "file": "builtin-09-mother-c.flac",
+   "duration_s": 7.36
+  },
+  {
+   "id": "builtin-10-grandfather-a",
+   "name": "Grandfather A",
+   "character": "Grandfather",
+   "description": "An elderly man in his seventies with a slow, slightly raspy, kind and wise voice.",
+   "transcript": "កាលពីជំនាន់តានៅក្មេង យើងមិនមានអ្វីច្រើនដូចឥឡូវទេ។ ប៉ុន្តែយើងស្រឡាញ់គ្នា ហើយនោះគឺគ្រប់គ្រាន់ហើយ។",
+   "file": "builtin-10-grandfather-a.flac",
+   "duration_s": 7.36
+  },
+  {
+   "id": "builtin-10-grandfather-b",
+   "name": "Grandfather B",
+   "character": "Grandfather",
+   "description": "An elderly man in his seventies with a slow, slightly raspy, kind and wise voice.",
+   "transcript": "កាលពីជំនាន់តានៅក្មេង យើងមិនមានអ្វីច្រើនដូចឥឡូវទេ។ ប៉ុន្តែយើងស្រឡាញ់គ្នា ហើយនោះគឺគ្រប់គ្រាន់ហើយ។",
+   "file": "builtin-10-grandfather-b.flac",
+   "duration_s": 6.56
+  },
+  {
+   "id": "builtin-10-grandfather-c",
+   "name": "Grandfather C",
+   "character": "Grandfather",
+   "description": "An elderly man in his seventies with a slow, slightly raspy, kind and wise voice.",
+   "transcript": "កាលពីជំនាន់តានៅក្មេង យើងមិនមានអ្វីច្រើនដូចឥឡូវទេ។ ប៉ុន្តែយើងស្រឡាញ់គ្នា ហើយនោះគឺគ្រប់គ្រាន់ហើយ។",
+   "file": "builtin-10-grandfather-c.flac",
+   "duration_s": 7.84
+  },
+  {
+   "id": "builtin-11-grandmother-a",
+   "name": "Grandmother A",
+   "character": "Grandmother",
+   "description": "An elderly woman in her seventies with a soft, warm and slightly shaky voice, gentle and loving.",
+   "transcript": "ចៅសម្លាញ់ មកអង្គុយក្បែរយាយមក។ យាយនឹងនិទានរឿងព្រេងមួយឲ្យចៅស្ដាប់។",
+   "file": "builtin-11-grandmother-a.flac",
+   "duration_s": 4.96
+  },
+  {
+   "id": "builtin-11-grandmother-b",
+   "name": "Grandmother B",
+   "character": "Grandmother",
+   "description": "An elderly woman in her seventies with a soft, warm and slightly shaky voice, gentle and loving.",
+   "transcript": "ចៅសម្លាញ់ មកអង្គុយក្បែរយាយមក។ យាយនឹងនិទានរឿងព្រេងមួយឲ្យចៅស្ដាប់។",
+   "file": "builtin-11-grandmother-b.flac",
+   "duration_s": 5.76
+  },
+  {
+   "id": "builtin-11-grandmother-c",
+   "name": "Grandmother C",
+   "character": "Grandmother",
+   "description": "An elderly woman in her seventies with a soft, warm and slightly shaky voice, gentle and loving.",
+   "transcript": "ចៅសម្លាញ់ មកអង្គុយក្បែរយាយមក។ យាយនឹងនិទានរឿងព្រេងមួយឲ្យចៅស្ដាប់។",
+   "file": "builtin-11-grandmother-c.flac",
+   "duration_s": 4.64
+  },
+  {
+   "id": "builtin-13-girl-c",
+   "name": "Girl (about 8) C",
+   "character": "Girl (about 8)",
+   "description": "An eight-year-old girl with a high, cute and lively voice, sweet and cheerful.",
+   "transcript": "បងប្រុស ចាំខ្ញុំផង! ខ្ញុំក៏ចង់ទៅលេងជាមួយដែរ! សុំខ្ញុំទៅផងណា៎!",
+   "file": "builtin-13-girl-c.flac",
+   "duration_s": 4.64
+  },
+  {
+   "id": "builtin-14-teen-boy-a",
+   "name": "Teen boy A",
+   "character": "Teen boy",
+   "description": "A sixteen-year-old boy with an energetic, youthful and clear voice, excited and quick.",
+   "transcript": "ពិតមែនហើយ? ថ្ងៃស្អែកយើងបានទៅលេងសមុទ្រមែនទេ? ល្អណាស់! ខ្ញុំនឹងរៀបចំឥវ៉ាន់ឥឡូវនេះតែម្ដង!",
+   "file": "builtin-14-teen-boy-a.flac",
+   "duration_s": 5.28
+  },
+  {
+   "id": "builtin-14-teen-boy-b",
+   "name": "Teen boy B",
+   "character": "Teen boy",
+   "description": "A sixteen-year-old boy with an energetic, youthful and clear voice, excited and quick.",
+   "transcript": "ពិតមែនហើយ? ថ្ងៃស្អែកយើងបានទៅលេងសមុទ្រមែនទេ? ល្អណាស់! ខ្ញុំនឹងរៀបចំឥវ៉ាន់ឥឡូវនេះតែម្ដង!",
+   "file": "builtin-14-teen-boy-b.flac",
+   "duration_s": 6.88
+  },
+  {
+   "id": "builtin-14-teen-boy-c",
+   "name": "Teen boy C",
+   "character": "Teen boy",
+   "description": "A sixteen-year-old boy with an energetic, youthful and clear voice, excited and quick.",
+   "transcript": "ពិតមែនហើយ? ថ្ងៃស្អែកយើងបានទៅលេងសមុទ្រមែនទេ? ល្អណាស់! ខ្ញុំនឹងរៀបចំឥវ៉ាន់ឥឡូវនេះតែម្ដង!",
+   "file": "builtin-14-teen-boy-c.flac",
+   "duration_s": 5.76
+  },
+  {
+   "id": "builtin-15-teen-girl-a",
+   "name": "Teen girl A",
+   "character": "Teen girl",
+   "description": "A sixteen-year-old girl with a cheerful, bright and quick voice, playful and expressive.",
+   "transcript": "ស្ដាប់ខ្ញុំសិន! ថ្ងៃនេះមានរឿងកំប្លែងមួយកើតឡើងនៅសាលា ហើយគ្រូរបស់យើងសើចរហូតដល់ស្រក់ទឹកភ្នែក!",
+   "file": "builtin-15-teen-girl-a.flac",
+   "duration_s": 5.76
+  },
+  {
+   "id": "builtin-15-teen-girl-b",
+   "name": "Teen girl B",
+   "character": "Teen girl",
+   "description": "A sixteen-year-old girl with a cheerful, bright and quick voice, playful and expressive.",
+   "transcript": "ស្ដាប់ខ្ញុំសិន! ថ្ងៃនេះមានរឿងកំប្លែងមួយកើតឡើងនៅសាលា ហើយគ្រូរបស់យើងសើចរហូតដល់ស្រក់ទឹកភ្នែក!",
+   "file": "builtin-15-teen-girl-b.flac",
+   "duration_s": 4.64
+  },
+  {
+   "id": "builtin-16-comic-sidekick-a",
+   "name": "Comic sidekick A",
+   "character": "Comic sidekick",
+   "description": "A young man with a lively, fast and funny voice, very expressive and comedic, slightly high pitch.",
+   "transcript": "ឱ ព្រះអើយ! លោកម្ចាស់ ចាំខ្ញុំផង! ខ្ញុំរត់មិនទាន់ទេ! ជើងខ្ញុំខ្លីជាងលោកម្ចាស់ច្រើនណាស់!",
+   "file": "builtin-16-comic-sidekick-a.flac",
+   "duration_s": 6.08
+  },
+  {
+   "id": "builtin-16-comic-sidekick-b",
+   "name": "Comic sidekick B",
+   "character": "Comic sidekick",
+   "description": "A young man with a lively, fast and funny voice, very expressive and comedic, slightly high pitch.",
+   "transcript": "ឱ ព្រះអើយ! លោកម្ចាស់ ចាំខ្ញុំផង! ខ្ញុំរត់មិនទាន់ទេ! ជើងខ្ញុំខ្លីជាងលោកម្ចាស់ច្រើនណាស់!",
+   "file": "builtin-16-comic-sidekick-b.flac",
+   "duration_s": 5.92
+  },
+  {
+   "id": "builtin-16-comic-sidekick-c",
+   "name": "Comic sidekick C",
+   "character": "Comic sidekick",
+   "description": "A young man with a lively, fast and funny voice, very expressive and comedic, slightly high pitch.",
+   "transcript": "ឱ ព្រះអើយ! លោកម្ចាស់ ចាំខ្ញុំផង! ខ្ញុំរត់មិនទាន់ទេ! ជើងខ្ញុំខ្លីជាងលោកម្ចាស់ច្រើនណាស់!",
+   "file": "builtin-16-comic-sidekick-c.flac",
+   "duration_s": 6.08
+  },
+  {
+   "id": "builtin-17-best-friend-a",
+   "name": "Chatty best friend A",
+   "character": "Chatty best friend",
+   "description": "A young woman with a bubbly, chatty and warm voice, fast and excited, friendly.",
+   "transcript": "នែ! ឯងដឹងទេ? បុរសសង្ហានោះ គាត់សួររកឯងតាំងពីព្រឹក! ប្រាប់ខ្ញុំមក ឯងស្គាល់គាត់ពីណា?",
+   "file": "builtin-17-best-friend-a.flac",
+   "duration_s": 5.6
+  },
+  {
+   "id": "builtin-17-best-friend-b",
+   "name": "Chatty best friend B",
+   "character": "Chatty best friend",
+   "description": "A young woman with a bubbly, chatty and warm voice, fast and excited, friendly.",
+   "transcript": "នែ! ឯងដឹងទេ? បុរសសង្ហានោះ គាត់សួររកឯងតាំងពីព្រឹក! ប្រាប់ខ្ញុំមក ឯងស្គាល់គាត់ពីណា?",
+   "file": "builtin-17-best-friend-b.flac",
+   "duration_s": 5.76
+  },
+  {
+   "id": "builtin-17-best-friend-c",
+   "name": "Chatty best friend C",
+   "character": "Chatty best friend",
+   "description": "A young woman with a bubbly, chatty and warm voice, fast and excited, friendly.",
+   "transcript": "នែ! ឯងដឹងទេ? បុរសសង្ហានោះ គាត់សួររកឯងតាំងពីព្រឹក! ប្រាប់ខ្ញុំមក ឯងស្គាល់គាត់ពីណា?",
+   "file": "builtin-17-best-friend-c.flac",
+   "duration_s": 6.88
+  },
+  {
+   "id": "builtin-18-emperor-a",
+   "name": "Emperor A",
+   "character": "Emperor",
+   "description": "A middle-aged man with a commanding, resonant and regal voice, deep and powerful, speaking with great authority.",
+   "transcript": "យើងជាអ្នកគ្រប់គ្រងនគរនេះ។ អស់លោកទាំងអស់គ្នា ត្រូវស្ដាប់បញ្ជារបស់យើង ដោយគ្មានការជំទាស់ឡើយ។",
+   "file": "builtin-18-emperor-a.flac",
+   "duration_s": 7.2
+  },
+  {
+   "id": "builtin-18-emperor-b",
+   "name": "Emperor B",
+   "character": "Emperor",
+   "description": "A middle-aged man with a commanding, resonant and regal voice, deep and powerful, speaking with great authority.",
+   "transcript": "យើងជាអ្នកគ្រប់គ្រងនគរនេះ។ អស់លោកទាំងអស់គ្នា ត្រូវស្ដាប់បញ្ជារបស់យើង ដោយគ្មានការជំទាស់ឡើយ។",
+   "file": "builtin-18-emperor-b.flac",
+   "duration_s": 7.36
+  },
+  {
+   "id": "builtin-18-emperor-c",
+   "name": "Emperor C",
+   "character": "Emperor",
+   "description": "A middle-aged man with a commanding, resonant and regal voice, deep and powerful, speaking with great authority.",
+   "transcript": "យើងជាអ្នកគ្រប់គ្រងនគរនេះ។ អស់លោកទាំងអស់គ្នា ត្រូវស្ដាប់បញ្ជារបស់យើង ដោយគ្មានការជំទាស់ឡើយ។",
+   "file": "builtin-18-emperor-c.flac",
+   "duration_s": 5.12
+  },
+  {
+   "id": "builtin-19-empress-a",
+   "name": "Empress A",
+   "character": "Empress",
+   "description": "A woman in her forties with a dignified, cool and elegant voice, calm, measured and noble.",
+   "transcript": "ក្នុងវាំងនេះ ពាក្យសម្ដីតែមួយម៉ាត់ អាចផ្លាស់ប្ដូរជោគវាសនារបស់មនុស្សម្នាក់បាន។ ចូរប្រយ័ត្នខ្លួនផង។",
+   "file": "builtin-19-empress-a.flac",
+   "duration_s": 7.2
+  },
+  {
+   "id": "builtin-19-empress-b",
+   "name": "Empress B",
+   "character": "Empress",
+   "description": "A woman in her forties with a dignified, cool and elegant voice, calm, measured and noble.",
+   "transcript": "ក្នុងវាំងនេះ ពាក្យសម្ដីតែមួយម៉ាត់ អាចផ្លាស់ប្ដូរជោគវាសនារបស់មនុស្សម្នាក់បាន។ ចូរប្រយ័ត្នខ្លួនផង។",
+   "file": "builtin-19-empress-b.flac",
+   "duration_s": 7.68
+  },
+  {
+   "id": "builtin-19-empress-c",
+   "name": "Empress C",
+   "character": "Empress",
+   "description": "A woman in her forties with a dignified, cool and elegant voice, calm, measured and noble.",
+   "transcript": "ក្នុងវាំងនេះ ពាក្យសម្ដីតែមួយម៉ាត់ អាចផ្លាស់ប្ដូរជោគវាសនារបស់មនុស្សម្នាក់បាន។ ចូរប្រយ័ត្នខ្លួនផង។",
+   "file": "builtin-19-empress-c.flac",
+   "duration_s": 7.04
+  },
+  {
+   "id": "builtin-20-general-a",
+   "name": "General / warrior A",
+   "character": "General / warrior",
+   "description": "A strong man in his thirties with a rough, powerful and loud voice, a battle-hardened military commander.",
+   "transcript": "ទាហានទាំងអស់ ត្រៀមខ្លួន! ថ្ងៃនេះ យើងនឹងការពារទឹកដីរបស់យើង ទោះបីត្រូវលះបង់ជីវិតក៏ដោយ!",
+   "file": "builtin-20-general-a.flac",
+   "duration_s": 6.08
+  },
+  {
+   "id": "builtin-20-general-b",
+   "name": "General / warrior B",
+   "character": "General / warrior",
+   "description": "A strong man in his thirties with a rough, powerful and loud voice, a battle-hardened military commander.",
+   "transcript": "ទាហានទាំងអស់ ត្រៀមខ្លួន! ថ្ងៃនេះ យើងនឹងការពារទឹកដីរបស់យើង ទោះបីត្រូវលះបង់ជីវិតក៏ដោយ!",
+   "file": "builtin-20-general-b.flac",
+   "duration_s": 5.6
+  },
+  {
+   "id": "builtin-20-general-c",
+   "name": "General / warrior C",
+   "character": "General / warrior",
+   "description": "A strong man in his thirties with a rough, powerful and loud voice, a battle-hardened military commander.",
+   "transcript": "ទាហានទាំងអស់ ត្រៀមខ្លួន! ថ្ងៃនេះ យើងនឹងការពារទឹកដីរបស់យើង ទោះបីត្រូវលះបង់ជីវិតក៏ដោយ!",
+   "file": "builtin-20-general-c.flac",
+   "duration_s": 5.6
+  },
+  {
+   "id": "builtin-21-shy-servant-a",
+   "name": "Shy servant / maid A",
+   "character": "Shy servant / maid",
+   "description": "A young woman with a soft, timid and polite voice, quiet and humble, slightly nervous.",
+   "transcript": "សូមអភ័យទោស ព្រះនាង។ ខ្ញុំម្ចាស់មិនបានចេតនាទេ។ ខ្ញុំម្ចាស់នឹងប្រុងប្រយ័ត្នជាងនេះ នៅពេលក្រោយ។",
+   "file": "builtin-21-shy-servant-a.flac",
+   "duration_s": 6.08
+  },
+  {
+   "id": "builtin-21-shy-servant-b",
+   "name": "Shy servant / maid B",
+   "character": "Shy servant / maid",
+   "description": "A young woman with a soft, timid and polite voice, quiet and humble, slightly nervous.",
+   "transcript": "សូមអភ័យទោស ព្រះនាង។ ខ្ញុំម្ចាស់មិនបានចេតនាទេ។ ខ្ញុំម្ចាស់នឹងប្រុងប្រយ័ត្នជាងនេះ នៅពេលក្រោយ។",
+   "file": "builtin-21-shy-servant-b.flac",
+   "duration_s": 6.4
+  },
+  {
+   "id": "builtin-21-shy-servant-c",
+   "name": "Shy servant / maid C",
+   "character": "Shy servant / maid",
+   "description": "A young woman with a soft, timid and polite voice, quiet and humble, slightly nervous.",
+   "transcript": "សូមអភ័យទោស ព្រះនាង។ ខ្ញុំម្ចាស់មិនបានចេតនាទេ។ ខ្ញុំម្ចាស់នឹងប្រុងប្រយ័ត្នជាងនេះ នៅពេលក្រោយ។",
+   "file": "builtin-21-shy-servant-c.flac",
+   "duration_s": 8.48
+  },
+  {
+   "id": "builtin-22-calm-doctor-a",
+   "name": "Calm doctor A",
+   "character": "Calm doctor",
+   "description": "A woman in her thirties with a calm, precise and reassuring voice, professional and kind.",
+   "transcript": "កុំបារម្ភពេក។ លទ្ធផលពិនិត្យបង្ហាញថា ជំងឺរបស់អ្នកមិនធ្ងន់ធ្ងរទេ។ សម្រាកឲ្យបានច្រើន ហើយលេបថ្នាំឲ្យទៀងទាត់។",
+   "file": "builtin-22-calm-doctor-a.flac",
+   "duration_s": 9.12
+  },
+  {
+   "id": "builtin-22-calm-doctor-c",
+   "name": "Calm doctor C",
+   "character": "Calm doctor",
+   "description": "A woman in her thirties with a calm, precise and reassuring voice, professional and kind.",
+   "transcript": "កុំបារម្ភពេក។ លទ្ធផលពិនិត្យបង្ហាញថា ជំងឺរបស់អ្នកមិនធ្ងន់ធ្ងរទេ។ សម្រាកឲ្យបានច្រើន ហើយលេបថ្នាំឲ្យទៀងទាត់។",
+   "file": "builtin-22-calm-doctor-c.flac",
+   "duration_s": 8.0
+  },
+  {
+   "id": "builtin-23-male-narrator-a",
+   "name": "Male narrator A",
+   "character": "Male narrator",
+   "description": "A man with a deep, warm and smooth narrator voice, clear and steady, documentary storytelling style.",
+   "transcript": "កាលពីព្រេងនាយ នៅក្នុងភូមិតូចមួយ ក្បែរមាត់ទន្លេ មានយុវជនម្នាក់ ដែលមានក្ដីស្រមៃធំធេង។",
+   "file": "builtin-23-male-narrator-a.flac",
+   "duration_s": 5.76
+  },
+  {
+   "id": "builtin-23-male-narrator-b",
+   "name": "Male narrator B",
+   "character": "Male narrator",
+   "description": "A man with a deep, warm and smooth narrator voice, clear and steady, documentary storytelling style.",
+   "transcript": "កាលពីព្រេងនាយ នៅក្នុងភូមិតូចមួយ ក្បែរមាត់ទន្លេ មានយុវជនម្នាក់ ដែលមានក្ដីស្រមៃធំធេង។",
+   "file": "builtin-23-male-narrator-b.flac",
+   "duration_s": 5.44
+  },
+  {
+   "id": "builtin-23-male-narrator-c",
+   "name": "Male narrator C",
+   "character": "Male narrator",
+   "description": "A man with a deep, warm and smooth narrator voice, clear and steady, documentary storytelling style.",
+   "transcript": "កាលពីព្រេងនាយ នៅក្នុងភូមិតូចមួយ ក្បែរមាត់ទន្លេ មានយុវជនម្នាក់ ដែលមានក្ដីស្រមៃធំធេង។",
+   "file": "builtin-23-male-narrator-c.flac",
+   "duration_s": 6.08
+  }
+ ]
+}

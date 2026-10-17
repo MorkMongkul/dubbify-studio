@@ -80,12 +80,16 @@ def self_test() -> int:
     os.environ.setdefault("DUBIFY_DATA_DIR", data_dir)
     try:
         import app.main  # noqa: F401 — every module the backend loads at start-up
+        from app.services.builtin_voices import ASSETS, load_manifest
 
         shaping = text_shaping()
+        voices = load_manifest()["voices"]
+        missing = [v["file"] for v in voices if not (ASSETS / v["file"]).exists()]
     finally:
         shutil.rmtree(data_dir, ignore_errors=True)
-    print(f"backend imports: ok\nKhmer text shaping: {shaping}")
-    return 0 if shaping.startswith("ok") else 1
+    print(f"backend imports: ok\nKhmer text shaping: {shaping}\n"
+          f"built-in voices: {len(voices)}" + (f", {len(missing)} clips missing" if missing else ""))
+    return 0 if shaping.startswith("ok") and voices and not missing else 1
 
 
 def main() -> None:

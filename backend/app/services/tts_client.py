@@ -156,6 +156,7 @@ class VoxCPM2Client:
         reference_audio_path: str = "",
         reference_transcript: str = "",
         seed: int = -1,
+        description: str = "",
     ) -> dict:
         """
         Synthesize speech.  Fallback chain:
@@ -171,6 +172,9 @@ class VoxCPM2Client:
           - voice_design only                       -> Voice Design
           - reference_audio_path                    -> Controllable Cloning
           - reference_audio_path + transcript       -> Ultimate Cloning
+
+        description: the voice's written description. Cloning ignores it, but
+        it picks a fitting Gemini backup voice (gender, age) when VoxCPM is down.
         """
         if self.backend == "gradio":
             if time.monotonic() < self._primary_down_until:
@@ -215,7 +219,7 @@ class VoxCPM2Client:
             logger.warning(f"HF Space fallback also failed: {fallback['error']}")
 
         logger.warning("Falling back to Gemini TTS")
-        return await self._gemini_synthesize(text, output_path, voice_design=voice_design)
+        return await self._gemini_synthesize(text, output_path, voice_design=voice_design or description)
 
     @staticmethod
     def _is_connect_error(error: str) -> bool:

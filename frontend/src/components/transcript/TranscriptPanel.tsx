@@ -1,4 +1,5 @@
 // src/components/transcript/TranscriptPanel.tsx
+import { VoiceOptions } from '@/components/voices/VoiceOptions'
 import { useRef, useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { AlignLeft, Loader2, ChevronRight, Sliders, Volume2, Type, RefreshCw, Mic, Plus, Languages, AudioLines } from 'lucide-react'
@@ -891,11 +892,7 @@ export function TranscriptPanel({
                         <option value="">
                           {speakerVoiceName || 'Default Voice'}
                         </option>
-                        {availableVoices.map((v) => (
-                          <option key={v.id} value={v.id}>
-                            {v.name}
-                          </option>
-                        ))}
+                        <VoiceOptions voices={availableVoices} />
                       </select>
                     </td>
 
