@@ -406,6 +406,11 @@ class VoiceResponse(BaseModel):
         return bool(self.reference_audio_path)
 
     @computed_field
+    def builtin(self) -> bool:
+        """Ships with the app: can't be renamed, edited or deleted."""
+        return self.id.startswith("builtin-")
+
+    @computed_field
     def reference_audio_url(self) -> Optional[str]:
         if not self.reference_audio_path:
             return None

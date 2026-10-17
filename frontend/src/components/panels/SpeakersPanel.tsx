@@ -2,6 +2,7 @@
 // Speakers tab of the dock — rename the session's speakers and assign each a
 // library voice. Extracted from EditorPage; fully self-contained (React Query
 // dedupes the segment/speaker subscriptions it shares with the editor).
+import { VoiceOptions } from '@/components/voices/VoiceOptions'
 import { useState } from 'react'
 import { AudioLines, Loader2, RefreshCw, Users } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -206,9 +207,7 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
                   title="Voice used for all of this speaker's clips"
                 >
                   <option value="">Auto (voice design)</option>
-                  {availableVoices.map((v) => (
-                    <option key={v.id} value={v.id}>{v.name}</option>
-                  ))}
+                  <VoiceOptions voices={availableVoices} />
                 </select>
               </div>
             )

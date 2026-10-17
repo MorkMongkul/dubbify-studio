@@ -8,7 +8,7 @@ import { useState, useRef, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Mic, Upload, Play, Loader2, Trash2, Plus, Copy, Dices,
-  Search, SlidersHorizontal, ChevronDown, RotateCcw, X, Check, AudioLines,
+  Search, SlidersHorizontal, ChevronDown, RotateCcw, X, Check, AudioLines, Square,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useVoices, useCreateVoice, useDeleteVoice, usePreviewVoice, useUpdateVoice } from '@/hooks/useApi'
@@ -56,6 +56,9 @@ export function VoicesPanel() {
   const [search, setSearch] = useState('')
   const [modeFilter, setModeFilter] = useState<ModeFilter>('all')
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  // Built-in voices play their own clip instantly (no generation needed)
+  const [playingSampleId, setPlayingSampleId] = useState<string | null>(null)
+  const sampleRef = useRef<HTMLAudioElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const needsRef = mode === 'clone' || mode === 'ultimate'
@@ -129,6 +132,24 @@ export function VoicesPanel() {
     ultimate: voiceList.filter((v) => v.mode === 'ultimate').length,
   }), [voiceList])
 
+  useEffect(() => () => sampleRef.current?.pause(), [])
+
+  const playSample = (v: Voice) => {
+    sampleRef.current?.pause()
+    if (playingSampleId === v.id || !v.reference_audio_url) {
+      setPlayingSampleId(null)
+      return
+    }
+    const audio = new Audio(v.reference_audio_url)
+    audio.onended = () => setPlayingSampleId((id) => (id === v.id ? null : id))
+    audio.play().catch(() => {
+      setPlayingSampleId(null)
+      toast.error("Couldn't play this voice's sample")
+    })
+    sampleRef.current = audio
+    setPlayingSampleId(v.id)
+  }
+
   const visibleVoices = useMemo(() => {
     const q = search.trim().toLowerCase()
     return voiceList.filter((v) => {
@@ -137,6 +158,17 @@ export function VoicesPanel() {
       return v.name.toLowerCase().includes(q) || (v.description || '').toLowerCase().includes(q)
     })
   }, [voiceList, search, modeFilter])
+
+  const myVisible = useMemo(() => visibleVoices.filter((v) => !v.builtin), [visibleVoices])
+  // Built-in voices grouped by character ("Villain A", "Villain B" → "Villain")
+  const builtinGroups = useMemo(() => {
+    const groups = new Map<string, Voice[]>()
+    for (const v of [...visibleVoices].filter((v) => v.builtin).sort((a, b) => a.id.localeCompare(b.id))) {
+      const character = v.name.replace(/\s[A-Z]$/, '')
+      groups.set(character, [...(groups.get(character) ?? []), v])
+    }
+    return [...groups.entries()]
+  }, [visibleVoices])
 
   const activeMode = MODES.find((m) => m.value === mode)!
 
@@ -455,7 +487,7 @@ export function VoicesPanel() {
           </div>
         ) : (
           <div className="space-y-1.5">
-            {visibleVoices.map((v) => {
+            {myVisible.map((v) => {
               const isPreviewing = previewingId === v.id
               const confirming = confirmDeleteId === v.id
               return (
@@ -598,6 +630,74 @@ export function VoicesPanel() {
                 </div>
               )
             })}
+
+            {builtinGroups.length > 0 && (
+              <div className={cn('space-y-1.5', myVisible.length > 0 && 'pt-3')}>
+                <div className="flex items-baseline gap-2 px-0.5">
+                  <span className="text-[11px] font-semibold text-white/70">Built-in voices</span>
+                  <span className="text-[10px] text-white/35 tabular-nums">
+                    {builtinGroups.reduce((n, [, g]) => n + g.length, 0)}
+                  </span>
+                </div>
+                {builtinGroups.map(([character, group]) => (
+                  <div
+                    key={character}
+                    className="rounded-lg border p-2.5"
+                    style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-3)' }}
+                  >
+                    <p className="text-[12px] font-semibold text-white">{character}</p>
+                    <p className="text-[10px] text-white/40 mt-0.5 line-clamp-2 leading-relaxed" title={group[0].description}>
+                      {group[0].description}
+                    </p>
+                    <div className="mt-2 space-y-1">
+                      {group.map((v) => {
+                        const isPreviewing = previewingId === v.id
+                        const playing = playingSampleId === v.id
+                        return (
+                          <div key={v.id}>
+                            <div className="flex items-center gap-1">
+                              <span className="text-[11px] text-white/75 w-12 shrink-0">Take {v.name.slice(-1)}</span>
+                              <Tooltip content={playing ? 'Stop' : 'Play its own sample'}>
+                                <button
+                                  onClick={() => playSample(v)}
+                                  aria-label={playing ? `Stop ${v.name}` : `Play ${v.name} sample`}
+                                  className="flex items-center gap-1 px-2 h-6 rounded-md bg-white/[0.06] hover:bg-white/[0.12] text-white/80 text-[10px] font-semibold transition-colors"
+                                >
+                                  {playing ? <Square size={9} fill="currentColor" /> : <Play size={9} fill="currentColor" />}
+                                  Sample
+                                </button>
+                              </Tooltip>
+                              <button
+                                onClick={() => handlePreview(v)}
+                                disabled={previewingId !== null}
+                                title="Say the preview line in this voice"
+                                className="flex items-center gap-1 px-2 h-6 rounded-md bg-brand-400 hover:bg-brand-300 text-white text-[10px] font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                              >
+                                {isPreviewing ? <Loader2 size={10} className="animate-spin" /> : <AudioLines size={10} />}
+                                {isPreviewing ? 'Generating…' : 'Preview'}
+                              </button>
+                              <div className="flex-1" />
+                              <Tooltip content="Copy voice ID">
+                                <button
+                                  onClick={() => { navigator.clipboard.writeText(v.id); toast.success('Voice ID copied') }}
+                                  aria-label={`Copy ${v.name} ID`}
+                                  className="flex items-center justify-center h-6 w-6 rounded-md bg-white/[0.04] hover:bg-white/10 text-white/45 hover:text-white transition-colors"
+                                >
+                                  <Copy size={10} />
+                                </button>
+                              </Tooltip>
+                            </div>
+                            {previewUrls[v.id] && (
+                              <audio controls autoPlay src={previewUrls[v.id]} className="w-full mt-1.5 h-8" />
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

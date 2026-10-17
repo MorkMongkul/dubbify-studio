@@ -78,7 +78,7 @@ The dubbing pipeline is **two user-controlled stages plus on-demand steps**, orc
 
 ### Data model
 
-`Project` → `Job`s → `Segment`s + `Overlay`s; `Speaker`s belong to the project. `Voice` is a **workspace-global** voice library (not project-scoped). Voice resolution precedence for TTS: `Segment.voice_id` override → `Speaker.voice_id` → legacy `Speaker.voice_design_prompt`. Overlay positions/sizes are stored as **fractions (0–1) of video dimensions** so the live canvas preview and the full-resolution ffmpeg export map identically.
+`Project` → `Job`s → `Segment`s + `Overlay`s; `Speaker`s belong to the project. `Voice` is a **workspace-global** voice library (not project-scoped). **Built-in voices** (`app/services/builtin_voices.py`) ship in `app/assets/builtin_voices/` (FLAC + `manifest.json`, made from the voice-casting sessions): on startup each is installed as an ultimate voice (reference clip in `uploads/voices/<id>/` + transcript) with a fixed `builtin-…` id, so speakers keep them across updates. The voices routes refuse to edit or delete them (403), and a re-recorded voice gets a new id. Voice resolution precedence for TTS: `Segment.voice_id` override → `Speaker.voice_id` → legacy `Speaker.voice_design_prompt`. Overlay positions/sizes are stored as **fractions (0–1) of video dimensions** so the live canvas preview and the full-resolution ffmpeg export map identically.
 
 ### Frontend state
 

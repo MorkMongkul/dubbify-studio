@@ -49,6 +49,7 @@ async def _resolve_voice(seg: Segment, db: AsyncSession) -> dict:
         return {
             # In ultimate cloning the style prompt is ignored, so drop it there.
             "voice_design": "" if has_transcript else voice.description,
+            "description": voice.description,
             "cfg_value": voice.cfg_value,
             "inference_timesteps": voice.inference_timesteps,
             "reference_audio_path": voice.reference_audio_path or "",

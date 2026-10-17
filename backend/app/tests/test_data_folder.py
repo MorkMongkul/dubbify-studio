@@ -110,6 +110,7 @@ async def test_startup_follows_a_moved_folder_and_survives_a_failure(monkeypatch
     monkeypatch.setattr(main, "follow_moved_data_folder", fake_follow)
     monkeypatch.setattr(main, "init_db", nothing)
     monkeypatch.setattr(main, "recover_orphaned_jobs", nothing)
+    monkeypatch.setattr(main, "seed_builtin_voices", nothing)
     monkeypatch.setattr(main.settings, "DUBIFY_DATA_DIR", NEW)
     monkeypatch.setattr(main.settings, "DUBIFY_PREVIOUS_DATA_DIR", OLD)
 
