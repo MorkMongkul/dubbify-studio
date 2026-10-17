@@ -118,3 +118,69 @@ async def test_mock_audio_accepted_in_pure_mock_mode(client, db_sessionmaker, mo
     _, seg_ids = await _make_job_with_segments(client, db_sessionmaker, 1)
     resp = await client.post(f"/api/v1/tts/synthesize/segment/{seg_ids[0]}")
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_batch_status_reports_failures_and_backup_voices(client, db_sessionmaker, monkeypatch, tmp_path):
+    """The editor learns when a batch is over, which lines failed and why, and which used Gemini's stock voice."""
+    monkeypatch.setattr(tts_routes.settings, "UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(tts_routes.settings, "VOXCPM2_HF_SPACE_FALLBACK", "openbmb/VoxCPM-Demo")
+    monkeypatch.setattr(tts_routes.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr(core_db, "AsyncSessionLocal", db_sessionmaker)
+
+    async def fake(text: str, output_path: str = "", **kwargs) -> dict:
+        if text == "ខ្មែរ 0":
+            return {"success": False, "audio_path": "", "duration_secs": 0, "error": "the voice server timed out"}
+        sf.write(output_path, np.zeros(2205, dtype=np.float32), 22050)
+        backend = "gemini" if text == "ខ្មែរ 1" else "voxcpm_hf_space"
+        return {"success": True, "audio_path": output_path, "duration_secs": 0.1, "error": "", "backend": backend}
+
+    monkeypatch.setattr(tts_routes.tts_client, "synthesize", fake)
+    _job_id, seg_ids = await _make_job_with_segments(client, db_sessionmaker, 3)
+    batch_id = (await client.post("/api/v1/tts/synthesize/batch", json={"segment_ids": seg_ids})).json()["batch_id"]
+
+    status = (await client.get(f"/api/v1/tts/synthesize/batch/{batch_id}")).json()
+    assert status["finished"] and status["total"] == 3 and status["done"] == 2
+    assert status["backup_voice"] == 1
+    assert status["failed"] == [{"segment_id": seg_ids[0], "reason": "the voice server timed out"}]
+    assert (await client.get("/api/v1/tts/synthesize/batch/unknown")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_single_line_says_when_the_backup_voice_was_used(client, db_sessionmaker, monkeypatch, tmp_path):
+    monkeypatch.setattr(tts_routes.settings, "UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(tts_routes.settings, "VOXCPM2_HF_SPACE_FALLBACK", "openbmb/VoxCPM-Demo")
+
+    async def fake(text: str, output_path: str = "", **kwargs) -> dict:
+        sf.write(output_path, np.zeros(2205, dtype=np.float32), 22050)
+        return {"success": True, "audio_path": output_path, "duration_secs": 0.1, "error": "", "backend": "gemini"}
+
+    monkeypatch.setattr(tts_routes.tts_client, "synthesize", fake)
+    _job_id, seg_ids = await _make_job_with_segments(client, db_sessionmaker, 1)
+    body = (await client.post(f"/api/v1/tts/synthesize/segment/{seg_ids[0]}")).json()
+    assert body["engine"] == "gemini" and body["backup_voice"] is True
+
+
+@pytest.mark.asyncio
+async def test_export_progress_is_saved_only_while_exporting(db_sessionmaker, monkeypatch):
+    monkeypatch.setattr(core_db, "AsyncSessionLocal", db_sessionmaker)
+    async with db_sessionmaker() as session:
+        from app.models.models import Project
+        project = Project(name="Ep")
+        session.add(project)
+        await session.flush()
+        exporting = Job(project_id=project.id, status=JobStatus.MIXING, progress=5)
+        done = Job(project_id=project.id, status=JobStatus.COMPLETED, progress=100)
+        session.add_all([exporting, done])
+        await session.commit()
+        ids = exporting.id, done.id
+
+    for job_id in ids:
+        await tts_routes._set_mix_progress(job_id, 0.5)
+    async with db_sessionmaker() as session:
+        assert [(await session.get(Job, i)).progress for i in ids] == [50, 100]
+
+    def unavailable():
+        raise RuntimeError("database is unavailable")
+    monkeypatch.setattr(core_db, "AsyncSessionLocal", unavailable)
+    await tts_routes._set_mix_progress(ids[0], 0.6)      # logged, not raised

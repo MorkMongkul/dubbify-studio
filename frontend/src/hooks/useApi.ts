@@ -309,6 +309,16 @@ export function useTranslateMissing() {
   })
 }
 
+export function useRetrySeparation() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (jobId: string) => jobs.retrySeparation(jobId),
+    onSuccess: (_, jobId) => {
+      qc.invalidateQueries({ queryKey: ['job', jobId] })
+    },
+  })
+}
+
 export function useDetectSpeakers() {
   const qc = useQueryClient()
   return useMutation({

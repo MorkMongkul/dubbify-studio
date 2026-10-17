@@ -45,6 +45,8 @@ interface EditorStore {
   // polling resume when the user returns to that episode.
   batchGeneratingIds: string[]
   batchGeneratingJobId: string | null
+  // The backend's id for the running batch (GET /tts/synthesize/batch/{id})
+  batchId: string | null
   availableVoices: VoicePreset[]
   inspectorMode: 'global_synthesis' | 'audio_clip_settings' | 'subtitle_settings'
   focusedTimelineItemId: string | null
@@ -180,6 +182,7 @@ export const useEditorStore = create<EditorStore>()(
     // another project and greet the user with live badges on return.
     batchGeneratingIds: [] as string[],
     batchGeneratingJobId: null as string | null,
+    batchId: null as string | null,
 
     // ── Playback ──────────────────────────────────────────────
     setCurrentTime: (t) => {

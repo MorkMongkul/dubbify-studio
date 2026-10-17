@@ -61,6 +61,9 @@ async def _bake_design_voice(voice: Voice, db: AsyncSession) -> bool:
     voice_dir.mkdir(parents=True, exist_ok=True)
     ref_path = voice_dir / "reference.wav"
     tmp_path = voice_dir / f".reference_{uuid4().hex}.wav"
+    # Commit (releasing the app's only SQLite connection) before the TTS call,
+    # which can take minutes — holding it would stall every other request.
+    await db.commit()
     try:
         result = await tts_client.synthesize(
             text=BAKE_TEXT,
@@ -261,6 +264,8 @@ async def preview_voice(
     preview_dir = VOICES_DIR / voice_id
     preview_dir.mkdir(parents=True, exist_ok=True)
     out_path = preview_dir / "preview.wav"
+    # Release the connection before the (slow) TTS call; `voice` stays readable.
+    await db.commit()
 
     # Reference-driven (matches the editor): clone from the stored/baked
     # reference when present so the preview is the same voice the editor uses.

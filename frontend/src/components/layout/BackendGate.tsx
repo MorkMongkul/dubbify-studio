@@ -56,15 +56,15 @@ export function BackendGate({ children }: { children: ReactNode }) {
         {slow ? (
           <>
             <p className="text-[12px] text-amber-400/90 flex items-center justify-center gap-1.5">
-              <AlertCircle size={12} /> The backend is taking longer than usual
+              <AlertCircle size={12} /> This is taking longer than usual
             </p>
             <p className="text-[11px] text-white/40 max-w-[300px] leading-relaxed">
-              Your projects are safe — this is only the app's engine starting
-              up. The first launch after an update can take a minute.
+              Your projects are safe. The first launch after installing or
+              updating takes longer while macOS checks the app.
             </p>
           </>
         ) : (
-          <p className="text-[12px] text-white/45">Starting backend…</p>
+          <p className="text-[12px] text-white/45">Opening your projects…</p>
         )}
       </div>
 

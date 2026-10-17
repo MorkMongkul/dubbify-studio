@@ -80,7 +80,7 @@ async def run_subtitle_pipeline(job_id: str, subtitle_path: str) -> None:
             await db.commit()
 
             await _update_job(db, job, JobStatus.SEPARATING, 20)
-            vocals_path, _bgm, degraded = await separate_vocals_bgm(audio_path, str(job_dir))
+            vocals_path, _bgm, degraded = await separate_vocals_bgm(audio_path, str(job_dir), job.duration_secs)
             logger.info(f"Separation complete — vocals: {vocals_path}")
 
             # The extracted full-mix WAV (~10MB/min) is only needed as a
@@ -203,10 +203,26 @@ async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None =
             )
 
             await _update_job(db, job, JobStatus.TRANSLATING, 85)
+            kept = 0
             for i, db_seg in enumerate(existing_segments):
+                new_text = km_texts[i] if i < len(km_texts) else ""
+                old_text = db_seg.khmer_text or ""
+                if not new_text and old_text:
+                    # Nothing came back (translation failed, or the line has
+                    # no source text): keep the translation and voice the
+                    # line already has rather than emptying it.
+                    kept += bool((db_seg.source_text or "").strip())
+                    continue
+                if new_text != old_text:
+                    # The old voice clip speaks the old words — the line goes
+                    # back to Pending instead of exporting a mismatched voice.
+                    db_seg.tts_audio_path = ""
+                    db_seg.tts_duration_secs = 0.0
                 db_seg.english_text = ""
-                db_seg.khmer_text   = km_texts[i] if i < len(km_texts) else ""
+                db_seg.khmer_text   = new_text
             await db.commit()
+            # Only lines that had no translation before are actually left empty.
+            translation_report.failed = max(0, translation_report.failed - kept)
 
             # used_mock means speaker labeling failed for at least one batch
             # — subtitle text/timing is unaffected either way (it came from
@@ -216,6 +232,10 @@ async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None =
                 warnings.append(
                     "Speaker labeling was unavailable for some segments — they default to "
                     "the neighbouring voice. Subtitle text/timing is still correct. Run Detect speakers to retry."
+                )
+            if kept:
+                warnings.append(
+                    f"{kept} line(s) couldn't be translated again and kept their previous translation."
                 )
             if translation_report.warning():
                 warnings.append(translation_report.warning())

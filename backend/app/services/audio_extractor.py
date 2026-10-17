@@ -5,6 +5,8 @@ Extracts audio and subtitles from a video file using ffmpeg.
 import asyncio
 import json
 import os
+import re
+import shutil
 import sys
 import logging
 from app.core.binaries import ffmpeg, ffprobe
@@ -231,6 +233,168 @@ async def get_video_duration(video_path: str) -> float:
         return 0.0
 
 
+# Voices are mixed into the dub track in batches of this many clips per ffmpeg
+# run. ffmpeg opens one file per input, and an app opened from Finder may only
+# have 256 files open at once; a full episode has hundreds of lines.
+DUB_BATCH = 48
+
+
+async def _run_ffmpeg(cmd: list[str], *, duration: float | None = None, on_progress=None) -> tuple[int, str]:
+    """
+    Run ffmpeg; returns (returncode, stderr). With `duration` and
+    `on_progress`, ffmpeg reports how far it got and on_progress(fraction)
+    is awaited as the encode advances.
+    """
+    report = bool(duration and on_progress)
+    if report:
+        cmd = [*cmd[:1], "-progress", "pipe:1", "-nostats", *cmd[1:]]
+    process = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    if not report:
+        _, stderr = await process.communicate()
+        return process.returncode, stderr.decode(errors="replace")
+
+    stderr_task = asyncio.create_task(process.stderr.read())
+    last = -1.0
+    try:
+        async for raw in process.stdout:
+            key, _, value = raw.decode(errors="replace").strip().partition("=")
+            if key == "out_time_us" and value.isdigit():
+                fraction = min(1.0, int(value) / 1e6 / duration)
+                if fraction - last >= 0.02:
+                    last = fraction
+                    try:
+                        await on_progress(fraction)
+                    except Exception as e:  # noqa: BLE001 — progress never stops an export
+                        logger.warning(f"Progress update failed: {e}")
+        await process.wait()
+    finally:
+        # Interrupted (e.g. the app quitting): don't leave ffmpeg writing on its own
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+    return process.returncode, (await stderr_task).decode(errors="replace")
+
+
+_LOG_PREFIX = re.compile(r"^(?:\[[^\]]*\]\s*)+")
+_ERROR_WORDS = re.compile(
+    r"error|invalid|failed|cannot|could not|unable|unrecognized|not found|no such|denied|no space",
+    re.IGNORECASE,
+)
+
+
+def ffmpeg_failure_reason(stderr: str) -> str:
+    """
+    The first line of ffmpeg's output that says what went wrong, without its
+    "[component @ 0x…]" prefix. The lines after it are mostly consequences
+    ("Task finished with error code…", "Conversion failed!"). Indented lines
+    are stream details and metadata, never the error.
+    """
+    lines = [line for line in stderr.splitlines() if line.strip()]
+    for line in lines:
+        if line[0].isspace() or line.startswith(("Input #", "Output #")):
+            continue
+        text = _LOG_PREFIX.sub("", line).strip()
+        if text and text != "Conversion failed!" and _ERROR_WORDS.search(text):
+            return text[:300]
+    return lines[-1].strip()[:300] if lines else "ffmpeg stopped without saying why"
+
+
+async def _has_encoder(name: str) -> bool:
+    """Whether this ffmpeg build has the encoder (the bundled LGPL one has no libx264)."""
+    process = await asyncio.create_subprocess_exec(
+        ffmpeg(), "-hide_banner", "-encoders",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await process.communicate()
+    return any(line.split()[1:2] == [name] for line in stdout.decode(errors="replace").splitlines())
+
+
+def _tempo_chain(fit_rate: float) -> str:
+    """atempo filters for a speed-up (one atempo caps at 2.0×, so chain them)."""
+    if fit_rate <= 1.001:
+        return ""
+    steps, r = [], fit_rate
+    while r > 2.0:
+        steps.append("atempo=2.0")
+        r /= 2.0
+    steps.append(f"atempo={r:.4f}")
+    return ",".join(steps) + ","
+
+
+async def _render_dub_part(clips: list, offset: float, output: Path) -> None:
+    """
+    Mix these clips into one mono float WAV that starts at `offset` seconds:
+    each clip is sped up to fit its slot if needed and delayed to its start.
+    """
+    inputs, chains, labels = [], [], []
+    for i, seg in enumerate(clips):
+        inputs += ["-i", seg["audio_path"]]
+        delay_ms = max(0, round((seg["start_time"] - offset) * 1000))
+        # adelay fed by atempo emits AV_NOPTS timestamps (ffmpeg 8.x), which
+        # corrupts the mux — asetpts regenerates sample-accurate pts.
+        tempo = _tempo_chain(seg.get("fit_rate") or 1.0)
+        setpts = ",asetpts=N/SR/TB" if tempo else ""
+        chains.append(
+            f"[{i}:a]{tempo}aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=mono,"
+            f"adelay=delays={delay_ms}:all=1{setpts}[c{i}]"
+        )
+        labels.append(f"[c{i}]")
+    chains.append(f"{''.join(labels)}amix=inputs={len(labels)}:normalize=0:duration=longest[out]")
+    cmd = [ffmpeg(), "-y", *inputs, "-filter_complex", ";".join(chains),
+           "-map", "[out]", "-c:a", "pcm_f32le", str(output)]
+    rc, err = await _run_ffmpeg(cmd)
+    if rc != 0:
+        raise RuntimeError(f"Mixing the voices failed: {err[-1500:]}")
+
+
+async def _sum_parts(parts: list[tuple[str, float]], output: Path) -> tuple[str, float]:
+    """Mix adjacent dub parts into one that starts where the first one does."""
+    offset = parts[0][1]
+    inputs, chains, labels = [], [], []
+    for i, (path, part_offset) in enumerate(parts):
+        inputs += ["-i", path]
+        delay_ms = max(0, round((part_offset - offset) * 1000))
+        chains.append(f"[{i}:a]adelay=delays={delay_ms}:all=1[p{i}]")
+        labels.append(f"[p{i}]")
+    chains.append(f"{''.join(labels)}amix=inputs={len(labels)}:normalize=0:duration=longest[out]")
+    cmd = [ffmpeg(), "-y", *inputs, "-filter_complex", ";".join(chains),
+           "-map", "[out]", "-c:a", "pcm_f32le", str(output)]
+    rc, err = await _run_ffmpeg(cmd)
+    if rc != 0:
+        raise RuntimeError(f"Mixing the voices failed: {err[-1500:]}")
+    return str(output), offset
+
+
+async def build_dub_parts(tts_segments: list, work_dir: Path, on_progress=None) -> list[tuple[str, float]]:
+    """
+    The dubbed voices as a few WAV parts, each covering a stretch of the
+    timeline: (path, start offset in seconds). Clips are mixed DUB_BATCH at a
+    time, and parts are combined until at most DUB_BATCH remain, so no ffmpeg
+    run ever opens more than about DUB_BATCH files.
+    """
+    work_dir.mkdir(parents=True, exist_ok=True)
+    clips = sorted(tts_segments, key=lambda s: s["start_time"])
+    batches = [clips[i:i + DUB_BATCH] for i in range(0, len(clips), DUB_BATCH)]
+    parts: list[tuple[str, float]] = []
+    for k, batch in enumerate(batches):
+        offset = batch[0]["start_time"]
+        path = work_dir / f"dub_{k:04d}.wav"
+        await _render_dub_part(batch, offset, path)
+        parts.append((str(path), offset))
+        if on_progress:
+            await on_progress((k + 1) / len(batches))
+    level = 0
+    while len(parts) > DUB_BATCH:
+        level += 1
+        parts = [
+            await _sum_parts(parts[g:g + DUB_BATCH], work_dir / f"dub_l{level}_{g // DUB_BATCH:04d}.wav")
+            for g in range(0, len(parts), DUB_BATCH)
+        ]
+    return parts
+
+
 async def mix_dubbed_audio(
     video_path: str,
     tts_segments: list,
@@ -240,11 +404,17 @@ async def mix_dubbed_audio(
     video_layers: list | None = None,
     video_width: int | None = None,
     video_height: int | None = None,
+    on_progress=None,
 ) -> str:
     """
     Mix TTS audio segments back onto the video timeline using ffmpeg, and
-    optionally composite video layers (dropped images, burned-in subtitle
-    lines, plain color/blur boxes) on top of the video.
+    optionally composite video layers (dropped images, burned-in subtitles,
+    plain color/blur boxes) on top of the video.
+
+    The voices are first mixed into a few WAV parts (build_dub_parts), so the
+    final ffmpeg run has a handful of inputs however many lines the episode
+    has — one input per line used to exceed the open-file limit of an app
+    opened from Finder (256) and fail on full episodes.
 
     Args:
         video_path:    Original video file
@@ -266,8 +436,11 @@ async def mix_dubbed_audio(
                        not grouped by kind. Each entry has a `kind`:
                          - kind="image": {media_path, x, y, width, height,
                            opacity, start_time, end_time} — a positioned
-                           image (dropped logo, or one pre-rendered subtitle
-                           line PNG).
+                           image (a dropped logo).
+                         - kind="sequence": {concat_path, left_px, top_px} —
+                           a timed image stream (every burned-in subtitle
+                           line, video_overlay.build_subtitle_track), drawn
+                           at its own pixel size.
                          - kind="shape": {x, y, width, height, color, opacity,
                            blur, start_time, end_time} — a plain box, no
                            media file. `blur=True` blurs the video underneath
@@ -278,6 +451,7 @@ async def mix_dubbed_audio(
                        x/y/width/height are fractions (0-1) of the video's
                        own dimensions; start_time/end_time may be None for
                        "visible the whole video".
+        on_progress:   Optional async callback(fraction 0-1).
 
     Returns:
         Path to output dubbed video file
@@ -285,11 +459,37 @@ async def mix_dubbed_audio(
     if not tts_segments:
         raise ValueError("No TTS segments provided for mixing")
 
-    # Build a complex ffmpeg filter to place each TTS segment at the right timestamp
-    # Each segment is delayed by its start_time and then all are mixed together
+    async def report(fraction: float) -> None:
+        if on_progress:
+            await on_progress(fraction)
+
+    n = len(tts_segments)
+    logger.info(f"Mixing {n} dubbed segments into final video...")
+    work_dir = Path(output_path).parent / "mix_parts"
+    try:
+        return await _mix_with_parts(
+            video_path, tts_segments, output_path, mute_original, bgm_path,
+            video_layers, video_width, video_height, work_dir, report,
+        )
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+async def _mix_with_parts(
+    video_path, tts_segments, output_path, mute_original, bgm_path,
+    video_layers, video_width, video_height, work_dir: Path, report,
+) -> str:
+    parts = await build_dub_parts(
+        tts_segments, work_dir, on_progress=lambda f: report(0.05 + 0.35 * f),
+    )
+
+    try:
+        duration = await get_video_duration(video_path)
+    except Exception:  # noqa: BLE001 — only progress and padding use it
+        duration = 0.0
+
     inputs = ["-i", video_path]
     filter_parts = []
-    mix_labels = []
 
     # Optional: inject separated BGM as a second input
     bgm_input_idx: int | None = None
@@ -297,59 +497,24 @@ async def mix_dubbed_audio(
         inputs += ["-i", bgm_path]
         bgm_input_idx = 1  # input index 1 = BGM file
 
-    tts_offset = 2 if bgm_input_idx is not None else 1
+    part_offset = 2 if bgm_input_idx is not None else 1
+    part_labels = []
+    for i, (path, offset) in enumerate(parts):
+        inputs += ["-i", path]
+        delay_ms = round(offset * 1000)
+        filter_parts.append(f"[{part_offset + i}:a]adelay=delays={delay_ms}:all=1[d{i}]")
+        part_labels.append(f"[d{i}]")
+    filter_parts.append(
+        f"{''.join(part_labels)}amix=inputs={len(part_labels)}:normalize=0:duration=longest[dubmix]"
+    )
 
-    # Each clip stream stays FINITE (adelay only — no per-stream apad): a clip
-    # is processed for start_time + duration instead of the whole movie, so the
-    # mixing cost scales with total speech, not segments × film length. The
-    # single apad AFTER the mix (below) restores the infinite tail that
-    # -shortest needs so the video is never truncated at the last dubbed line.
-    for i, seg in enumerate(tts_segments):
-        inputs += ["-i", seg["audio_path"]]
-        delay_ms = int(seg["start_time"] * 1000)
-        label = f"[a{i}]"
-        # A single atempo filter caps at 2.0× — chain filters for higher rates.
-        # adelay fed by atempo emits AV_NOPTS timestamps (ffmpeg 8.x), which
-        # corrupts the mux (near-zero audio duration) — asetpts regenerates
-        # sample-accurate pts after the delay silence is inserted.
-        fit_rate = seg.get("fit_rate") or 1.0
-        tempo, setpts = "", ""
-        if fit_rate > 1.001:
-            r = fit_rate
-            steps = []
-            while r > 2.0:
-                steps.append("atempo=2.0")
-                r /= 2.0
-            steps.append(f"atempo={r:.4f}")
-            tempo = ",".join(steps) + ","
-            setpts = ",asetpts=N/SR/TB"
-        filter_parts.append(
-            f"[{tts_offset + i}:a]{tempo}adelay={delay_ms}|{delay_ms}{setpts}{label}"
-        )
-        mix_labels.append(label)
-
-    n = len(tts_segments)
-
-    # amix in groups: hundreds of inputs in a single amix make an enormous
-    # filter node and can brush up against argv/filter-graph limits — submix
-    # in chunks, then mix the submixes.
-    AMIX_GROUP = 32
-    if n <= AMIX_GROUP:
-        filter_parts.append(f"{''.join(mix_labels)}amix=inputs={n}:normalize=0[dubmix]")
-    else:
-        group_labels = []
-        for g in range(0, n, AMIX_GROUP):
-            chunk = mix_labels[g:g + AMIX_GROUP]
-            glabel = f"[g{g // AMIX_GROUP}]"
-            filter_parts.append(f"{''.join(chunk)}amix=inputs={len(chunk)}:normalize=0{glabel}")
-            group_labels.append(glabel)
-        filter_parts.append(
-            f"{''.join(group_labels)}amix=inputs={len(group_labels)}:normalize=0[dubmix]"
-        )
-
-    # Pad the combined dub track once so -shortest cuts at the VIDEO's end,
-    # not at the last TTS clip's end.
-    filter_parts.append("[dubmix]apad[dubbed]")
+    # Pad the combined dub track to the video's length so -shortest cuts at
+    # the VIDEO's end, not at the last TTS clip's end. Not endlessly: an
+    # endless apad keeps generating silence once the video has ended, and
+    # ffmpeg 8 sometimes queues it faster than -shortest stops it — the queue
+    # overflows and the export fails with "No space left on device".
+    pad = f"apad=whole_dur={duration:.6f}" if duration > 0 else "apad"
+    filter_parts.append(f"[dubmix]{pad}[dubbed]")
 
     # Determine final audio:
     #   bgm_path provided  → BGM (full volume) + dubbed TTS (full volume)
@@ -364,14 +529,14 @@ async def mix_dubbed_audio(
         filter_parts.append(f"[0:a]volume=0.15[orig];[orig][dubbed]amix=inputs=2[final]")
         audio_map = "[final]"
 
-    # ── Optional video layers (dropped images, burned-in subtitle lines,
-    # plain color/blur boxes) — composited in the given list order, which
-    # must already be true z-index order so e.g. a "cover the original
-    # subtitle" shape and the new subtitle text interleave correctly rather
-    # than one kind always landing above the other regardless of z-index.
+    # ── Optional video layers (dropped images, burned-in subtitles, plain
+    # color/blur boxes) — composited in the given list order, which must
+    # already be true z-index order so e.g. a "cover the original subtitle"
+    # shape and the new subtitle text interleave correctly rather than one
+    # kind always landing above the other regardless of z-index.
     # Stream-copying the video (-c:v copy) is only possible when no video
     # filter is applied — adding any layer means decoding/re-encoding.
-    next_input_idx = tts_offset + n
+    next_input_idx = part_offset + len(parts)
     video_map = "0:v"
     needs_video_encode = False
     video_chain_label = "0:v"
@@ -380,6 +545,20 @@ async def mix_dubbed_audio(
         if not video_width or not video_height:
             raise ValueError("video_width/video_height are required when video_layers is set")
         for i, layer in enumerate(video_layers):
+            out_label = f"v{i}"
+
+            if layer["kind"] == "sequence":
+                inputs += ["-f", "concat", "-safe", "0", "-i", layer["concat_path"]]
+                seq_label = f"seq{i}"
+                filter_parts.append(f"[{next_input_idx}:v]format=rgba[{seq_label}]")
+                filter_parts.append(
+                    f"[{video_chain_label}][{seq_label}]overlay=x={layer['left_px']}:y={layer['top_px']}"
+                    f":eof_action=pass[{out_label}]"
+                )
+                next_input_idx += 1
+                video_chain_label = out_label
+                continue
+
             target_w = max(1, round(video_width * layer["width"]))
             target_h = max(1, round(video_height * layer["height"]))
             px = round(video_width * layer["x"])
@@ -388,8 +567,6 @@ async def mix_dubbed_audio(
             start, end = layer.get("start_time"), layer.get("end_time")
             if start is not None and end is not None:
                 enable = f":enable='between(t,{start},{end})'"
-
-            out_label = f"v{i}"
 
             if layer["kind"] == "shape":
                 if layer.get("blur"):
@@ -450,38 +627,26 @@ async def mix_dubbed_audio(
         ]
 
     async def _run(cmd: list[str]) -> tuple[int, str]:
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await process.communicate()
-        return process.returncode, stderr.decode()
-
-    logger.info(f"Mixing {n} dubbed segments into final video...")
+        return await _run_ffmpeg(cmd, duration=duration, on_progress=lambda f: report(0.4 + 0.6 * f))
 
     if not needs_video_encode:
         rc, err = await _run(_build_cmd(["-c:v", "copy"]))
     else:
         # Prefer the hardware encoder on macOS (several times faster than
-        # software x264 for a full film); fall back to libx264 if this ffmpeg
-        # build lacks it or the hardware session fails.
+        # software x264 for a full film). Fall back to libx264 only where this
+        # ffmpeg has it: the LGPL build bundled with the desktop app doesn't,
+        # and trying it only replaced the real error with "Unrecognized option".
         rc, err = -1, ""
-        hardware_err = ""
         if sys.platform == "darwin":
             rc, err = await _run(_build_cmd(["-c:v", "h264_videotoolbox", "-b:v", "6000k"]))
             if rc != 0:
-                hardware_err = err
-                logger.warning(f"h264_videotoolbox failed (falling back to libx264): {err[-300:]}")
-        if rc != 0:
+                logger.error(f"h264_videotoolbox failed:\n{err[-3000:]}")
+        if rc != 0 and (sys.platform != "darwin" or await _has_encoder("libx264")):
             rc, err = await _run(_build_cmd(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]))
-            if rc != 0 and hardware_err:
-                # The bundled LGPL ffmpeg has no x264, so its fallback error
-                # ("Unrecognized option 'preset'") hides the real cause.
-                err = f"VideoToolbox: {hardware_err[-1500:]}\nx264 fallback: {err[-500:]}"
 
     if rc != 0:
-        raise RuntimeError(f"Audio mixing failed: {err}")
+        logger.error(f"Export failed:\n{err[-3000:]}")
+        raise RuntimeError(ffmpeg_failure_reason(err))
 
     logger.info(f"Dubbed video saved: {output_path}")
     return output_path

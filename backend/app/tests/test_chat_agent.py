@@ -246,3 +246,38 @@ async def test_tool_round_cap_surfaces_instead_of_hanging(client, db_sessionmake
     assert resp.status_code == 200
     messages = resp.json()["messages"]
     assert "didn't reach a final answer" in messages[-1]["text"]
+
+
+def _shape(contents: list) -> list[str]:
+    """Each Gemini turn as role:kind, e.g. 'model:call' for a tool call."""
+    def kind(content):
+        parts = content["parts"]
+        if any("functionCall" in p for p in parts):
+            return "call"
+        if any("functionResponse" in p for p in parts):
+            return "result"
+        return "text"
+    return [f"{c['role']}:{kind(c)}" for c in contents]
+
+
+@pytest.mark.asyncio
+async def test_the_turn_after_a_tool_call_replays_history_in_order(client, db_sessionmaker, monkeypatch):
+    """A tool call and its result are saved within the same second; history must still replay call-first."""
+    project_id, _ = await _make_project_with_segment(db_sessionmaker)
+    calls = []
+
+    async def fake_call_gemini(contents):
+        calls.append(contents)
+        if len(calls) == 1:
+            return _function_call_response("search_segments", {"query": "回来"})
+        return _text_response("Done.")
+
+    monkeypatch.setattr(chat_agent, "_call_gemini", fake_call_gemini)
+    await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "Find 回来"})
+    await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "Thanks, and the next one?"})
+
+    assert _shape(calls[-1]) == ["user:text", "model:call", "user:result", "model:text", "user:text"]
+    # The conversation shown in the panel is in the same order.
+    history = (await client.get(f"/api/v1/chat/{project_id}/messages")).json()
+    shown = ["call" if m.get("function_call") else "result" if m.get("function_response") else m["role"] for m in history]
+    assert shown == ["user", "call", "result", "model", "user", "model"]

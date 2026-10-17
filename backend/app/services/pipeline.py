@@ -21,7 +21,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.models.models import Job, Project, Segment, Speaker, JobStatus
 from app.services.audio_extractor import extract_audio, get_video_duration
-from app.services.source_separator import separate_vocals_bgm
+from app.services.source_separator import render_bgm_volume, separate_vocals_bgm
 from app.services.asr import labels_for_spans, transcribe_audio
 from app.services.translator import translate_batch_with_report
 from app.services.pipeline_common import (
@@ -71,7 +71,7 @@ async def run_pipeline(job_id: str) -> None:
             await db.commit()
 
             await _update_job(db, job, JobStatus.SEPARATING, 20)
-            vocals_path, _bgm, degraded = await separate_vocals_bgm(audio_path, str(job_dir))
+            vocals_path, _bgm, degraded = await separate_vocals_bgm(audio_path, str(job_dir), job.duration_secs)
             logger.info(f"Separation complete — vocals: {vocals_path}")
 
             # The extracted full-mix WAV (~10MB/min) is only needed as a
@@ -99,6 +99,43 @@ async def run_pipeline(job_id: str) -> None:
         except Exception as e:
             logger.exception(f"Stage 1 failed for job {job_id[:8]}: {e}")
             await _update_job(db, job, JobStatus.FAILED, 0, str(e))
+
+
+async def run_separation_retry(job_id: str, return_status: JobStatus) -> None:
+    """
+    "Try again" after separation fell back to the original audio: extract the
+    audio again and re-run separation. Either way the job returns to
+    `return_status` (completed when it has lines, stems_ready otherwise); its
+    lines, translations and voices are untouched.
+    """
+    from app.core.database import AsyncSessionLocal
+    from app.core.paths import resolve_media_path
+
+    async with AsyncSessionLocal() as db:
+        job = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
+        if not job:
+            logger.error(f"Job {job_id} not found.")
+            return
+        job_dir = Path(settings.UPLOAD_DIR) / job.project_id / job_id
+        progress = 100 if return_status == JobStatus.COMPLETED else 30
+        try:
+            audio_path = await extract_audio(resolve_media_path(job.video_path), output_dir=str(job_dir))
+            job.audio_path = audio_path
+            await db.commit()
+            _, _, degraded = await separate_vocals_bgm(audio_path, str(job_dir), job.duration_secs, force=True)
+            if not degraded:
+                Path(audio_path).unlink(missing_ok=True)
+                if job.bgm_volume_db:
+                    # Keep the music level the user chose, now on the new stem
+                    await render_bgm_volume(job_dir, job.bgm_volume_db)
+            message = (
+                "Music and voices still couldn't be separated, so the music track keeps the "
+                "original voices. Try again later." if degraded else ""
+            )
+            await _update_job(db, job, return_status, progress, message)
+        except Exception as e:
+            logger.exception(f"Separation retry failed for job {job_id[:8]}: {e}")
+            await _update_job(db, job, return_status, progress, f"Separating music and voices failed: {e}")
 
 
 # ── STAGE 2: Transcribe + speaker-label + translate ───────────────────────────

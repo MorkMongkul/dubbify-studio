@@ -18,3 +18,12 @@ opencc-python-reimplemented, licensed under the Apache License 2.0.
 The desktop shell is built with Tauri (MIT or Apache-2.0). The bundled backend
 runs on Python (PSF License) with FastAPI, Starlette, Pydantic, SQLAlchemy,
 Uvicorn, HTTPX and other packages under MIT, BSD and Apache-2.0 licenses.
+
+## FriBiDi
+Movelo Studio includes an unmodified build of the FriBiDi library
+(https://github.com/fribidi/fribidi), licensed under the GNU Lesser General
+Public License, version 2.1 or later. It lets burned-in Khmer subtitles be
+shaped correctly. The license text and the exact version, source checksum and
+build options are in `licenses/` next to this file. It is built from the
+official source release with `scripts/build-fribidi.sh`; the matching source
+archive is published alongside each Movelo Studio release.

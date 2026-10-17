@@ -1,7 +1,7 @@
 // src/components/transcript/TranscriptPanel.tsx
 import { useRef, useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { AlignLeft, Loader2, ChevronRight, Sliders, Volume2, Type, RefreshCw, Mic, Plus, Languages } from 'lucide-react'
+import { AlignLeft, Loader2, ChevronRight, Sliders, Volume2, Type, RefreshCw, Mic, Plus, Languages, AudioLines } from 'lucide-react'
 import type { Segment, Speaker, Job } from '@/types'
 import { useEditorStore, useActiveSegmentId } from '@/store/editorStore'
 import { SegmentCardSkeleton } from '@/components/ui/Skeleton'
@@ -10,8 +10,8 @@ import { Button } from '@/components/ui/Button'
 import { toast } from 'sonner'
 import { cn, formatTime, getSpeakerColor } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
-import { segments as segmentsApi } from '@/api/client'
-import { useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker, useTranslateMissing } from '@/hooks/useApi'
+import { segments as segmentsApi, tts as ttsApi, type BatchSynthesisStatus } from '@/api/client'
+import { useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker, useTranslateMissing, useRetrySeparation } from '@/hooks/useApi'
 import { PipelineStepper } from '@/features/upload/PipelineStepper'
 import { recordSegmentChange, recordSegmentsChange, recordSegmentCreate } from '@/lib/historyHelpers'
 
@@ -56,6 +56,25 @@ export function TranscriptPanel({
   )
   const translating = job?.status === 'translating'
   const jobIdle = !job || job.status === 'completed' || job.status === 'failed'
+
+  // Music/voices separation fell back to the original audio: say so for as
+  // long as it's true, and offer to try again (lines and voices are kept).
+  const retrySeparation = useRetrySeparation()
+  const separatingAgain = job?.status === 'separating' && segments.length > 0
+  const separationFailed = job?.stems_separated === false && jobIdle
+  const handleRetrySeparation = () => {
+    retrySeparation.mutate(jobId, {
+      onError: (err) => toast.error(`Couldn't start: ${(err as Error).message}`),
+    })
+  }
+  const prevStatusRef = useRef(job?.status)
+  useEffect(() => {
+    const prev = prevStatusRef.current
+    prevStatusRef.current = job?.status
+    if (prev !== 'separating' || job?.status !== 'completed') return
+    if (job.stems_separated) toast.success('Music and voices are separated now')
+    else toast.error(job.error_msg || "Music and voices still couldn't be separated.", { duration: 12_000 })
+  }, [job?.status, job?.stems_separated, job?.error_msg])
   const handleTranslateMissing = () => {
     translateMissing.mutate(jobId, {
       onSuccess: (r) => toast.success(`Translating ${r.lines} line${r.lines === 1 ? '' : 's'}…`),
@@ -74,9 +93,9 @@ export function TranscriptPanel({
   // polling effect below tracks it either way.
   const anyBatchRunning = batchGeneratingIds.length > 0
   const batchSynthesizing = anyBatchRunning && batchGeneratingJobId === jobId
-  const batchDoneCount = batchSynthesizing
-    ? batchGeneratingIds.filter((id) => segments.find((s) => s.id === id)?.tts_audio_path).length
-    : 0
+  // The backend's own count — "has audio" can't tell a regenerated line from an old one
+  const [batchProgress, setBatchProgress] = useState<BatchSynthesisStatus | null>(null)
+  const batchDoneCount = batchSynthesizing ? (batchProgress?.done ?? 0) : 0
   const synthesizeSegment = useSynthesizeSegment()
   const synthesizeBatch = useSynthesizeBatch()
   const createSegment = useCreateSegment()
@@ -249,6 +268,7 @@ export function TranscriptPanel({
         useEditorStore.setState({
           batchGeneratingIds: rest,
           batchGeneratingJobId: rest.length ? st.batchGeneratingJobId : null,
+          batchId: rest.length ? st.batchId : null,
         })
       }
       // Restores the old text and its old audio pointer — correct as long as
@@ -267,10 +287,14 @@ export function TranscriptPanel({
   const handleSingleSynthesize = async (segmentId: string) => {
     setSingleSynthesizing(segmentId)
     try {
-      await synthesizeSegment.mutateAsync({ segmentId, jobId })
-      toast.success('Voice generated successfully ✓')
+      const res = await synthesizeSegment.mutateAsync({ segmentId, jobId })
+      if (res.backup_voice) {
+        toast.warning("Voice generated with the backup voice (Gemini) because the voice server didn't respond. Regenerate it when the server is back.")
+      } else {
+        toast.success('Voice generated')
+      }
     } catch (err) {
-      toast.error('Failed to generate voice')
+      toast.error(`Couldn't generate the voice: ${(err as Error).message}`)
       console.error(err)
     } finally {
       setSingleSynthesizing(null)
@@ -288,7 +312,10 @@ export function TranscriptPanel({
     try {
       const res = await synthesizeBatch.mutateAsync({ segmentIds, jobId })
       const ids: string[] = res.segment_ids ?? segmentIds
-      useEditorStore.setState({ batchGeneratingIds: ids, batchGeneratingJobId: jobId, selectedSegmentIds: [] })
+      setBatchProgress(null)
+      useEditorStore.setState({
+        batchGeneratingIds: ids, batchGeneratingJobId: jobId, batchId: res.batch_id, selectedSegmentIds: [],
+      })
       toast.info(`${verb} ${ids.length} voice${ids.length === 1 ? '' : 's'}…${detail}`)
     } catch (err) {
       toast.error(`Failed to start voice ${verb.toLowerCase()}`)
@@ -332,52 +359,64 @@ export function TranscriptPanel({
     await runBatchSynthesize(pendingIds, 'Generating', skipped > 0 ? ` (${skipped} already done, skipped)` : '')
   }
 
-  // Poll the segment list while a batch is running. Effect-driven (keyed on
-  // the store, not a handler-local loop) so a panel remount mid-batch —
-  // navigation, project switch — resumes tracking automatically instead of
-  // silently going dark while the backend keeps working. Polls the batch's
-  // OWN job (batchGeneratingJobId), which may differ from the episode on
-  // screen: hopping to another project to fix translations doesn't stop
-  // tracking, and the completion toast fires wherever the user is.
+  // Follow a running batch. Effect-driven (keyed on the store, not a
+  // handler-local loop) so a panel remount mid-batch — navigation, project
+  // switch — resumes tracking automatically. Polls the batch's OWN job
+  // (batchGeneratingJobId), which may differ from the episode on screen, and
+  // the backend's batch status, which says when every line has succeeded or
+  // failed for good — and why.
   useEffect(() => {
     const batchJobId = batchGeneratingJobId
-    if (batchGeneratingIds.length === 0 || !batchJobId) return
+    const batchId = useEditorStore.getState().batchId
+    if (batchGeneratingIds.length === 0 || !batchJobId || !batchId) return
     let cancelled = false
-    // Generous ceiling: cold start + ~1 min per line, capped at 30 min
-    const deadline = Date.now() + Math.min(30 * 60_000, 300_000 + batchGeneratingIds.length * 60_000)
+    const stopTracking = () =>
+      useEditorStore.setState({ batchGeneratingIds: [], batchGeneratingJobId: null, batchId: null })
 
     ;(async () => {
       while (!cancelled) {
         await new Promise((r) => setTimeout(r, 3000))
-        if (cancelled) return
-        // Re-read the tracked set EVERY pass — a text edit removes its
-        // segment from tracking mid-run (its cleared audio would otherwise
-        // keep "remaining" non-zero forever and the spinner never resolves).
-        const ids = new Set(useEditorStore.getState().batchGeneratingIds)
-        if (ids.size === 0) return
-        // A transient poll failure (backend busy with a TTS call, network
-        // blip) must not abort tracking — skip the pass and poll again.
-        let fresh: Segment[]
+        if (cancelled || useEditorStore.getState().batchGeneratingIds.length === 0) return
+        let status: BatchSynthesisStatus
         try {
-          fresh = await segmentsApi.listByJob(batchJobId)
-        } catch {
-          continue
+          status = await ttsApi.batchStatus(batchId)
+        } catch (err) {
+          // 404: the backend restarted and no longer knows this batch.
+          if ((err as { response?: { status?: number } }).response?.status === 404) {
+            stopTracking()
+            toast.warning('Lost track of the voice batch because the app restarted. Lines without a voice show Pending.')
+            return
+          }
+          continue   // busy backend or network blip — try again next pass
         }
         if (cancelled) return
-        qc.setQueryData(['segments', batchJobId], fresh)
-        const remaining = fresh.filter((s) => ids.has(s.id) && !s.tts_audio_path)
-        if (remaining.length === 0) {
-          useEditorStore.setState({ batchGeneratingIds: [], batchGeneratingJobId: null })
-          toast.success(`Generated voice for ${ids.size} segments ✓`)
-          return
+        setBatchProgress(status)
+        try {
+          qc.setQueryData(['segments', batchJobId], await segmentsApi.listByJob(batchJobId))
+        } catch {
+          // the next pass refreshes the lines
         }
-        if (Date.now() > deadline) {
-          useEditorStore.setState({ batchGeneratingIds: [], batchGeneratingJobId: null })
-          toast.warning(
-            `${ids.size - remaining.length} of ${ids.size} segments generated — ${remaining.length} did not finish`
+        if (!status.finished) continue
+
+        stopTracking()
+        const failed = status.failed.length
+        if (failed === 0) {
+          toast.success(`Generated ${status.done} voice${status.done === 1 ? '' : 's'}`)
+        } else {
+          toast.error(
+            `${failed} of ${status.total} lines couldn't be voiced: ${status.failed[0].reason}. ` +
+            'Select them and generate again.',
+            { duration: 12_000 },
           )
-          return
         }
+        if (status.backup_voice > 0) {
+          toast.warning(
+            `${status.backup_voice} line${status.backup_voice === 1 ? '' : 's'} used the backup voice (Gemini) ` +
+            "because the voice server didn't respond. Regenerate them when the server is back.",
+            { duration: 12_000 },
+          )
+        }
+        return
       }
     })()
     return () => { cancelled = true }
@@ -410,6 +449,14 @@ export function TranscriptPanel({
     setClipVolume(savedEffects.volume)
     setClipFilter(savedEffects.filter)
     setClipSpeed(savedEffects.speed)
+  }
+
+  // A slider saves when released; releasing without a change saves nothing.
+  const commitVolume = (value: number) => {
+    if (activeSeg && value !== (activeSeg.volume_db ?? 0)) handleVolumeChange(activeSeg.id, value)
+  }
+  const commitSpeed = (value: number) => {
+    if (activeSeg && value !== (activeSeg.voice_speed ?? 1.0)) handleSpeedChange(activeSeg.id, value)
   }
 
   // Clip effects target the WHOLE multi-selection when the edited clip is
@@ -550,6 +597,32 @@ export function TranscriptPanel({
               style={{ width: `${(batchDoneCount / Math.max(1, batchGeneratingIds.length)) * 100}%` }}
             />
           </div>
+        </div>
+      )}
+
+      {inspectorMode === 'global_synthesis' && (separatingAgain || separationFailed) && (
+        <div className="px-3 py-1.5 border-b border-ink-800/50 shrink-0 bg-amber-950/20 flex items-center gap-2">
+          {separatingAgain ? (
+            <>
+              <Loader2 size={11} className="animate-spin text-amber-300 shrink-0" />
+              <span className="text-[10px] font-semibold text-amber-200">Separating music and voices…</span>
+            </>
+          ) : (
+            <>
+              <AudioLines size={11} className="text-amber-300 shrink-0" />
+              <span className="flex-1 text-[10px] text-amber-200 leading-snug">
+                Music and voices couldn't be separated, so the music track still has the original voices.
+              </span>
+              <button
+                onClick={handleRetrySeparation}
+                disabled={retrySeparation.isPending}
+                className="shrink-0 text-[10px] font-semibold text-amber-100 bg-amber-600/30 hover:bg-amber-600/50 px-2 py-0.5 rounded transition-colors disabled:opacity-50"
+                title="Run the separation again. Lines, translations and voices are kept."
+              >
+                Try again
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -697,7 +770,7 @@ export function TranscriptPanel({
                 </th>
                 <th className="p-2 w-20">Speakers</th>
                 <th className="p-2 w-20">Timestamps</th>
-                <th className="p-2">Translated Text</th>
+                <th className="p-2">Translation and original</th>
                 <th className="p-2 w-28">Voices</th>
                 <th className="p-2 w-16 text-center">Status</th>
               </tr>
@@ -798,6 +871,12 @@ export function TranscriptPanel({
                         )}
                         rows={2}
                       />
+                      {seg.source_text && (
+                        // The original line, for checking the translation against it
+                        <p lang="zh-Hans" className="px-1.5 pb-0.5 text-[11px] leading-snug text-ink-500 select-text">
+                          {seg.source_text}
+                        </p>
+                      )}
                     </td>
 
                     {/* Voice Clone Select */}
@@ -942,8 +1021,9 @@ export function TranscriptPanel({
                         step="1"
                         value={clipVolume}
                         onChange={(e) => setClipVolume(Number(e.target.value))}
-                        onMouseUp={() => activeSeg && handleVolumeChange(activeSeg.id, clipVolume)}
-                        onTouchEnd={() => activeSeg && handleVolumeChange(activeSeg.id, clipVolume)}
+                        // Saved on release — pointer or keyboard (arrow keys used to change it without saving)
+                        onPointerUp={(e) => commitVolume(Number(e.currentTarget.value))}
+                        onKeyUp={(e) => commitVolume(Number(e.currentTarget.value))}
                         className="flex-1 accent-brand-500 bg-ink-800 rounded-lg cursor-pointer h-1"
                       />
                       <button
@@ -1024,8 +1104,8 @@ export function TranscriptPanel({
                       step="0.05"
                       value={clipSpeed}
                       onChange={(e) => setClipSpeed(Number(e.target.value))}
-                      onMouseUp={() => activeSeg && handleSpeedChange(activeSeg.id, clipSpeed)}
-                      onTouchEnd={() => activeSeg && handleSpeedChange(activeSeg.id, clipSpeed)}
+                      onPointerUp={(e) => commitSpeed(Number(e.currentTarget.value))}
+                      onKeyUp={(e) => commitSpeed(Number(e.currentTarget.value))}
                       className="w-full accent-brand-500 bg-ink-800 rounded-lg cursor-pointer h-1"
                     />
                     <div className="flex gap-1.5">

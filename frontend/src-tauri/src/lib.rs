@@ -14,11 +14,16 @@ use tauri_plugin_shell::ShellExt;
 mod migrate;
 mod updater;
 
-/// The first launch unpacks the bundled Python runtime, which can take a while.
+/// The first launch after installing or updating is slow while macOS checks
+/// the backend's libraries (about 15 s); later launches take under a second.
 const READY_TIMEOUT: Duration = Duration::from_secs(180);
 /// Homebrew's folders: an app opened from Finder or the Dock gets
 /// PATH=/usr/bin:/bin:/usr/sbin:/sbin, so a Homebrew ffmpeg would be invisible.
 const HOMEBREW_PATHS: &str = "/opt/homebrew/bin:/usr/local/bin";
+/// The backend's port when it's free. The editor's saved preferences (theme,
+/// and anything else kept in the webview's storage) belong to its exact
+/// address, so a new random port every launch forgot them every launch.
+const PREFERRED_PORT: u16 = 51734;
 /// The sidecar's stdout/stderr log is rotated past this size.
 const LOG_ROTATE_BYTES: u64 = 10_000_000;
 /// The launch update check waits until the editor has loaded, so its prompt
@@ -105,8 +110,9 @@ fn start_backend(app: &AppHandle, folders: migrate::Folders) -> Result<(), Box<d
     fs::create_dir_all(&data_dir)?;
     fs::create_dir_all(&log_dir)?;
 
-    // A fresh free port and instance id per launch: a backend left over from
-    // an earlier launch can neither block this one nor be mistaken for it.
+    // The usual port when it's free (else any free one) and a fresh instance
+    // id per launch: a backend left over from an earlier launch can neither
+    // block this one nor be mistaken for it.
     let port = free_port()?;
     let instance = instance_id();
 
@@ -128,9 +134,12 @@ fn start_backend(app: &AppHandle, folders: migrate::Folders) -> Result<(), Box<d
     let log_path = rotated_log(&log_dir);
     append_log(&log_path, &format!("\n──── launch {instance} · v{version} · port {port} ────\n"));
 
+    // The backend is a folder in Resources (backend/build_sidecar.sh): unpacked
+    // once at install, it starts in under a second.
+    let backend = app.path().resource_dir()?.join("backend").join("movelo-backend");
     let mut command = app
         .shell()
-        .sidecar("movelo-backend")?
+        .command(backend)
         .env("PORT", port.to_string())
         // Without this Python block-buffers stdout into the pipe and the log stays empty.
         .env("PYTHONUNBUFFERED", "1")
@@ -173,7 +182,7 @@ fn start_backend(app: &AppHandle, folders: migrate::Folders) -> Result<(), Box<d
                             "backend-stopped",
                             BackendProblem {
                                 message: format!(
-                                    "The backend stopped unexpectedly (exit code {}).",
+                                    "The app's engine stopped unexpectedly (exit code {}).",
                                     payload.code.map_or("unknown".to_string(), |c| c.to_string())
                                 ),
                                 log_dir: log_dir_text.clone(),
@@ -207,7 +216,7 @@ fn start_backend(app: &AppHandle, folders: migrate::Folders) -> Result<(), Box<d
         let _ = window.emit(
             "backend-failed",
             BackendProblem {
-                message: format!("The backend didn't start within {} seconds.", READY_TIMEOUT.as_secs()),
+                message: format!("The app's engine didn't start within {} seconds.", READY_TIMEOUT.as_secs()),
                 log_dir: log_dir_text,
             },
         );
@@ -263,6 +272,9 @@ fn stop_backend(app: &AppHandle) {
 }
 
 fn free_port() -> std::io::Result<u16> {
+    if TcpListener::bind(("127.0.0.1", PREFERRED_PORT)).is_ok() {
+        return Ok(PREFERRED_PORT);
+    }
     Ok(TcpListener::bind("127.0.0.1:0")?.local_addr()?.port())
 }
 

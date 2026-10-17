@@ -193,6 +193,8 @@ _ORPHANABLE_STATUSES = [
     JobStatus.SYNTHESIZING,
     JobStatus.MIXING,
 ]
+# A background task is working on the job right now.
+RUNNING_STATUSES = frozenset(_ORPHANABLE_STATUSES)
 
 
 async def recover_orphaned_jobs() -> None:

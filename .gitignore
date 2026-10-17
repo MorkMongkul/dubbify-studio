@@ -91,6 +91,7 @@ node_modules/
 !.env.example
 backend/.env
 frontend/src-tauri/binaries/
+frontend/src-tauri/backend/
 
 # ── Tauri / Rust build cache ─────────────────────────────────
 frontend/src-tauri/target/
@@ -103,3 +104,4 @@ backend/backups/
 .playwright-mcp/
 # Static ffmpeg/ffprobe builds bundled into desktop releases (fetched per machine)
 vendor/ffmpeg/
+vendor/fribidi/

@@ -15,7 +15,7 @@ from app.models.models import ChatMessage, ChatProposedEdit, Project, Segment
 from app.schemas.schemas import (
     ChatMessageResponse, ChatProposedEditResponse, ChatSendRequest, ChatSendResponse,
 )
-from app.services.chat_agent import apply_edit_to_segment, naive_utcnow, run_chat_turn
+from app.services.chat_agent import apply_edit_to_segment, message_order, naive_utcnow, run_chat_turn
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ async def _get_project(project_id: str, db: AsyncSession) -> Project:
 async def list_messages(project_id: str, db: AsyncSession = Depends(get_db, scope="function")):
     await _get_project(project_id, db)
     result = await db.execute(
-        select(ChatMessage).where(ChatMessage.project_id == project_id).order_by(ChatMessage.created_at)
+        select(ChatMessage).where(ChatMessage.project_id == project_id).order_by(*message_order())
     )
     return result.scalars().all()
 

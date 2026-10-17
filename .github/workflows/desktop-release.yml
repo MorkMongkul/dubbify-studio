@@ -78,6 +78,17 @@ jobs:
           brew install nasm
           scripts/build-ffmpeg.sh ${{ matrix.target }}
 
+      # Burned-in Khmer subtitles are shaped through FriBiDi (backend/build_sidecar.sh
+      # stops without it).
+      - name: Restore the FriBiDi build
+        uses: actions/cache@v6
+        with:
+          path: vendor/fribidi/${{ matrix.target }}
+          key: fribidi-${{ matrix.target }}-${{ hashFiles('scripts/build-fribidi.sh') }}
+
+      - name: Build FriBiDi (LGPL)
+        run: scripts/build-fribidi.sh ${{ matrix.target }}
+
       - name: Backend build environment
         run: |
           python -m venv backend/venv_clean
@@ -149,14 +160,19 @@ jobs:
           python3 scripts/updater-manifest.py "$GITHUB_REF_NAME" dist > dist/latest.json
           cat dist/latest.json
 
-      # The LGPL is satisfied by offering the FFmpeg source from the same place
-      # as the binaries that include it.
-      - name: Add the FFmpeg source
+      # The LGPL is satisfied by offering the FFmpeg and FriBiDi source from
+      # the same place as the binaries that include them.
+      - name: Add the FFmpeg and FriBiDi source
         run: |
           version=$(sed -n 's/^FFMPEG_VERSION="\(.*\)"/\1/p' scripts/build-ffmpeg.sh)
           sha=$(sed -n 's/^FFMPEG_SHA256="\(.*\)"/\1/p' scripts/build-ffmpeg.sh)
           curl -fL -o "dist/ffmpeg-$version.tar.xz" "https://ffmpeg.org/releases/ffmpeg-$version.tar.xz"
           echo "$sha  dist/ffmpeg-$version.tar.xz" | sha256sum -c -
+          version=$(sed -n 's/^FRIBIDI_VERSION="\(.*\)"/\1/p' scripts/build-fribidi.sh)
+          sha=$(sed -n 's/^FRIBIDI_SHA256="\(.*\)"/\1/p' scripts/build-fribidi.sh)
+          curl -fL -o "dist/fribidi-$version.tar.xz" \
+            "https://github.com/fribidi/fribidi/releases/download/v$version/fribidi-$version.tar.xz"
+          echo "$sha  dist/fribidi-$version.tar.xz" | sha256sum -c -
 
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
         with:

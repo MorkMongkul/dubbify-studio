@@ -115,6 +115,11 @@ export interface Job {
   // Computed by backend — HTTP URLs served via /uploads static mount
   video_url?: string | null
   output_url?: string | null
+  // null until the music/voices tracks exist; false when separation failed
+  // and the original audio stands in for both
+  stems_separated?: boolean | null
+  // changes when the tracks are made again — appended to their URLs
+  stems_version?: number
   created_at: string
   completed_at?: string | null
 }
@@ -242,6 +247,9 @@ export interface TTSResponse {
   duration_secs: number
   success: boolean
   error: string
+  engine?: string
+  // Gemini's stock voice stood in because the voice server didn't respond
+  backup_voice?: boolean
 }
 
 export interface HealthResponse {
