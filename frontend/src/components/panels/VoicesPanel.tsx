@@ -51,9 +51,8 @@ export function VoicesPanel() {
   const [previewText, setPreviewText] = useState(PREVIEW_DEFAULT)
   const [previewingId, setPreviewingId] = useState<string | null>(null)
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({})
-  // The line each preview says, and a counter that restarts its player on replay
+  // The line each generated preview says
   const [previewTexts, setPreviewTexts] = useState<Record<string, string>>({})
-  const [replays, setReplays] = useState<Record<string, number>>({})
   const [editingVoiceId, setEditingVoiceId] = useState<string | null>(null)
   const [editingVoiceName, setEditingVoiceName] = useState('')
   const [search, setSearch] = useState('')
@@ -113,12 +112,6 @@ export function VoicesPanel() {
 
   const handlePreview = async (voice: Voice) => {
     if (!previewText.trim()) return toast.error('Add a preview line first')
-    if (previewUrls[voice.id] && previewTexts[voice.id] === previewText) {
-      // Same line already generated: play it again, no new generation
-      sampleRef.current?.pause()
-      setReplays((r) => ({ ...r, [voice.id]: (r[voice.id] ?? 0) + 1 }))
-      return
-    }
     setPreviewingId(voice.id)
     try {
       const blob = await previewVoice.mutateAsync({ id: voice.id, text: previewText })
@@ -128,6 +121,7 @@ export function VoicesPanel() {
         return { ...prev, [voice.id]: url }
       })
       setPreviewTexts((prev) => ({ ...prev, [voice.id]: previewText }))
+      startPlaying(voice.id, url)
     } catch (e) {
       toast.error(errorMessage(e, 'Preview failed — the voice backend may be cold-starting. Try again.'))
     } finally {
@@ -144,20 +138,66 @@ export function VoicesPanel() {
 
   useEffect(() => () => sampleRef.current?.pause(), [])
 
-  const playSample = (v: Voice) => {
+  // What a voice can play right now: a preview it already made of the current
+  // line, or (with the default line) its own sample clip. Otherwise Preview
+  // has to generate one first.
+  const playableUrl = (v: Voice): string | null => {
+    if (previewUrls[v.id] && previewTexts[v.id] === previewText) return previewUrls[v.id]
+    if (previewText === PREVIEW_DEFAULT && v.reference_audio_url) return `${v.reference_audio_url}?v=${v.seed}`
+    return null
+  }
+
+  function startPlaying(id: string, url: string) {
     sampleRef.current?.pause()
-    if (playingSampleId === v.id || !v.reference_audio_url) {
-      setPlayingSampleId(null)
-      return
-    }
-    const audio = new Audio(`${v.reference_audio_url}?v=${v.seed}`)
-    audio.onended = () => setPlayingSampleId((id) => (id === v.id ? null : id))
+    const audio = new Audio(url)
+    audio.onended = () => setPlayingSampleId((cur) => (cur === id ? null : cur))
     audio.play().catch(() => {
       setPlayingSampleId(null)
       toast.error("Couldn't play this voice")
     })
     sampleRef.current = audio
-    setPlayingSampleId(v.id)
+    setPlayingSampleId(id)
+  }
+
+  const togglePlay = (id: string, url: string) => {
+    if (playingSampleId === id) {
+      sampleRef.current?.pause()
+      setPlayingSampleId(null)
+    } else {
+      startPlaying(id, url)
+    }
+  }
+
+  /** One button per voice: Play when it already has audio, Preview to make it. */
+  const voiceButton = (v: Voice, compact: boolean) => {
+    const url = playableUrl(v)
+    const size = compact ? 'h-6 px-2.5' : 'h-7 px-2.5'
+    if (url) {
+      const playing = playingSampleId === v.id
+      return (
+        <button
+          onClick={() => togglePlay(v.id, url)}
+          aria-label={playing ? `Stop ${v.name}` : `Play ${v.name}`}
+          className={cn('flex items-center gap-1 rounded-md bg-brand-400 hover:bg-brand-300 text-white text-[10px] font-semibold transition-colors', size)}
+        >
+          {playing ? <Square size={9} fill="currentColor" /> : <Play size={9} fill="currentColor" />}
+          {playing ? 'Stop' : 'Play'}
+        </button>
+      )
+    }
+    const isPreviewing = previewingId === v.id
+    return (
+      <Tooltip content="Make a sample of this voice saying the preview line (a few seconds)">
+        <button
+          onClick={() => handlePreview(v)}
+          disabled={previewingId !== null}
+          className={cn('flex items-center gap-1 rounded-md bg-brand-400 hover:bg-brand-300 text-white text-[10px] font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-colors', size)}
+        >
+          {isPreviewing ? <Loader2 size={10} className="animate-spin" /> : <AudioLines size={10} />}
+          {isPreviewing ? 'Generating…' : 'Preview'}
+        </button>
+      </Tooltip>
+    )
   }
 
   const visibleVoices = useMemo(() => {
@@ -429,7 +469,7 @@ export function VoicesPanel() {
             placeholder="Type a line to hear…"
             className="w-full rounded-lg bg-ink-950/60 border border-white/10 px-2.5 h-8 text-xs text-white placeholder-white/25 focus:outline-none focus:border-brand-400 transition-all"
           />
-          <p className="text-[9.5px] text-white/30 mt-1">Play is instant: the voice's own clip. Try line says this line in a voice, which takes a few seconds.</p>
+          <p className="text-[9.5px] text-white/30 mt-1">Preview makes a sample of a voice saying this line. Once a voice has a sample, Play plays it straight away.</p>
         </div>
 
         {/* ── Search + filter ─────────────────────────────────── */}
@@ -498,7 +538,6 @@ export function VoicesPanel() {
         ) : (
           <div className="space-y-1.5">
             {myVisible.map((v) => {
-              const isPreviewing = previewingId === v.id
               const confirming = confirmDeleteId === v.id
               return (
                 <div
@@ -549,31 +588,7 @@ export function VoicesPanel() {
 
                   {/* Actions */}
                   <div className="flex items-center gap-1 mt-2">
-                    {v.reference_audio_url && (
-                      <button
-                        onClick={() => playSample(v)}
-                        aria-label={playingSampleId === v.id ? `Stop ${v.name}` : `Play ${v.name}`}
-                        className="flex items-center gap-1 px-2.5 h-7 rounded-md bg-brand-400 hover:bg-brand-300 text-white text-[10px] font-semibold transition-colors"
-                      >
-                        {playingSampleId === v.id ? <Square size={9} fill="currentColor" /> : <Play size={10} fill="currentColor" />}
-                        {playingSampleId === v.id ? 'Stop' : 'Play'}
-                      </button>
-                    )}
-                    <Tooltip content="Say the preview line in this voice (takes a few seconds)">
-                      <button
-                        onClick={() => handlePreview(v)}
-                        disabled={previewingId !== null}
-                        className={cn(
-                          'flex items-center gap-1 px-2 h-7 rounded-md text-[10px] font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-colors',
-                          v.reference_audio_url
-                            ? 'bg-white/[0.06] hover:bg-white/[0.12] text-white/80'
-                            : 'bg-brand-400 hover:bg-brand-300 text-white',
-                        )}
-                      >
-                        {isPreviewing ? <Loader2 size={11} className="animate-spin" /> : <AudioLines size={10} />}
-                        {isPreviewing ? 'Generating…' : 'Try line'}
-                      </button>
-                    </Tooltip>
+                    {voiceButton(v, false)}
 
                     <div className="flex-1" />
 
@@ -641,19 +656,6 @@ export function VoicesPanel() {
                     )}
                   </div>
 
-                  <AnimatePresence>
-                    {previewUrls[v.id] && (
-                      <motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.18 }}
-                        className="overflow-hidden"
-                      >
-                        <audio key={replays[v.id] ?? 0} controls autoPlay src={previewUrls[v.id]} className="w-full mt-2 h-8" />
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
                 </div>
               )
             })}
@@ -678,30 +680,11 @@ export function VoicesPanel() {
                     </p>
                     <div className="mt-2 space-y-1">
                       {group.map((v) => {
-                        const isPreviewing = previewingId === v.id
-                        const playing = playingSampleId === v.id
                         return (
                           <div key={v.id}>
                             <div className="flex items-center gap-1">
                               <span className="text-[11px] text-white/75 w-12 shrink-0">Take {v.name.slice(-1)}</span>
-                              <button
-                                onClick={() => playSample(v)}
-                                aria-label={playing ? `Stop ${v.name}` : `Play ${v.name}`}
-                                className="flex items-center gap-1 px-2.5 h-6 rounded-md bg-brand-400 hover:bg-brand-300 text-white text-[10px] font-semibold transition-colors"
-                              >
-                                {playing ? <Square size={9} fill="currentColor" /> : <Play size={9} fill="currentColor" />}
-                                {playing ? 'Stop' : 'Play'}
-                              </button>
-                              <Tooltip content="Say the preview line in this voice (takes a few seconds)">
-                                <button
-                                  onClick={() => handlePreview(v)}
-                                  disabled={previewingId !== null}
-                                  className="flex items-center gap-1 px-2 h-6 rounded-md bg-white/[0.06] hover:bg-white/[0.12] text-white/80 text-[10px] font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                                >
-                                  {isPreviewing ? <Loader2 size={10} className="animate-spin" /> : <AudioLines size={10} />}
-                                  {isPreviewing ? 'Generating…' : 'Try line'}
-                                </button>
-                              </Tooltip>
+                              {voiceButton(v, true)}
                               <div className="flex-1" />
                               <Tooltip content="Copy voice ID">
                                 <button
@@ -713,9 +696,6 @@ export function VoicesPanel() {
                                 </button>
                               </Tooltip>
                             </div>
-                            {previewUrls[v.id] && (
-                              <audio key={replays[v.id] ?? 0} controls autoPlay src={previewUrls[v.id]} className="w-full mt-1.5 h-8" />
-                            )}
                           </div>
                         )
                       })}
