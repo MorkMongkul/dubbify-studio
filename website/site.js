@@ -1,15 +1,35 @@
-// Dubify Studio website: download links and the copy button.
+// Movelo website: download links, the copy button, and old links.
 // Everything here is an enhancement: without JavaScript both download buttons
 // link straight to the latest release.
 
 const REPO = "MorkMongkul/dubbify-studio";
+// Matched by suffix too, so a release that still has the old Dubify names works.
 const ASSETS = {
-  arm: { name: "Dubify-Studio-Apple-Silicon.dmg", pattern: /(aarch64|arm64|apple-silicon)\.dmg$/i },
-  intel: { name: "Dubify-Studio-Intel.dmg", pattern: /(x64|x86_64|intel)\.dmg$/i },
+  arm: { name: "Movelo-Studio-Apple-Silicon.dmg", pattern: /(aarch64|arm64|apple-silicon)\.dmg$/i },
+  intel: { name: "Movelo-Studio-Intel.dmg", pattern: /(x64|x86_64|intel)\.dmg$/i },
 };
 
+followOldLinks();
+openLinkedQuestion();
 setUpDownloads();
 setUpCopyButtons();
+
+// The site used to be one page; its sections now live on the Studio page.
+function followOldLinks() {
+  const moved = { "#download": "#download", "#install": "#install", "#questions": "#faq" };
+  if (document.querySelector("[data-downloads]") || !moved[location.hash]) return;
+  location.replace(`studio.html${moved[location.hash]}`);
+}
+
+// A link to one of the questions (e.g. studio.html#from-dubify) opens its answer.
+function openLinkedQuestion() {
+  const open = () => {
+    const target = location.hash && document.getElementById(location.hash.slice(1));
+    if (target instanceof HTMLDetailsElement) target.open = true;
+  };
+  open();
+  window.addEventListener("hashchange", open);
+}
 
 async function setUpDownloads() {
   const section = document.querySelector("[data-downloads]");
@@ -46,7 +66,8 @@ async function setUpDownloads() {
   const date = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long", year: "numeric" }).format(
     new Date(release.published_at),
   );
-  section.querySelector("[data-release]").textContent = `Version ${version}, released ${date}.`;
+  section.querySelector("[data-release]").textContent =
+    `Version ${version}, released ${date}. Free; needs macOS 11 or later.`;
 }
 
 function showNoRelease(section) {
@@ -58,18 +79,21 @@ function showNoRelease(section) {
   });
 }
 
-// The matching download becomes the bright one and is labelled "This Mac".
+// The download for this Mac becomes the bright one and is labelled "This Mac".
 function markThisMac(section, arch) {
-  section.classList.add("knows-mac");
   for (const link of section.querySelectorAll("[data-choice]")) {
     const isThisMac = link.dataset.choice === arch;
-    link.classList.toggle("is-this-mac", isThisMac);
+    link.classList.toggle("btn-coral", isThisMac);
+    link.classList.toggle("btn-line", !isThisMac);
     link.querySelector(".dl-badge").hidden = !isThisMac;
   }
+  // Put this Mac's download first.
+  const mine = section.querySelector(`[data-choice="${arch}"]`);
+  mine.parentElement.prepend(mine);
 }
 
 // Only says which chip a Mac has when the browser is sure. Safari doesn't
-// tell, and then both downloads stay equal.
+// tell, and then both downloads stay as they are.
 async function detectMac() {
   // Desktop Mac browsers say "Macintosh"; iPhones say "like Mac OS X", and
   // iPads pass as Macs but have a touch screen.

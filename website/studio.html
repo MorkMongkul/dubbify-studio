@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Movelo Studio: dub Chinese videos into Khmer on your Mac</title>
+  <meta name="description" content="A Mac app that transcribes and translates every line into Khmer, gives each character a natural Khmer voice, and keeps the original music. For Apple Silicon and Intel Macs.">
+  <meta name="theme-color" content="#FFFFFF">
+  <link rel="icon" href="assets/studio-favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+  <link rel="manifest" href="site.webmanifest">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Movelo">
+  <meta property="og:title" content="Movelo Studio: give Chinese videos a Khmer voice">
+  <meta property="og:description" content="A Mac app for dubbing Chinese videos into Khmer: translate every line, voice each character, keep the original music.">
+  <meta property="og:image" content="https://morkmongkul.github.io/dubbify-studio/assets/og-studio.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https://morkmongkul.github.io/dubbify-studio/assets/og-studio.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Sora:wght@600;700&family=Noto+Sans+Khmer:wght@400;600&display=swap">
+  <link rel="stylesheet" href="styles.css">
+  <script src="site.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="studio-header">
+    <div class="wrap studio-nav">
+      <a class="logo" href="studio.html" aria-label="Movelo Studio"><img src="assets/movelo-studio-logo-on-light.svg" alt="Movelo Studio" width="161" height="30"></a>
+      <nav class="nav-links hide-sm" aria-label="Movelo Studio">
+        <a class="lnk" href="#features">Features</a>
+        <a class="lnk" href="#dubbing">Dubbing</a>
+        <a class="lnk" href="#install">Install</a>
+        <a class="lnk" href="#faq">Questions</a>
+      </nav>
+      <div class="nav-end">
+        <a class="lnk hide-sm" href="./">← All of Movelo</a>
+        <a class="btn btn-coral btn-small" href="#download">Download</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="studio-hero" aria-labelledby="hero-title">
+      <div class="wrap studio-hero-grid">
+        <div class="studio-hero-copy">
+          <p class="product-tag"><img src="assets/studio-icon.svg" alt="" width="64" height="64"> Movelo Studio for Mac</p>
+          <h1 class="studio-title" id="hero-title">Chinese videos,<br><span>Khmer voices.</span></h1>
+          <p class="studio-lede">A Mac app for dubbing Chinese dramas, short videos and ads into Khmer. It translates every line, gives each character a natural voice and keeps the original music.</p>
+
+          <div class="downloads" id="download" data-downloads>
+            <p class="notice" data-not-mac hidden>Movelo Studio runs on Macs. Open this page on your Mac to download it.</p>
+            <p class="notice" data-no-release hidden>The next release is almost ready. Follow <a href="https://github.com/MorkMongkul/dubbify-studio/releases">releases on GitHub</a>.</p>
+            <div class="download-buttons">
+              <a class="btn btn-coral dl" data-choice="arm" data-asset="arm" href="https://github.com/MorkMongkul/dubbify-studio/releases/latest/download/Movelo-Studio-Apple-Silicon.dmg">
+                <span class="dl-main"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>Download for Apple Silicon</span>
+                <span class="dl-meta">M1 or newer<span class="dl-size" data-size="arm"></span></span>
+                <span class="dl-badge" hidden>This Mac</span>
+              </a>
+              <a class="btn btn-line dl" data-choice="intel" data-asset="intel" href="https://github.com/MorkMongkul/dubbify-studio/releases/latest/download/Movelo-Studio-Intel.dmg">
+                <span class="dl-main"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>Download for Intel</span>
+                <span class="dl-meta">Intel processor<span class="dl-size" data-size="intel"></span></span>
+                <span class="dl-badge" hidden>This Mac</span>
+              </a>
+            </div>
+            <div class="download-notes">
+              <p data-release>Free. Needs macOS 11 or later.</p>
+              <details class="which-mac">
+                <summary>Which one is my Mac?</summary>
+                <p>Open the Apple menu and choose About This Mac. A chip such as Apple M1, M2 or M4 means Apple Silicon; a processor made by Intel means Intel.</p>
+              </details>
+            </div>
+          </div>
+        </div>
+
+        <div class="studio-mock" role="img" aria-label="A scene with its Khmer subtitle, the episode's lines in Chinese and Khmer with each speaker, and the original and Khmer voice tracks.">
+          <div class="mock-video"><span class="badge">KM · dubbed</span><span class="sub" lang="km">ទីបំផុតបងក៏ត្រឡប់មកវិញ។</span></div>
+          <span class="mock-label">TRANSCRIPT</span>
+          <div class="mock-lines">
+            <div class="mock-line is-active" style="--dot: #059669"><span class="who">Xiaoyu</span><span class="src" lang="zh-Hans">你终于回来了。</span><span class="dst" lang="km">ទីបំផុតបងក៏ត្រឡប់មកវិញ។</span></div>
+            <div class="mock-line" style="--dot: #2563EB"><span class="who">Jun</span><span class="src" lang="zh-Hans">对不起，让你等了这么久。</span><span class="dst" lang="km">សុំទោសដែលធ្វើឲ្យអូនរង់ចាំយូរ។</span></div>
+          </div>
+          <div class="mock-tracks">
+            <div class="mock-status"><span>6 lines, 2 voices</span><b>5 approved</b></div>
+            <div class="mock-track"><span>ZH</span><span class="wave"></span></div>
+            <div class="mock-track dub"><span>KM</span><span class="wave"></span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="wrap">
+        <ol class="workflow">
+          <li><h3>Import</h3><p>Drop in a video. The dialogue is separated from the music.</p></li>
+          <li><h3>Transcribe</h3><p>Every line, timed and matched to its speaker.</p></li>
+          <li><h3>Translate</h3><p>Into Khmer, with every line yours to edit.</p></li>
+          <li><h3>Dub and export</h3><p>Natural voices over the original music, as an MP4.</p></li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="deep-dives" id="features" aria-label="Features">
+      <div class="wrap">
+        <div class="deep">
+          <div>
+            <p class="eyebrow">Transcript</p>
+            <h2 class="section-title section-title-sm">Every line timed, labelled and translated</h2>
+            <p class="body-lg">Studio separates the dialogue from the music, transcribes each line and works out who is speaking, then translates it into Khmer with the scene in view.</p>
+            <ul class="ticks">
+              <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>Start from embedded or .srt subtitles instead</li>
+              <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>Detect speakers again at any time, without losing edits</li>
+              <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>Translate missed lines without touching the ones you changed</li>
+            </ul>
+          </div>
+          <div class="card" role="img" aria-label="Three lines of the transcript, each with its time, speaker, Chinese original and Khmer translation; one is marked as edited.">
+            <div class="t-head"><span>Rainy Season, episode 1</span><span>6 lines</span></div>
+            <div class="t-rows">
+              <div class="t-row" style="--dot: #059669"><span class="time">0:01</span><span class="who">Xiaoyu</span><span class="src" lang="zh-Hans">你终于回来了。</span><span class="dst" lang="km">ទីបំផុតបងក៏ត្រឡប់មកវិញ។</span><span class="edited">Edited</span></div>
+              <div class="t-row" style="--dot: #2563EB"><span class="time">0:04</span><span class="who">Jun</span><span class="src" lang="zh-Hans">对不起，让你等了这么久。</span><span class="dst" lang="km">សុំទោសដែលធ្វើឲ្យអូនរង់ចាំយូរ។</span></div>
+              <div class="t-row" style="--dot: #059669"><span class="time">0:07</span><span class="who">Xiaoyu</span><span class="src" lang="zh-Hans">外面下雨了，快进屋吧。</span><span class="dst" lang="km">ខាងក្រៅភ្លៀងហើយ ឆាប់ចូលមកក្នុងផ្ទះទៅ។</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="dub-card dark" id="dubbing">
+          <div>
+            <p class="eyebrow">Dubbing</p>
+            <h2 class="section-title section-title-sm">A natural voice for every character</h2>
+            <p class="body-lg">Describe a voice, such as “warm, gentle young woman”, or clone one from a ten-second clip. Each character keeps their voice in every episode, and a single line can use a different one.</p>
+            <ul class="ticks">
+              <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>Voice design from a written description</li>
+              <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>Voice cloning from a short clip</li>
+              <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>Every line voiced at once, with live progress</li>
+            </ul>
+          </div>
+          <div class="lines" role="img" aria-label="Line 1 of 6: the Chinese original, its Khmer dub in Xiaoyu's warm voice, and the next line in Jun's calm voice.">
+            <div class="lines-head"><span>LINE 1 OF 6</span><span>00:00:01.00</span></div>
+            <div class="line-card"><small>ZH · original</small><p lang="zh-Hans">你终于回来了。</p></div>
+            <div class="line-card is-active"><small>KM · Xiaoyu, warm</small><p lang="km">ទីបំផុតបងក៏ត្រឡប់មកវិញ។</p></div>
+            <div class="line-card"><small>KM · Jun, calm</small><p lang="km">សុំទោសដែលធ្វើឲ្យអូនរង់ចាំយូរ។</p></div>
+            <div class="chips">
+              <span class="chip">Auto-fit on</span>
+              <span class="chip">Voice: designed</span>
+              <span class="chip chip-gold">Approve line</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="deep deep-reverse">
+          <div class="card export-panel" role="img" aria-label="An export in progress: Khmer voices over the original music, burned-in Khmer subtitles, a logo and a blur over the Chinese captions; 92% done.">
+            <div class="export-top"><span>Export</span><span>Rainy Season, episode 1</span></div>
+            <div class="toggles">
+              <div class="toggle">Khmer voices over the original music<i></i></div>
+              <div class="toggle">Burned-in Khmer subtitles<i></i></div>
+              <div class="toggle">Logo, top right<i></i></div>
+              <div class="toggle">Blur over the Chinese captions<i></i></div>
+            </div>
+            <div class="progress"><span></span></div>
+            <div class="export-file"><span>rainy-season-ep1.mp4</span><span>Mixing audio, 92%</span></div>
+          </div>
+          <div>
+            <p class="eyebrow">Export</p>
+            <h2 class="section-title section-title-sm">One click to a finished MP4</h2>
+            <p class="body-lg">Studio mixes the new voices over the original music and effects, burns in Khmer subtitles if you want them, adds your logo and blurs the original captions.</p>
+            <p class="body-lg">Set the layout up once and every new episode starts with it.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="all-features" aria-labelledby="everything-title">
+      <div class="wrap">
+        <h2 id="everything-title">Everything in the editor</h2>
+        <div class="mini-grid">
+          <div class="mini"><h3>Multi-lane timeline</h3><p>Drag, split and snap clips; undo anything.</p></div>
+          <div class="mini"><h3>Music separation</h3><p>The original soundtrack stays under the dub.</p></div>
+          <div class="mini"><h3>Transcription</h3><p>Every line timed, with its speaker.</p></div>
+          <div class="mini"><h3>Subtitle import</h3><p>Start from embedded or .srt subtitles.</p></div>
+          <div class="mini"><h3>Translation</h3><p>Gemini, with a free fallback for missed lines.</p></div>
+          <div class="mini"><h3>Line review</h3><p>Edit and approve every line before it's voiced.</p></div>
+          <div class="mini"><h3>Voice design</h3><p>Describe a voice in words.</p></div>
+          <div class="mini"><h3>Voice cloning</h3><p>From a short clip of a voice.</p></div>
+          <div class="mini"><h3>Auto-fit</h3><p>Long lines speed up to end on time.</p></div>
+          <div class="mini"><h3>Subtitles and logos</h3><p>Placed on a live preview, burned in on export.</p></div>
+          <div class="mini"><h3>Blur boxes</h3><p>Hide the original captions.</p></div>
+          <div class="mini"><h3>Assistant</h3><p>Suggests line edits you approve one by one.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section needs" aria-labelledby="needs-title">
+      <div class="wrap">
+        <p class="eyebrow">What you need</p>
+        <h2 class="section-title" id="needs-title">Free to download. Bring your own key.</h2>
+        <div class="need-grid">
+          <div class="need"><h3>A Mac</h3><p>macOS 11 or later, with Apple Silicon or an Intel processor.</p></div>
+          <div class="need"><h3>An internet connection</h3><p>The AI runs in the cloud: Google's Gemini for transcription and translation, services on Hugging Face for music separation and voices.</p></div>
+          <div class="need"><h3>A Gemini API key</h3><p>Create one in <a href="https://aistudio.google.com/apikey">Google AI Studio</a> and paste it into Settings. Studio uses it only to talk to Gemini.</p></div>
+        </div>
+        <p class="needs-note">Your projects, videos and exports stay on your Mac.</p>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="install-title">
+      <div class="wrap install" id="install">
+        <div>
+          <p class="eyebrow">Install</p>
+          <h2 class="section-title" id="install-title">Installing it</h2>
+          <p class="body-lg">Movelo Studio isn't notarized by Apple yet, so macOS asks you to confirm it the first time. After that it opens like any other app.</p>
+          <ol class="install-steps">
+            <li><span>Open the download and drag Movelo Studio into Applications.</span></li>
+            <li><span>Open it. When macOS says it can't verify the app, click Done.</span></li>
+            <li><span>In System Settings, open Privacy &amp; Security, click Open Anyway and confirm with your password.</span></li>
+            <li><span>In the app, open Settings and paste your Gemini API key from <a href="https://aistudio.google.com/apikey">Google AI Studio</a>.</span></li>
+          </ol>
+          <details class="fix">
+            <summary>macOS says the app is damaged?</summary>
+            <p>That's macOS's download quarantine, not a broken file. Run this in Terminal, then open the app again.</p>
+            <div class="command">
+              <code id="unquarantine">xattr -dr com.apple.quarantine "/Applications/Movelo Studio.app"</code>
+              <button type="button" class="copy-button" data-copy="unquarantine" hidden>Copy</button>
+            </div>
+            <p class="sr-only" role="status" data-copy-status></p>
+          </details>
+        </div>
+        <div class="mac-window" aria-hidden="true">
+          <div class="mac-titlebar"><span></span><span></span><span></span><p>Privacy &amp; Security</p></div>
+          <div class="mac-body">
+            <p class="mac-heading">Security</p>
+            <div class="mac-row">
+              <p>“Movelo Studio” was blocked to protect your Mac.</p>
+              <span class="mac-button">Open Anyway</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-follow" aria-labelledby="learn-title">
+      <div class="wrap">
+        <p class="eyebrow">Resources</p>
+        <h2 class="section-title" id="learn-title">Get going in Studio</h2>
+        <div class="resources">
+          <a class="resource" href="#install">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="6 4 20 12 6 20 6 4"/></svg>
+            <h3>Install on your Mac</h3>
+            <p>First launch, Open Anyway, and where your API key goes.</p>
+          </a>
+          <a class="resource" href="https://aistudio.google.com/apikey">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 9.8-9.8"/><path d="m16 7 3 3"/><path d="m19 4 2 2"/></svg>
+            <h3>Get a Gemini API key</h3>
+            <p>Create one in Google AI Studio, then paste it into Settings.</p>
+          </a>
+          <a class="resource" href="https://github.com/MorkMongkul/dubbify-studio/releases">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg>
+            <h3>Release notes</h3>
+            <p>What changed in each version.</p>
+          </a>
+          <a class="resource" href="https://github.com/MorkMongkul/dubbify-studio/issues">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16h.01"/></svg>
+            <h3>Report a problem</h3>
+            <p>Tell us what went wrong. The app's logs help.</p>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-follow" aria-labelledby="faq-title">
+      <div class="wrap faq-layout" id="faq">
+        <div class="faq-intro">
+          <h2 class="section-title" id="faq-title">Questions</h2>
+          <p>Anything else? Ask on <a href="https://github.com/MorkMongkul/dubbify-studio/issues">GitHub</a>.</p>
+        </div>
+        <div class="faq">
+          <details id="from-dubify">
+            <summary>I use Dubify Studio. What changes?<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>
+            <p>Dubify Studio is now called Movelo Studio. Your copy updates itself as usual; after the update it's called Movelo Studio, and your projects, voices and settings come with it. There's nothing to reinstall.</p>
+          </details>
+          <details>
+            <summary>Does it run on Windows?<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>
+            <p>Not yet. Movelo Studio is for Macs with macOS 11 or later.</p>
+          </details>
+          <details>
+            <summary>Which languages does it support?<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>
+            <p>It's built for Chinese to Khmer: Chinese speech in, Khmer subtitles and voices out.</p>
+          </details>
+          <details>
+            <summary>Do my videos leave my Mac?<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>
+            <p>Your projects, videos and exports are saved on your Mac. To do the AI work, the app sends audio and text to cloud services: Google's Gemini API, using your key, for transcription and translation, and services hosted on Hugging Face for separating the music and generating voices.</p>
+          </details>
+          <details>
+            <summary>How do updates work?<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>
+            <p>Movelo Studio checks for updates when it opens and installs them with one click. You can also choose Check for Updates… in the Movelo Studio menu. Version 0.1.0 can't update itself: download the latest version once and replace it. Your projects are kept.</p>
+          </details>
+          <details>
+            <summary>Why does it take a moment to open?<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>
+            <p>Each time it opens, Movelo Studio starts its own processing engine in the background. That can take up to a minute; you'll see a start-up screen until it's ready.</p>
+          </details>
+          <details>
+            <summary>Where are my projects stored?<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>
+            <p>In <code>~/Library/Application Support/com.movelo.studio</code>. If something goes wrong, the logs in <code>~/Library/Logs/com.movelo.studio</code> show what happened.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <section class="studio-cta" aria-labelledby="cta-title">
+      <div class="wrap">
+        <div class="cta-card">
+          <div>
+            <h2 id="cta-title">Give your next video a Khmer voice.</h2>
+            <p>Free to download for Mac.</p>
+          </div>
+          <a class="btn btn-ink" href="#download">Download for Mac</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="studio-footer dark">
+    <div class="wrap">
+      <img src="assets/movelo-studio-logo-on-dark.svg" alt="Movelo Studio" width="150" height="28">
+      <nav aria-label="Footer">
+        <a class="lnk" href="./">Movelo</a>
+        <a class="lnk" href="https://github.com/MorkMongkul/dubbify-studio/releases">Release notes</a>
+        <a class="lnk" href="https://github.com/MorkMongkul/dubbify-studio">Source code</a>
+        <a class="lnk" href="https://github.com/MorkMongkul/dubbify-studio/issues">Report a problem</a>
+      </nav>
+      <span>© 2026 Movelo</span>
+      <p class="legal">Movelo Studio includes FFmpeg, licensed under the LGPL 2.1. Its source code is published with every release.</p>
+    </div>
+  </footer>
+</body>
+</html>
