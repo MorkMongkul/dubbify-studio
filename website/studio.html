@@ -80,11 +80,11 @@
           <div class="mock-video"><span class="badge">KM · dubbed</span><span class="sub" lang="km">ទីបំផុតបងក៏ត្រឡប់មកវិញ។</span></div>
           <span class="mock-label">TRANSCRIPT</span>
           <div class="mock-lines">
-            <div class="mock-line is-active" style="--dot: #059669"><span class="who">Xiaoyu</span><span class="src" lang="zh-Hans">你终于回来了。</span><span class="dst" lang="km">ទីបំផុតបងក៏ត្រឡប់មកវិញ។</span></div>
-            <div class="mock-line" style="--dot: #2563EB"><span class="who">Jun</span><span class="src" lang="zh-Hans">对不起，让你等了这么久。</span><span class="dst" lang="km">សុំទោសដែលធ្វើឲ្យអូនរង់ចាំយូរ។</span></div>
+            <div class="mock-line is-active" style="--dot: #059669"><span class="who">Xiaoyu</span><span class="dst" lang="km">ទីបំផុតបងក៏ត្រឡប់មកវិញ។</span><span class="src" lang="zh-Hans">你终于回来了。</span></div>
+            <div class="mock-line" style="--dot: #2563EB"><span class="who">Jun</span><span class="dst" lang="km">សុំទោសដែលធ្វើឲ្យអូនរង់ចាំយូរ។</span><span class="src" lang="zh-Hans">对不起，让你等了这么久。</span></div>
           </div>
           <div class="mock-tracks">
-            <div class="mock-status"><span>6 lines, 2 voices</span><b>5 approved</b></div>
+            <div class="mock-status"><span>6 lines, 2 voices</span><b>All voiced</b></div>
             <div class="mock-track"><span>ZH</span><span class="wave"></span></div>
             <div class="mock-track dub"><span>KM</span><span class="wave"></span></div>
           </div>
@@ -114,12 +114,12 @@
               <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>Translate missed lines without touching the ones you changed</li>
             </ul>
           </div>
-          <div class="card" role="img" aria-label="Three lines of the transcript, each with its time, speaker, Chinese original and Khmer translation; one is marked as edited.">
+          <div class="card" role="img" aria-label="Three lines of the transcript, each with its time, speaker, Khmer translation and the Chinese original underneath.">
             <div class="t-head"><span>Rainy Season, episode 1</span><span>6 lines</span></div>
             <div class="t-rows">
-              <div class="t-row" style="--dot: #059669"><span class="time">0:01</span><span class="who">Xiaoyu</span><span class="src" lang="zh-Hans">你终于回来了。</span><span class="dst" lang="km">ទីបំផុតបងក៏ត្រឡប់មកវិញ។</span><span class="edited">Edited</span></div>
-              <div class="t-row" style="--dot: #2563EB"><span class="time">0:04</span><span class="who">Jun</span><span class="src" lang="zh-Hans">对不起，让你等了这么久。</span><span class="dst" lang="km">សុំទោសដែលធ្វើឲ្យអូនរង់ចាំយូរ។</span></div>
-              <div class="t-row" style="--dot: #059669"><span class="time">0:07</span><span class="who">Xiaoyu</span><span class="src" lang="zh-Hans">外面下雨了，快进屋吧。</span><span class="dst" lang="km">ខាងក្រៅភ្លៀងហើយ ឆាប់ចូលមកក្នុងផ្ទះទៅ។</span></div>
+              <div class="t-row" style="--dot: #059669"><span class="time">0:01</span><span class="who">Xiaoyu</span><span class="dst" lang="km">ទីបំផុតបងក៏ត្រឡប់មកវិញ។</span><span class="src" lang="zh-Hans">你终于回来了。</span></div>
+              <div class="t-row" style="--dot: #2563EB"><span class="time">0:04</span><span class="who">Jun</span><span class="dst" lang="km">សុំទោសដែលធ្វើឲ្យអូនរង់ចាំយូរ។</span><span class="src" lang="zh-Hans">对不起，让你等了这么久。</span></div>
+              <div class="t-row" style="--dot: #059669"><span class="time">0:07</span><span class="who">Xiaoyu</span><span class="dst" lang="km">ខាងក្រៅភ្លៀងហើយ ឆាប់ចូលមកក្នុងផ្ទះទៅ។</span><span class="src" lang="zh-Hans">外面下雨了，快进屋吧。</span></div>
             </div>
           </div>
         </div>
@@ -143,7 +143,7 @@
             <div class="chips">
               <span class="chip">Auto-fit on</span>
               <span class="chip">Voice: designed</span>
-              <span class="chip chip-gold">Approve line</span>
+              <span class="chip chip-gold">Regenerate</span>
             </div>
           </div>
         </div>
@@ -179,7 +179,7 @@
           <div class="mini"><h3>Transcription</h3><p>Every line timed, with its speaker.</p></div>
           <div class="mini"><h3>Subtitle import</h3><p>Start from embedded or .srt subtitles.</p></div>
           <div class="mini"><h3>Translation</h3><p>Gemini, with a free fallback for missed lines.</p></div>
-          <div class="mini"><h3>Line review</h3><p>Edit and approve every line before it's voiced.</p></div>
+          <div class="mini"><h3>Line review</h3><p>Edit any line, with the original underneath.</p></div>
           <div class="mini"><h3>Voice design</h3><p>Describe a voice in words.</p></div>
           <div class="mini"><h3>Voice cloning</h3><p>From a short clip of a voice.</p></div>
           <div class="mini"><h3>Auto-fit</h3><p>Long lines speed up to end on time.</p></div>
@@ -295,8 +295,8 @@
             <p>Movelo Studio checks for updates when it opens and installs them with one click. You can also choose Check for Updates… in the Movelo Studio menu. Version 0.1.0 can't update itself: download the latest version once and replace it. Your projects are kept.</p>
           </details>
           <details>
-            <summary>Why does it take a moment to open?<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>
-            <p>Each time it opens, Movelo Studio starts its own processing engine in the background. That can take up to a minute; you'll see a start-up screen until it's ready.</p>
+            <summary>Why is the first launch slower?<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>
+            <p>The first time it opens after installing or updating, macOS checks the app, which takes about 15 seconds. After that it opens in a second or two.</p>
           </details>
           <details>
             <summary>Where are my projects stored?<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>

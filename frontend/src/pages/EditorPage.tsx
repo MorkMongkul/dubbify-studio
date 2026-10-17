@@ -286,8 +286,9 @@ export default function EditorPage() {
   // ── Stage flags ───────────────────────────────────────────────────────────
   const isRunning    = job ? isJobRunning(job.status) : false
   const statusConfig = job ? getJobStatusConfig(job.status) : null
-  const isStage1     = job?.status === 'pending' || job?.status === 'extracting' || job?.status === 'separating'
-  const isStemsReady = job?.status === 'stems_ready'
+  // A separation retry on an episode that already has lines keeps the editor open.
+  const isStage1     = (job?.status === 'pending' || job?.status === 'extracting' || job?.status === 'separating')
+    && segs.length === 0
   const isStage2     = job?.status === 'diarizing' || job?.status === 'transcribing' || job?.status === 'translating'
   // Mixing runs in the background — the editor stays fully usable during it
   const isMixing     = job?.status === 'mixing'
@@ -400,7 +401,7 @@ export default function EditorPage() {
   const startMix = useCallback((destination: string) => {
     if (!jobId) return
     exportPathRef.current = destination
-    exportToastRef.current = toast.loading(`Compiling dubbed video → ${destination.split('/').pop()}`)
+    exportToastRef.current = toast.loading(`Exporting ${destination.split('/').pop()}…`)
     mix({ jobId, muteOriginal: false, exportPath: destination }, {
       // The backend echoes back the destination it actually resolved (with any
       // leading `~` expanded), so the success toast can name the real file.
@@ -436,6 +437,16 @@ export default function EditorPage() {
     setExportPrompt(null)
     startMix(destination)
   }
+
+  // Live progress while the export runs (the backend reports it as it mixes
+  // the voices and encodes the video).
+  const exportProgress = job?.status === 'mixing' ? job.progress : null
+  useEffect(() => {
+    const tid = exportToastRef.current
+    if (tid == null || exportProgress == null) return
+    const name = exportPathRef.current?.split('/').pop() ?? 'video'
+    toast.loading(`Exporting ${name}… ${exportProgress}%`, { id: tid })
+  }, [exportProgress])
 
   // Watch for the mixing → completed transition. A failed mix returns the job
   // to `completed` with error_msg set (never `failed` — the session is fine).
@@ -520,7 +531,8 @@ export default function EditorPage() {
   const formatBytes = (b: number) => b < 1024 ? `${b} B` : b < 1048576 ? `${(b/1024).toFixed(1)} KB` : `${(b/1048576).toFixed(1)} MB`
 
   const hasTtsAudio  = segs.some(s => s.tts_audio_path !== '')
-  const canExport    = hasTtsAudio && !exporting
+  // Not while the episode is busy (e.g. separating again: its music track is about to change)
+  const canExport    = hasTtsAudio && !exporting && !isRunning
   const videoUrl     = job?.video_url ?? undefined
   // A failed job that still has segments (e.g. an interrupted re-run) stays
   // editable; only a session with nothing to show hides the editor.
@@ -724,10 +736,15 @@ export default function EditorPage() {
             onClick={handleExport}
             loading={exporting}
             disabled={!canExport}
+            title={
+              !hasTtsAudio ? 'Generate voices for some lines first'
+                : isRunning && !exporting ? 'Available when the current step finishes'
+                : undefined
+            }
             icon={<Download size={11} />}
             className={cn('shadow-glow transition-all', canExport ? 'bg-brand text-white hover:bg-brand-hover' : '')}
           >
-            Export
+            {exportProgress != null ? `Exporting ${exportProgress}%` : 'Export'}
           </Button>
         </header>
 
@@ -809,12 +826,13 @@ export default function EditorPage() {
                   <div className="w-full max-w-[800px] aspect-video shrink-0 bg-ink-900 relative flex items-center justify-center overflow-hidden">
                     {renderPipelineView(job)}
                   </div>
-                ) : jobId && job && (isStemsReady || isStage2 || isMixing || (!isRunning && !isStage1)) && videoUrl ? (
-                  // Stems ready, Stage 2, or completed — show video player.
+                ) : jobId && job && !isStage1 && videoUrl ? (
+                  // Stems ready, Stage 2, completed, exporting, or separating
+                  // again an episode that has lines — show the video player.
                   // No fixed aspect-ratio wrapper here: VideoPlayer sizes itself
                   // to the clip's real dimensions (landscape or portrait/Reel),
                   // bounded by the available pane space via max-w/max-h.
-                  <VideoPlayer videoUrl={videoUrl} segments={displaySegs} speakers={spks} className="max-w-full max-h-full" jobId={jobId} projectId={projectId} jobStatus={job.status} overlays={jobOverlays} bgmVolumeDb={job.bgm_volume_db} />
+                  <VideoPlayer videoUrl={videoUrl} segments={displaySegs} speakers={spks} className="max-w-full max-h-full" jobId={jobId} projectId={projectId} jobStatus={job.status} overlays={jobOverlays} bgmVolumeDb={job.bgm_volume_db} stemsVersion={job.stems_version} />
                 ) : jobId && job && !videoUrl ? (
                   <div className="flex flex-col items-center gap-4 text-center max-w-xs">
                     <Loader2 size={20} className="animate-spin text-brand-300" />

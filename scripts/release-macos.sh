@@ -4,14 +4,15 @@
 #   VENV=venv_clean_x86_64 scripts/release-macos.sh x86_64-apple-darwin       # Intel
 # (VENV is the backend build venv — see backend/build_sidecar.sh.)
 #
-# Steps: frontend → backend binary (embeds the frontend) → optional bundled
-# ffmpeg → Tauri bundle (.app and .dmg) under
+# Steps: frontend → backend folder (serves the frontend; goes into the app's
+# Resources) → optional bundled ffmpeg → Tauri bundle (.app and .dmg) under
 # frontend/src-tauri/target/<target>/release/bundle/.
 #
-# Bundled ffmpeg: build it once per architecture with scripts/build-ffmpeg.sh
-# (LGPL, no GPL parts) into vendor/ffmpeg/<target>/ (not committed). Without
-# it the app relies on an ffmpeg installed on the Mac (e.g. Homebrew) and says
-# so in Settings when there is none.
+# Once per architecture, build the LGPL libraries the app bundles (into
+# vendor/, not committed): scripts/build-fribidi.sh <target> (required — Khmer
+# subtitle shaping) and scripts/build-ffmpeg.sh <target> (optional — without
+# it the app relies on an ffmpeg installed on the Mac, e.g. Homebrew, and says
+# so in Settings when there is none).
 #
 # Signing and notarization — needed so other Macs open the app without a
 # Gatekeeper prompt — happen automatically when these are set (otherwise the
@@ -50,18 +51,35 @@ echo "▶ Movelo Studio $VERSION ($(git rev-parse --short HEAD)) for $TARGET"
 (cd frontend && npm run build)
 SKIP_FRONTEND_BUILD=1 VENV="${VENV:-venv_clean}" backend/build_sidecar.sh "$TARGET"
 
+# The backend is a folder (it starts in under a second) and goes into the
+# app's Resources; ffmpeg and ffprobe are single binaries next to the app's
+# executable. The LGPL requires its text and the build details to ship with
+# FFmpeg and FriBiDi.
 BIN_DIR=frontend/src-tauri/binaries
-EXTRA_CONFIG='{"bundle":{"externalBin":["binaries/movelo-backend"]}}'
+mkdir -p "$BIN_DIR"
+EXTERNAL_BIN=()
+RESOURCES=("THIRD-PARTY-NOTICES.md=THIRD-PARTY-NOTICES.md" "backend/=backend/")
 if [ -x "vendor/ffmpeg/$TARGET/ffmpeg" ] && [ -x "vendor/ffmpeg/$TARGET/ffprobe" ]; then
   cp "vendor/ffmpeg/$TARGET/ffmpeg" "$BIN_DIR/ffmpeg-$TARGET"
   cp "vendor/ffmpeg/$TARGET/ffprobe" "$BIN_DIR/ffprobe-$TARGET"
-  # The LGPL requires its text (and the build details) to ship with the binaries.
-  EXTRA_CONFIG="{\"bundle\":{\"externalBin\":[\"binaries/movelo-backend\",\"binaries/ffmpeg\",\"binaries/ffprobe\"],\"resources\":{\"THIRD-PARTY-NOTICES.md\":\"THIRD-PARTY-NOTICES.md\",\"../../vendor/ffmpeg/$TARGET/LICENSE.txt\":\"licenses/ffmpeg-LICENSE.txt\",\"../../vendor/ffmpeg/$TARGET/BUILD.txt\":\"licenses/ffmpeg-BUILD.txt\"}}}"
+  EXTERNAL_BIN+=(binaries/ffmpeg binaries/ffprobe)
+  RESOURCES+=("../../vendor/ffmpeg/$TARGET/LICENSE.txt=licenses/ffmpeg-LICENSE.txt"
+              "../../vendor/ffmpeg/$TARGET/BUILD.txt=licenses/ffmpeg-BUILD.txt")
   echo "▶ Bundling ffmpeg from vendor/ffmpeg/$TARGET (build it with scripts/build-ffmpeg.sh)"
 else
   echo "note: no vendor/ffmpeg/$TARGET — the app will rely on the Mac's own ffmpeg." >&2
   echo "      Build a bundleable one with: scripts/build-ffmpeg.sh $TARGET" >&2
 fi
+if [ -f "vendor/fribidi/$TARGET/LICENSE.txt" ]; then
+  RESOURCES+=("../../vendor/fribidi/$TARGET/LICENSE.txt=licenses/fribidi-LICENSE.txt"
+              "../../vendor/fribidi/$TARGET/BUILD.txt=licenses/fribidi-BUILD.txt")
+fi
+EXTRA_CONFIG="$(EXTERNAL_BIN="${EXTERNAL_BIN[*]-}" python3 - "${RESOURCES[@]}" <<'EOF'
+import json, os, sys
+resources = dict(item.split("=", 1) for item in sys.argv[1:])
+print(json.dumps({"bundle": {"externalBin": os.environ["EXTERNAL_BIN"].split(), "resources": resources}}))
+EOF
+)"
 
 if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
   # Ad-hoc signature ("-"): Apple Silicon refuses to run downloaded apps that

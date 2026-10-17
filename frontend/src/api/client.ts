@@ -147,6 +147,10 @@ export const jobs = {
   translateMissing: (jobId: string) =>
     api.post<{ lines: number }>(`/jobs/${jobId}/translate`).then((r) => r.data),
 
+  // Separate music and voices again after the service failed; lines and voices are kept.
+  retrySeparation: (jobId: string) =>
+    api.post(`/jobs/${jobId}/separate`).then((r) => r.data),
+
   setBgmVolume: (jobId: string, volumeDb: number) =>
     api.patch<Job>(`/jobs/${jobId}/bgm-volume`, { volume_db: volumeDb }).then((r) => r.data),
 
@@ -190,9 +194,19 @@ export const segments = {
 // ── TTS ───────────────────────────────────────────────────────
 export interface BatchSynthesisStart {
   message: string
+  batch_id: string
   started: number
   segment_ids: string[]
   skipped: string[]
+}
+
+/** GET /tts/synthesize/batch/{id} — `finished` once every line succeeded or failed for good. */
+export interface BatchSynthesisStatus {
+  total: number
+  done: number
+  failed: { segment_id: string; reason: string }[]
+  backup_voice: number
+  finished: boolean
 }
 
 /** 202 response from POST /tts/mix — `export_path` is the RESOLVED destination
@@ -216,6 +230,9 @@ export const tts = {
   // completion; the requests themselves return immediately.
   synthesizeBatch: (segmentIds: string[]) =>
     api.post<BatchSynthesisStart>('/tts/synthesize/batch', { segment_ids: segmentIds }).then((r) => r.data),
+
+  batchStatus: (batchId: string) =>
+    api.get<BatchSynthesisStatus>(`/tts/synthesize/batch/${batchId}`).then((r) => r.data),
 
   synthesizeJob: (jobId: string) =>
     api.post(`/tts/synthesize/job/${jobId}`).then((r) => r.data),

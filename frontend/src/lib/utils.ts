@@ -95,6 +95,15 @@ export function getJobStepIndex(status: string): number {
   return steps.indexOf(status)
 }
 
+/**
+ * Once analysis has run, the dubbed voices replace the original ones: export
+ * leaves the original voices out, so preview mutes them too (unless the user
+ * unmutes them to compare).
+ */
+export function originalVoicesReplaced(status: string | undefined | null): boolean {
+  return !!status && !['pending', 'extracting', 'separating', 'stems_ready'].includes(status)
+}
+
 /** Check if job is still processing */
 export function isJobRunning(status: string): boolean {
   const running = ['pending', 'extracting', 'separating', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing']

@@ -12,7 +12,7 @@ import { useEditorStore } from '@/store/editorStore'
 import { useUpdateSegment, useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useSetBgmVolume } from '@/hooks/useApi'
 import { segments as segmentsApi } from '@/api/client'
 import { PipelineStepper } from '@/features/upload/PipelineStepper'
-import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, hexToRgba, cn, isJobRunning, getJobStatusConfig } from '@/lib/utils'
+import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, hexToRgba, cn, isJobRunning, getJobStatusConfig, originalVoicesReplaced } from '@/lib/utils'
 import { recordSegmentChange, recordSegmentsChange, recordSegmentDelete, recordSegmentsDelete, recordSegmentCreate, recordSegmentSplit } from '@/lib/historyHelpers'
 import { Tooltip } from '@/components/ui/Tooltip'
 
@@ -47,8 +47,9 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const [maxSpeakers, setMaxSpeakers] = useState<string>('')
   const isStage1Processing = job?.status === 'extracting' || job?.status === 'separating' || job?.status === 'pending'
   const isStemsReady       = job?.status === 'stems_ready'
-  // Once analysis has been triggered the original vocals are replaced by TTS — auto-mute them
-  const vocalsReplaced = !!job && !isStemsReady && !isStage1Processing
+  // Once analysis has run the dubbed voices replace the original ones: export
+  // leaves them out, so they're muted here by default too (M unmutes to compare).
+  const vocalsReplaced = originalVoicesReplaced(job?.status)
 
   const containerRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -76,6 +77,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const activeSegmentId   = useEditorStore((s) => s.activeSegmentId)
   const volume            = useEditorStore((s) => s.volume)
   const mutedTrackIds     = useEditorStore((s) => s.mutedTrackIds)
+  const vocalsMuted       = mutedTrackIds['__vocals__'] ?? vocalsReplaced
   const soloedTrackIds    = useEditorStore((s) => s.soloedTrackIds)
   const timelineHeight    = useEditorStore((s) => s.timelineHeight)
   const speakerPanelWidth = useEditorStore((s) => s.speakerPanelWidth)
@@ -160,42 +162,44 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     })
   }
 
-  // Delete / Backspace removes the multi-selection when one exists (single
-  // undo entry restores all of it), else the active segment.
+  // Removes the multi-selection when one exists (a single undo entry restores
+  // all of it), else the active clip. Used by Delete/Backspace and the trash
+  // button. Returns whether anything was deleted.
+  const deleteSelection = useCallback((): boolean => {
+    if (!jobId) return false
+    const ids = useEditorStore.getState().selectedSegmentIds
+    if (ids.length > 0) {
+      const targets = segments.filter((s) => ids.includes(s.id))
+      if (targets.length === 0) return false
+      Promise.all(targets.map((t) => segmentsApi.delete(t.id)))
+        .then(() => qc.invalidateQueries({ queryKey: ['segments', jobId] }))
+        .catch(() => {
+          toast.error('Failed to delete some clips')
+          qc.invalidateQueries({ queryKey: ['segments', jobId] })
+        })
+      recordSegmentsDelete(qc, jobId, targets)
+      useEditorStore.setState({ selectedSegmentIds: [], activeSegmentId: null })
+      toast.success(`Deleted ${targets.length} clips`)
+      return true
+    }
+    if (!activeSegmentId) return false
+    const seg = segments.find((s) => s.id === activeSegmentId)
+    deleteSegment({ segmentId: activeSegmentId, jobId })
+    if (seg) recordSegmentDelete(qc, jobId, seg)
+    setActiveSegment(null)
+    return true
+  }, [activeSegmentId, jobId, deleteSegment, setActiveSegment, segments, qc])
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Delete' && e.key !== 'Backspace') return
       const tag = (e.target as HTMLElement).tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'AUDIO' || (e.target as HTMLElement).isContentEditable) return
-      if (!jobId) return
-
-      const ids = useEditorStore.getState().selectedSegmentIds
-      if (ids.length > 0) {
-        e.preventDefault()
-        const targets = segments.filter((s) => ids.includes(s.id))
-        if (targets.length === 0) return
-        Promise.all(targets.map((t) => segmentsApi.delete(t.id)))
-          .then(() => qc.invalidateQueries({ queryKey: ['segments', jobId] }))
-          .catch(() => {
-            toast.error('Failed to delete some clips')
-            qc.invalidateQueries({ queryKey: ['segments', jobId] })
-          })
-        recordSegmentsDelete(qc, jobId, targets)
-        useEditorStore.setState({ selectedSegmentIds: [], activeSegmentId: null })
-        toast.success(`Deleted ${targets.length} clips`)
-        return
-      }
-
-      if (!activeSegmentId) return
-      e.preventDefault()
-      const seg = segments.find((s) => s.id === activeSegmentId)
-      deleteSegment({ segmentId: activeSegmentId, jobId })
-      if (seg) recordSegmentDelete(qc, jobId, seg)
-      setActiveSegment(null)
+      if (deleteSelection()) e.preventDefault()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [activeSegmentId, jobId, deleteSegment, setActiveSegment, segments, qc])
+  }, [deleteSelection])
 
   const totalWidth = Math.max(timeToPixels(duration || 60, zoom, PX_PER_SEC), 800)
 
@@ -205,9 +209,11 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   // whenever the BGM gain changes, so the URL needs to change too or the
   // browser (and WaveSurfer's decode) keeps showing the pre-gain waveform.
   const noVocalsPreviewPath = jobId && projectId
-    ? `uploads/${projectId}/${jobId}/no_vocals.preview.wav?v=${job?.bgm_volume_db ?? 0}`
+    ? `uploads/${projectId}/${jobId}/no_vocals.preview.wav?v=${job?.bgm_volume_db ?? 0}-${job?.stems_version ?? 0}`
     : null
-  const vocalsPreviewPath   = jobId && projectId ? `uploads/${projectId}/${jobId}/vocals.preview.wav`    : null
+  const vocalsPreviewPath   = jobId && projectId
+    ? `uploads/${projectId}/${jobId}/vocals.preview.wav?v=${job?.stems_version ?? 0}`
+    : null
 
   // Timeline rows are free lanes, independent of speaker — a lane is just a
   // vertical position, and clips of any speaker can live on any lane. One
@@ -362,11 +368,6 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
       toast.error('Failed to duplicate clip')
     }
   }, [jobId, activeSegmentId, qc, setActiveSegment])
-
-  const handleDeleteActive = useCallback(() => {
-    if (!activeSegmentId || !jobId) return
-    handleSegmentDelete(activeSegmentId)
-  }, [activeSegmentId, jobId, handleSegmentDelete])
 
   // ── Tool shortcuts (V select · C blade · S split · ⌘D duplicate) ────────
   useEffect(() => {
@@ -700,8 +701,8 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
           </Tooltip>
           <Tooltip content="Delete selection (Del)" side="bottom">
             <button
-              onClick={handleDeleteActive}
-              disabled={!activeSegmentId}
+              onClick={deleteSelection}
+              disabled={!activeSegmentId && selectedSegmentIds.length === 0}
               className="h-7 w-7 rounded-md flex items-center justify-center text-white/50 hover:text-red-400 hover:bg-red-500/15 disabled:opacity-25 disabled:hover:bg-transparent disabled:hover:text-white/50 transition-colors"
             >
               <Trash2 size={13} />
@@ -1030,21 +1031,23 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                     {vocalsReplaced ? 'Orig. Vocals' : 'Vocals'}
                   </span>
                   {vocalsReplaced && (
-                    <span className="text-[8px] text-ink-600 truncate leading-tight"></span>
+                    <span className="text-[10px] text-ink-500 truncate leading-tight">Not in the export</span>
                   )}
                 </div>
                 <div className="flex items-center gap-1 ml-auto shrink-0">
                   {/* M button — always visible when stems exist so user can toggle at any time */}
                   {!isStage1Processing && (
                     <button
-                      onClick={() => toggleMuteTrack('__vocals__')}
+                      onClick={() => useEditorStore.setState((s) => ({
+                        mutedTrackIds: { ...s.mutedTrackIds, __vocals__: !vocalsMuted },
+                      }))}
                       className={cn(
                         "h-6 w-6 rounded-md text-[11px] font-bold flex items-center justify-center border transition-all select-none",
-                        mutedTrackIds['__vocals__']
+                        vocalsMuted
                           ? "bg-amber-500/20 text-amber-500 border-amber-500/30 hover:bg-amber-500/30"
                           : "bg-transparent text-white/35 border-transparent hover:bg-white/8 hover:text-white/70"
                       )}
-                      title={mutedTrackIds['__vocals__'] ? "Unmute Vocals" : "Mute Vocals"}
+                      title={vocalsMuted ? "Unmute the original voices" : "Mute the original voices"}
                     >
                       M
                     </button>
@@ -1105,7 +1108,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                     {vocalsPreviewPath && (
                       <StemWaveform
                         audioUrl={vocalsPreviewPath}
-                        color={vocalsReplaced ? "#71717a" : "#34d399"}
+                        color={vocalsReplaced ? "#5A6185" : "#34d399"}
                         pxPerSec={PX_PER_SEC * zoom}
                       />
                     )}

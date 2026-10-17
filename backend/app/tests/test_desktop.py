@@ -202,3 +202,27 @@ def test_backend_exits_when_the_app_that_started_it_goes_away():
     assert not gone.wait(0.2)
     os.close(write_fd)                   # the app went away
     assert gone.wait(2.0)
+
+
+def test_backend_raises_the_open_file_limit_it_gets_from_finder():
+    """An app opened from Finder may only have 256 files open; ffmpeg inherits the raised limit."""
+    import resource
+    import sidecar_entry
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (256, hard))
+    try:
+        assert sidecar_entry.raise_open_file_limit() >= 4096
+        assert resource.getrlimit(resource.RLIMIT_NOFILE)[0] >= 4096
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+
+def test_self_test_reports_khmer_shaping(capsys):
+    """The release build runs `movelo-backend --self-test` and stops if Khmer can't be shaped."""
+    import sidecar_entry
+
+    code = sidecar_entry.self_test()
+    out = capsys.readouterr().out
+    assert "backend imports: ok" in out and "Khmer text shaping:" in out
+    assert code == (0 if "shaping: ok" in out else 1)

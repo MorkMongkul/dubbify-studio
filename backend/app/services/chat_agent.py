@@ -26,7 +26,7 @@ import logging
 from datetime import datetime, timezone
 
 import httpx
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, literal_column
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -302,6 +302,18 @@ def _messages_to_contents(messages: list[ChatMessage]) -> list[dict]:
     return contents
 
 
+def message_order(newest_first: bool = False) -> list:
+    """
+    Conversation order. Messages saved by older versions share whole-second
+    timestamps; on SQLite the row id breaks those ties in the order they were
+    saved.
+    """
+    keys = [ChatMessage.created_at]
+    if "sqlite" in settings.effective_db_url:
+        keys.append(literal_column("chat_messages.rowid"))
+    return [k.desc() for k in keys] if newest_first else keys
+
+
 async def run_chat_turn(db: AsyncSession, project: Project, user_text: str) -> list[ChatMessage]:
     """Run one full turn: persist the user's message, loop Gemini calls +
     tool execution until it gives a plain text reply (or the round cap is
@@ -316,7 +328,7 @@ async def run_chat_turn(db: AsyncSession, project: Project, user_text: str) -> l
     history_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.project_id == project.id)
-        .order_by(ChatMessage.created_at.desc())
+        .order_by(*message_order(newest_first=True))
         .limit(settings.CHAT_HISTORY_LIMIT)
     )
     history = list(reversed(history_result.scalars().all()))

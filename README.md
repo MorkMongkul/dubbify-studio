@@ -48,7 +48,7 @@ Every cloud dependency degrades gracefully (configured backend → free public S
 | TTS | VoxCPM2 via Gradio app or public HF Space; Gemini TTS fallback |
 | Audio/video processing | ffmpeg |
 | Frontend | React 19 + TypeScript, Vite, Tailwind CSS, TanStack Query v5, Zustand v5 |
-| Desktop | Tauri 2 (backend bundled as a PyInstaller sidecar) |
+| Desktop | Tauri 2 (backend bundled as a PyInstaller one-folder app) |
 
 ---
 
@@ -95,8 +95,9 @@ scripts/release-macos.sh aarch64-apple-darwin                         # Apple Si
 VENV=venv_clean_x86_64 scripts/release-macos.sh x86_64-apple-darwin   # Intel (x86_64 venv made under Rosetta)
 ```
 
-The release script builds the frontend, the backend binary (which embeds the frontend) and the Tauri bundle in one go, so a stale UI can't ship. Nothing secret is built in: each user enters their API keys in **Settings**, and the app keeps its database, videos, keys (`settings.env`, owner-only) and logs per user in `~/Library/Application Support/com.movelo.studio` and `~/Library/Logs/com.movelo.studio` (a copy installed before the Movelo rename moves its `studio.dubify.desktop` folders there on first launch). No web server is needed — every Mac runs its own backend; the AI services are cloud APIs.
+The release script builds the frontend, the backend (a folder in the app's Resources that serves the frontend; it starts in about a second) and the Tauri bundle in one go, so a stale UI can't ship. Nothing secret is built in: each user enters their API keys in **Settings**, and the app keeps its database, videos, keys (`settings.env`, owner-only) and logs per user in `~/Library/Application Support/com.movelo.studio` and `~/Library/Logs/com.movelo.studio` (a copy installed before the Movelo rename moves its `studio.dubify.desktop` folders there on first launch). No web server is needed — every Mac runs its own backend; the AI services are cloud APIs.
 
+- **FriBiDi** — `scripts/build-fribidi.sh <target>` builds the library that burned-in Khmer subtitles need for correct shaping (official source, LGPL) into `vendor/fribidi/<target>/`; the backend build requires it.
 - **ffmpeg** — `scripts/build-ffmpeg.sh <target>` builds a bundleable ffmpeg once per architecture (official source, LGPL only — no GPL parts; H.264 export uses Apple's VideoToolbox) into `vendor/ffmpeg/<target>/`; the release script then ships it with its license. Without it the app uses the Mac's own ffmpeg (e.g. Homebrew — found even when the app is opened from Finder) and Settings warns when there is none.
 - **Release builds for both chips** — push a version tag (`git tag v0.1.0 && git push origin v0.1.0`) and the *Desktop release* GitHub Actions workflow builds Apple Silicon and Intel DMGs and drafts a GitHub Release with them plus the FFmpeg source. It can also be started by hand from the Actions tab. The DMGs are published as `Movelo-Studio-Apple-Silicon.dmg` and `Movelo-Studio-Intel.dmg` (fixed names the website links to); publishing the draft makes it the version the website offers.
 - **In-app updates** — installed copies check `releases/latest/download/latest.json` when they open (and from *Check for Updates…* in the app menu), then download, verify and install the update package for their chip ([updater.rs](frontend/src-tauri/src/updater.rs)). Update packages are signed with the `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` repository secrets; the matching public key is in `tauri.conf.json`. **If that key is lost, installed copies can never update again**, so keep its backup. To ship an update: raise the version in `frontend/src-tauri/tauri.conf.json`, `frontend/src-tauri/Cargo.toml` and `frontend/package.json`, merge into `main`, push a `v*` tag, check the draft release, then publish it.

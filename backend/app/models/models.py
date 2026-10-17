@@ -9,12 +9,30 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base
+from datetime import datetime, timedelta, timezone
 import enum
 import uuid
 
 
 def generate_uuid():
     return str(uuid.uuid4())
+
+
+_last_message_time = datetime.min
+
+
+def message_time() -> datetime:
+    """
+    A strictly increasing UTC time for each Assistant message. The database's
+    own clock only has whole seconds, and a tool call and its result are saved
+    within the same second; the history is replayed to Gemini in this order.
+    """
+    global _last_message_time
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if now <= _last_message_time:
+        now = _last_message_time + timedelta(microseconds=1)
+    _last_message_time = now
+    return now
 
 
 # ── Enums ─────────────────────────────────────────────────────
@@ -307,7 +325,7 @@ class ChatMessage(Base):
     function_call     = Column(JSON, nullable=True)   # {"name": ..., "args": {...}}
     function_response = Column(JSON, nullable=True)   # {"name": ..., "response": {...}}
 
-    created_at = Column(DateTime, server_default=func.now())
+    created_at = Column(DateTime, default=message_time, server_default=func.now())
 
 
 class ChatProposedEdit(Base):

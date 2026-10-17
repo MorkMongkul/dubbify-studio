@@ -234,3 +234,83 @@ def render_subtitle_pngs(
         f"(column {box_w}px @ {font_size}px, bottom-anchored at y={anchor_bottom}px)"
     )
     return results
+
+
+def build_subtitle_track(lines: list[dict], video_width: int, video_height: int, out_dir: Path) -> dict | None:
+    """
+    Every rendered subtitle line as ONE timed image stream, so the export adds
+    a single ffmpeg input for all of them. One input per line used to exceed
+    the open-file limit of an app opened from Finder (256) on full episodes.
+
+    `lines` are render_subtitle_pngs() results. Frames share one band (the
+    area every line can occupy); gaps between lines are transparent frames,
+    and lines that overlap in time are stacked, the later one at the bottom.
+    The stream is an ffconcat list of PNG frames with durations.
+
+    Returns a "sequence" layer for mix_dubbed_audio:
+    {"kind": "sequence", "concat_path", "left_px", "top_px"}, or None when
+    there are no lines.
+    """
+    lines = sorted((ln for ln in lines if ln["end_time"] > ln["start_time"]), key=lambda ln: ln["start_time"])
+    if not lines:
+        return None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    images = {i: Image.open(ln["media_path"]).convert("RGBA") for i, ln in enumerate(lines)}
+    left_px = round(video_width * lines[0]["x"])
+    band_w = max(img.width for img in images.values())
+
+    # Which lines are on screen between consecutive start/end times.
+    bounds = sorted({t for ln in lines for t in (ln["start_time"], ln["end_time"])})
+    spans = []
+    for t0, t1 in zip(bounds, bounds[1:]):
+        active = tuple(i for i, ln in enumerate(lines) if ln["start_time"] <= t0 and ln["end_time"] >= t1)
+        if spans and spans[-1][2] == active:
+            spans[-1] = (spans[-1][0], t1, active)
+        else:
+            spans.append((t0, t1, active))
+
+    # Where each frame's lines sit, in video pixels: each frame's stack is
+    # bottom-anchored where its newest line would sit on its own.
+    def placements(active: tuple) -> list[tuple[int, int]]:
+        bottom = max(round(lines[i]["y"] * video_height) + images[i].height for i in active)
+        placed = []
+        for i in reversed(active):          # newest at the bottom
+            top = bottom - images[i].height
+            placed.append((i, top))
+            bottom = top
+        return placed
+
+    frames = {active: placements(active) for _, _, active in spans if active}
+    band_top = max(0, min(top for placed in frames.values() for _, top in placed))
+    band_bottom = min(video_height, max(top + images[i].height for placed in frames.values() for i, top in placed))
+    band_h = max(1, band_bottom - band_top)
+
+    blank = out_dir / "blank.png"
+    Image.new("RGBA", (band_w, band_h), (0, 0, 0, 0)).save(blank)
+    frame_paths = {}
+    for n, (active, placed) in enumerate(frames.items()):
+        canvas = Image.new("RGBA", (band_w, band_h), (0, 0, 0, 0))
+        for i, top in placed:
+            canvas.alpha_composite(images[i], (0, max(0, top - band_top)))
+        path = out_dir / f"frame_{n:05d}.png"
+        canvas.save(path)
+        frame_paths[active] = path
+
+    entries = []
+    if spans[0][0] > 0:
+        entries.append((blank, spans[0][0]))
+    for t0, t1, active in spans:
+        entries.append((frame_paths[active] if active else blank, t1 - t0))
+    concat = out_dir / "subtitles.ffconcat"
+    def quoted(path: Path) -> str:
+        return "'" + str(path).replace("'", "'\\''") + "'"
+
+    body = ["ffconcat version 1.0"]
+    for path, duration in entries:
+        body += [f"file {quoted(path)}", f"duration {duration:.6f}"]
+    # The demuxer ignores the last file's duration: end on a transparent
+    # frame, listed twice so the final line still gets its full time.
+    body += [f"file {quoted(blank)}", "duration 1.000000", f"file {quoted(blank)}"]
+    concat.write_text("\n".join(body) + "\n")
+    logger.info(f"Subtitle track: {len(lines)} lines in {len(frame_paths)} frames ({band_w}x{band_h} at y={band_top})")
+    return {"kind": "sequence", "concat_path": str(concat), "left_px": left_px, "top_px": band_top}

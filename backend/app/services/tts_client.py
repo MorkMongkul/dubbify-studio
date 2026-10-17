@@ -9,11 +9,13 @@ VoxCPM2 has 2 possible backends, picked in VoxCPM2Client.__init__:
                              automatic, no setup — used whenever the Gradio
                              app isn't running that session
 """
+import functools
 import logging
 import time
 import wave
 import httpx
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import soundfile as sf
 import numpy as np
 from pathlib import Path
@@ -21,6 +23,16 @@ from app.core.config import settings
 from app.services import gemini_models
 
 logger = logging.getLogger(__name__)
+
+# Blocking gradio_client calls run in threads of their own, not asyncio's
+# shared pool: a call that times out keeps its thread until the server lets
+# go, and a hung voice server must not use up the threads that subtitle
+# rendering and export copies need.
+_VOICE_THREADS = ThreadPoolExecutor(max_workers=8, thread_name_prefix="voice")
+
+
+def _in_voice_thread(func, *args):
+    return asyncio.get_running_loop().run_in_executor(_VOICE_THREADS, functools.partial(func, *args))
 
 # Stable Gemini TTS model (dedicated audio output, not a chat model)
 
@@ -120,6 +132,9 @@ class VoxCPM2Client:
         # links expire after ~72h), skip it for a while instead of paying the
         # connect-and-fail cost on EVERY segment of a batch.
         self._primary_down_until = 0.0
+        # Same for the free HF Space once it has timed out: every timed-out
+        # call keeps a worker thread busy until the Space answers.
+        self._space_down_until = 0.0
 
     def _get_http(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
@@ -189,7 +204,7 @@ class VoxCPM2Client:
         # The configured Gradio app didn't work — before giving up on VoxCPM2
         # quality entirely, try the free HF Space. Skip this if that backend
         # WAS already the HF Space (no point retrying the same thing).
-        if self.backend != "hf_space":
+        if self.backend != "hf_space" and settings.VOXCPM2_HF_SPACE_FALLBACK:
             logger.warning("Trying free HF Space fallback before Gemini TTS...")
             fallback = await self._hf_space_synthesize(
                 text, voice_design, output_path, cfg_value,
@@ -290,10 +305,16 @@ class VoxCPM2Client:
     ) -> dict:
         try:
             logger.info(f"Gradio VoxCPM2 TTS (seed={seed}): {text[:50]}...")
-            return await asyncio.to_thread(
+            # gradio_client has no overall time limit: a server that stays
+            # connected but never answers would hold this line forever.
+            return await asyncio.wait_for(_in_voice_thread(
                 self._gradio_call, text, voice_design, output_path, cfg_value,
                 inference_timesteps, reference_audio_path, reference_transcript, seed,
-            )
+            ), timeout=self.timeout)
+        except asyncio.TimeoutError:
+            error = f"the voice server didn't answer within {self.timeout / 60:.0f} minutes (timed out)"
+            logger.warning(f"Gradio VoxCPM2 failed: {error}")
+            return {"success": False, "audio_path": "", "duration_secs": 0, "error": error, "backend": "voxcpm_gradio"}
         except Exception as e:
             logger.warning(f"Gradio VoxCPM2 failed: {e}")
             return {"success": False, "audio_path": "", "duration_secs": 0, "error": str(e), "backend": "voxcpm_gradio"}
@@ -350,12 +371,20 @@ class VoxCPM2Client:
         self, text, voice_design, output_path, cfg_value,
         reference_audio_path, reference_transcript,
     ) -> dict:
+        if time.monotonic() < self._space_down_until:
+            return {"success": False, "audio_path": "", "duration_secs": 0,
+                    "error": "the free voice Space isn't answering (cooling down)", "backend": "voxcpm_hf_space"}
         try:
             logger.info(f"HF Space VoxCPM2 TTS ({self.base_url}): {text[:50]}...")
-            return await asyncio.to_thread(
+            return await asyncio.wait_for(_in_voice_thread(
                 self._hf_space_call, text, voice_design, output_path, cfg_value,
                 reference_audio_path, reference_transcript,
-            )
+            ), timeout=self.timeout)
+        except asyncio.TimeoutError:
+            self._space_down_until = time.monotonic() + 300
+            error = f"the free voice Space didn't answer within {self.timeout / 60:.0f} minutes (timed out)"
+            logger.warning(f"HF Space VoxCPM2 failed: {error} — skipping it for 5 minutes")
+            return {"success": False, "audio_path": "", "duration_secs": 0, "error": error, "backend": "voxcpm_hf_space"}
         except Exception as e:
             logger.warning(f"HF Space VoxCPM2 failed: {e}")
             return {"success": False, "audio_path": "", "duration_secs": 0, "error": str(e), "backend": "voxcpm_hf_space"}

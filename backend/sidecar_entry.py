@@ -32,6 +32,25 @@ def watch_parent(stream, on_exit) -> threading.Thread:
     return thread
 
 
+def raise_open_file_limit(target: int = 10240) -> int:
+    """
+    An app opened from Finder may only have 256 files open, and every ffmpeg
+    the backend starts inherits that. Raise the soft limit as far as the hard
+    limit allows (10240 is macOS's per-process maximum). Returns the limit now
+    in effect.
+    """
+    import resource
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    want = target if hard == resource.RLIM_INFINITY else min(target, hard)
+    if soft < want:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+        except (ValueError, OSError):
+            pass
+    return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+
+
 def _log_to_file(log_dir: str) -> None:
     os.makedirs(log_dir, exist_ok=True)
     handler = RotatingFileHandler(
@@ -41,7 +60,38 @@ def _log_to_file(log_dir: str) -> None:
     logging.getLogger().addHandler(handler)
 
 
+def text_shaping() -> str:
+    """Whether burned-in Khmer subtitles can be shaped (Pillow's raqm layout needs FriBiDi)."""
+    from PIL import features
+
+    if features.check("raqm"):
+        return f"ok (FriBiDi {features.version('fribidi')})"
+    return "MISSING: burned-in Khmer subtitles would be drawn unshaped (no FriBiDi)"
+
+
+def self_test() -> int:
+    """`movelo-backend --self-test`: checks the packaged backend before it ships."""
+    import tempfile
+
+    import shutil
+
+    # Load the app the way the desktop shell starts it, against a throwaway folder.
+    data_dir = tempfile.mkdtemp(prefix="movelo-self-test-")
+    os.environ.setdefault("DUBIFY_DATA_DIR", data_dir)
+    try:
+        import app.main  # noqa: F401 — every module the backend loads at start-up
+
+        shaping = text_shaping()
+    finally:
+        shutil.rmtree(data_dir, ignore_errors=True)
+    print(f"backend imports: ok\nKhmer text shaping: {shaping}")
+    return 0 if shaping.startswith("ok") else 1
+
+
 def main() -> None:
+    if "--self-test" in sys.argv:
+        sys.exit(self_test())
+
     import platform
 
     import uvicorn
@@ -59,6 +109,8 @@ def main() -> None:
              settings.DUBIFY_DATA_DIR or "(development)", settings.UPLOAD_DIR,
              "local" if settings.effective_db_url.startswith("sqlite") else "server")
     log.info("ffmpeg: %s | ffprobe: %s", find("ffmpeg") or "NOT FOUND", find("ffprobe") or "NOT FOUND")
+    log.info("open files allowed: %d", raise_open_file_limit())
+    log.info("Khmer text shaping: %s", text_shaping())
 
     port = int(os.environ.get("PORT", "8756"))
     # log_config=None: uvicorn logs through the root logger (and so the file);

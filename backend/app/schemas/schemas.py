@@ -19,6 +19,8 @@ from datetime import datetime
 from app.models.models import JobStatus, Gender, AgeGroup, VoiceMode
 from pathlib import Path
 from app.core.config import settings
+from app.services.source_separator import UNAVAILABLE_MARKER
+from app.core.config import settings
 
 
 # ── Project schemas ───────────────────────────────────────────
@@ -88,6 +90,22 @@ class JobResponse(BaseModel):
             return f"/uploads/{p.name}"
         except Exception:
             return None
+
+    @computed_field
+    def stems_separated(self) -> Optional[bool]:
+        """None until stage 1 made the tracks; False when the original audio stands in for both."""
+        job_dir = Path(settings.UPLOAD_DIR) / self.project_id / self.id
+        if not (job_dir / "no_vocals.wav").exists():
+            return None
+        return not (job_dir / UNAVAILABLE_MARKER).exists()
+
+    @computed_field
+    def stems_version(self) -> int:
+        """Changes when the tracks are made again, so the editor reloads their audio."""
+        try:
+            return int((Path(settings.UPLOAD_DIR) / self.project_id / self.id / "no_vocals.wav").stat().st_mtime)
+        except OSError:
+            return 0
 
     @computed_field
     def output_url(self) -> Optional[str]:
@@ -342,6 +360,8 @@ class TTSResponse(BaseModel):
     duration_secs: float
     success: bool
     error: str = ""
+    engine: str = ""            # voxcpm_gradio / voxcpm_hf_space / gemini / mock
+    backup_voice: bool = False  # Gemini's stock voice stood in for the chosen VoxCPM voice
 
 
 # ── Pipeline trigger ──────────────────────────────────────────

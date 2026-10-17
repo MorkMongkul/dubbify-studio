@@ -19,7 +19,8 @@ from app.core.config import settings
 from app.models.models import Job, Project, JobStatus, Segment
 from app.schemas.schemas import JobResponse, PipelineStartResponse, BgmVolumeUpdate, JobTitleUpdate
 from app.services.pipeline import (
-    needs_translation, run_analysis_pipeline, run_pipeline, run_speaker_detection, run_translation,
+    needs_translation, run_analysis_pipeline, run_pipeline, run_separation_retry, run_speaker_detection,
+    run_translation,
 )
 from app.services.pipeline_common import vocals_path_for
 from app.core.paths import resolve_existing
@@ -326,6 +327,41 @@ async def analyze_job(
     return {"message": "Analysis started", "job_id": job_id, "status": JobStatus.DIARIZING.value}
 
 
+@router.post("/{job_id}/separate", status_code=status.HTTP_202_ACCEPTED)
+async def retry_separation(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """
+    Try separating music and voices again — after the separation service
+    failed and the original audio was used for both tracks. Lines,
+    translations and voices are kept.
+    """
+    job = await _lock_job(db, job_id)
+    if job.status not in _ANALYZABLE_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This session is busy ({job.status.value}) — wait for it to finish.",
+        )
+    if not resolve_existing(job.video_path):
+        raise HTTPException(status_code=400, detail="This episode's video file is missing — upload it again.")
+    if job.status in (JobStatus.STEMS_READY, JobStatus.COMPLETED):
+        # Back to where it was: an episode waiting for Analyze keeps waiting
+        # (a subtitle episode already has its lines then).
+        return_status = job.status
+    else:
+        has_lines = (await db.execute(
+            select(Segment.id).where(Segment.job_id == job_id).limit(1)
+        )).scalar_one_or_none() is not None
+        return_status = JobStatus.COMPLETED if has_lines else JobStatus.STEMS_READY
+
+    job.status, job.progress, job.error_msg = JobStatus.SEPARATING, 20, ""
+    await db.commit()
+    background_tasks.add_task(run_separation_retry, job_id, return_status)
+    return {"message": "Separating music and voices again", "job_id": job_id, "status": JobStatus.SEPARATING.value}
+
+
 @router.post("/{job_id}/translate", status_code=status.HTTP_202_ACCEPTED)
 async def translate_missing_lines(
     job_id: str,
@@ -432,20 +468,9 @@ async def update_bgm_volume(
     if not bgm_wav.exists():
         raise HTTPException(status_code=400, detail="No separated BGM stem for this job yet")
 
-    raw_wav = job_dir / "no_vocals_raw.wav"
-    if not raw_wav.exists():
-        shutil.copy2(bgm_wav, raw_wav)
+    from app.services.source_separator import render_bgm_volume
 
-    from app.services.audio_extractor import apply_audio_effects
-    from app.services.source_separator import _create_preview, _create_playback_m4a
-
-    await apply_audio_effects(
-        input_path=str(raw_wav),
-        output_path=str(bgm_wav),
-        volume_db=payload.volume_db,
-    )
-    await _create_preview(bgm_wav, job_dir / "no_vocals.preview.wav")
-    await _create_playback_m4a(bgm_wav, job_dir / "no_vocals.m4a")
+    await render_bgm_volume(job_dir, payload.volume_db)
 
     job.bgm_volume_db = payload.volume_db
     await db.flush()

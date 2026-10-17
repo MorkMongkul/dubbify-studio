@@ -21,7 +21,8 @@ from app.models.models import Segment, Speaker, Job, JobStatus, Voice, VoiceMode
 from app.schemas.schemas import TTSResponse
 from app.services.tts_client import tts_client
 from app.services.audio_extractor import mix_dubbed_audio, probe_video
-from app.services.video_overlay import render_subtitle_pngs
+from app.services.video_overlay import build_subtitle_track, render_subtitle_pngs
+from app.services.pipeline_common import RUNNING_STATUSES
 from app.core.paths import resolve_media_path, resolve_existing
 
 logger = logging.getLogger(__name__)
@@ -176,7 +177,7 @@ async def synthesize_segment(
     """
     Synthesize a single segment.
     """
-    seg, _backend = await _synthesize_segment_db(segment_id, db)
+    seg, backend = await _synthesize_segment_db(segment_id, db)
     await db.commit()
     return TTSResponse(
         segment_id=segment_id,
@@ -184,7 +185,41 @@ async def synthesize_segment(
         duration_secs=seg.tts_duration_secs,
         success=True,
         error="",
+        engine=backend,
+        backup_voice=_is_backup_voice(backend),
     )
+
+
+def _is_backup_voice(backend: str) -> bool:
+    """Gemini's stock voice was used although a VoxCPM engine (the chosen voices) is set up."""
+    return backend == "gemini" and bool(settings.VOXCPM2_API_URL or settings.VOXCPM2_HF_SPACE_FALLBACK)
+
+
+# Each batch's progress for the editor: lines done, lines that failed (with
+# the reason), lines voiced with Gemini's stock voice. Kept in memory — the
+# backend is one process; after a restart the editor stops tracking.
+_BATCHES: dict[str, dict] = {}
+_MAX_BATCHES = 50
+
+
+def _new_batch(total: int) -> str:
+    batch_id = uuid4().hex
+    _BATCHES[batch_id] = {"total": total, "done": 0, "failed": {}, "backup_voice": 0, "finished": False}
+    while len(_BATCHES) > _MAX_BATCHES:
+        _BATCHES.pop(next(iter(_BATCHES)))
+    return batch_id
+
+
+@router.get("/synthesize/batch/{batch_id}")
+async def batch_status(batch_id: str):
+    """How a voice batch is going; `finished` once every line succeeded or failed for good."""
+    batch = _BATCHES.get(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="This batch is no longer tracked.")
+    return {
+        **batch,
+        "failed": [{"segment_id": sid, "reason": reason} for sid, reason in batch["failed"].items()],
+    }
  
  
 class BatchSynthesizeRequest(BaseModel):
@@ -215,16 +250,18 @@ async def synthesize_batch(
     if not valid_ids:
         raise HTTPException(status_code=400, detail="No segments with text to synthesize")
 
-    background_tasks.add_task(_synthesize_ids_task, valid_ids)
+    batch_id = _new_batch(len(valid_ids))
+    background_tasks.add_task(_synthesize_ids_task, valid_ids, batch_id)
     return {
         "message": f"Synthesis started for {len(valid_ids)} segments.",
+        "batch_id": batch_id,
         "started": len(valid_ids),
         "segment_ids": valid_ids,
         "skipped": [sid for sid in payload.segment_ids if sid not in valid_ids],
     }
 
 
-async def _synthesize_ids_task(segment_ids: List[str]) -> None:
+async def _synthesize_ids_task(segment_ids: List[str], batch_id: str | None = None) -> None:
     """Background task: synthesize the given segments with bounded concurrency
     (settings.TTS_BATCH_CONCURRENCY).
 
@@ -251,6 +288,7 @@ async def _synthesize_ids_task(segment_ids: List[str]) -> None:
     concurrency = max(1, settings.TTS_BATCH_CONCURRENCY)
     sem = asyncio.Semaphore(concurrency)
     gemini_seen = asyncio.Event()
+    batch = _BATCHES.get(batch_id) if batch_id else None
 
     async def _try_one(segment_id: str) -> bool:
         async with sem:
@@ -262,26 +300,38 @@ async def _synthesize_ids_task(segment_ids: List[str]) -> None:
                     await db.commit()
                     if backend == "gemini":
                         gemini_seen.set()
+                    if batch is not None:
+                        batch["done"] += 1
+                        batch["failed"].pop(segment_id, None)
+                        batch["backup_voice"] += int(_is_backup_voice(backend))
                     return True
                 except HTTPException as e:
                     logger.warning(f"Batch synthesis: segment {segment_id[:8]} failed: {e.detail}")
                     await db.rollback()
-                except Exception:
+                    reason = str(e.detail)
+                except Exception as e:
                     logger.exception(f"Batch synthesis: segment {segment_id[:8]} failed")
                     await db.rollback()
+                    reason = f"{type(e).__name__}: {e}"
+            if batch is not None:
+                batch["failed"][segment_id] = reason
             return False
 
-    results = await asyncio.gather(*[_try_one(sid) for sid in segment_ids])
-    failed = [sid for sid, ok in zip(segment_ids, results) if not ok]
+    try:
+        results = await asyncio.gather(*[_try_one(sid) for sid in segment_ids])
+        failed = [sid for sid, ok in zip(segment_ids, results) if not ok]
 
-    if failed:
-        logger.info(
-            f"Batch synthesis: retrying {len(failed)} failed segment(s) "
-            "after a 30s cool-off (rate limits usually clear by then)..."
-        )
-        await asyncio.sleep(30)
-        retry_results = await asyncio.gather(*[_try_one(sid) for sid in failed])
-        failed = [sid for sid, ok in zip(failed, retry_results) if not ok]
+        if failed:
+            logger.info(
+                f"Batch synthesis: retrying {len(failed)} failed segment(s) "
+                "after a 30s cool-off (rate limits usually clear by then)..."
+            )
+            await asyncio.sleep(30)
+            retry_results = await asyncio.gather(*[_try_one(sid) for sid in failed])
+            failed = [sid for sid, ok in zip(failed, retry_results) if not ok]
+    finally:
+        if batch is not None:
+            batch["finished"] = True
 
     done = len(segment_ids) - len(failed)
     if failed:
@@ -416,13 +466,16 @@ async def mix_final_audio(
     any sane HTTP timeout. The job goes to `mixing` status; poll /jobs/{id}
     until it reaches `completed` (output_url set) or `failed` (error_msg set).
     """
-    j_result = await db.execute(select(Job).where(Job.id == job_id))
+    j_result = await db.execute(select(Job).where(Job.id == job_id).with_for_update())
     job = j_result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
     if job.status == JobStatus.MIXING:
-        raise HTTPException(status_code=409, detail="A mix is already running for this job.")
+        raise HTTPException(status_code=409, detail="This episode is already being exported.")
+    if job.status in RUNNING_STATUSES:
+        # e.g. separating music and voices again: its stems are about to change
+        raise HTTPException(status_code=409, detail="This episode is still being processed. Export it when that has finished.")
 
     count_result = await db.execute(
         select(Segment.id)
@@ -469,6 +522,26 @@ def _autofit_rate(seg: Segment) -> float:
         return 1.0
     fit_rate = tts_duration / window
     return min(3.5, fit_rate) if fit_rate > 1.05 else 1.0
+
+
+async def _set_mix_progress(job_id: str, fraction: float) -> None:
+    """
+    Export progress for the UI, written in its own short transaction. Never
+    raises: a progress write that fails must not stop the export. The status
+    is checked in Python — on the live Postgres database jobs.status is
+    VARCHAR, so comparing it to the enum in SQL fails (see
+    pipeline_common.recover_orphaned_jobs).
+    """
+    from app.core.database import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            job = await db.get(Job, job_id)
+            if job and job.status == JobStatus.MIXING:
+                job.progress = max(5, min(99, round(fraction * 100)))
+                await db.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Couldn't save export progress for job {job_id[:8]}: {e}")
 
 
 async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | None = None) -> None:
@@ -563,23 +636,27 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
                             "start_time": ov.start_time, "end_time": ov.end_time,
                         })
                     elif ov.type == "subtitle":
-                        # Pillow text rendering is CPU-bound — keep it off the event loop
-                        subtitle_layers = await asyncio.to_thread(
+                        # Pillow text rendering is CPU-bound — keep it off the event loop.
+                        # All lines go into ONE image stream (one ffmpeg input).
+                        subs_dir = job_dir / "subs"
+                        shutil.rmtree(subs_dir, ignore_errors=True)
+                        subtitle_lines = await asyncio.to_thread(
                             render_subtitle_pngs,
                             segments,
                             box={"x": ov.x, "y": ov.y, "width": ov.width, "height": ov.height},
                             video_width=video_width,
                             video_height=video_height,
-                            out_dir=job_dir / "subs",
+                            out_dir=subs_dir,
                             font_size=ov.font_size,
                             color=ov.color,
                             outline_color=ov.outline_color,
                             background_color=ov.background_color,
                         )
-                        for layer in subtitle_layers:
-                            layer["kind"] = "image"
-                            layer["opacity"] = 1.0
-                        video_layers.extend(subtitle_layers)
+                        track = await asyncio.to_thread(
+                            build_subtitle_track, subtitle_lines, video_width, video_height, subs_dir / "track",
+                        )
+                        if track:
+                            video_layers.append(track)
 
             # Release the DB connection for the duration of the (long) ffmpeg run
             await db.commit()
@@ -593,6 +670,7 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
                 video_layers=video_layers or None,
                 video_width=video_width,
                 video_height=video_height,
+                on_progress=lambda fraction: _set_mix_progress(job_id, fraction),
             )
             job.output_path = final_path
             job.status = JobStatus.COMPLETED
@@ -626,7 +704,7 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
             # the editor must stay usable; error_msg carries the mix failure so
             # the frontend can surface it after the mixing → completed transition.
             job.status = JobStatus.COMPLETED
-            job.error_msg = f"Audio mixing failed: {e}"
+            job.error_msg = f"Export failed: {e}"
             await db.commit()
 
 

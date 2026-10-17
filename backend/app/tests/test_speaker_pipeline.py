@@ -369,6 +369,43 @@ async def test_restart_recovery_never_strands_a_job_that_has_segments(background
     assert (await _job(background_db, extracting_job)).status == JobStatus.FAILED
 
 
+@pytest.mark.asyncio
+async def test_an_interrupted_separation_retry_leaves_the_episode_as_it_was(uploads, background_db):
+    """Try again keeps the stems until it succeeds, so quitting mid-way mustn't fail the episode."""
+    waiting_project, waiting = await _seed(background_db, status=JobStatus.SEPARATING)
+    voiced_project, voiced = await _seed(background_db, status=JobStatus.SEPARATING,
+                                         segments=[(0.0, 1.0, "你好", "សួស្តី", None, "")])
+    subtitle_project, subtitle = await _seed(background_db, status=JobStatus.SEPARATING,
+                                             segments=[(0.0, 1.0, "你好", "", None, "")])
+    for project_id, job_id in ((waiting_project, waiting), (voiced_project, voiced), (subtitle_project, subtitle)):
+        _vocals(uploads, project_id, job_id)
+        (uploads / project_id / job_id / "no_vocals.wav").write_bytes(b"RIFFfake")
+    await recover_orphaned_jobs()
+
+    assert (await _job(background_db, waiting)).status == JobStatus.STEMS_READY
+    assert (await _job(background_db, voiced)).status == JobStatus.COMPLETED
+    # Subtitle lines that were never translated: still waiting for Analyze
+    assert (await _job(background_db, subtitle)).status == JobStatus.STEMS_READY
+
+
+@pytest.mark.asyncio
+async def test_try_again_returns_an_episode_waiting_for_analyze_to_waiting(client, uploads, background_db, monkeypatch):
+    """A subtitle episode has its lines before Analyze; Try again used to mark it completed."""
+    project_id, job_id = await _seed(background_db, status=JobStatus.STEMS_READY,
+                                     segments=[(0.0, 1.0, "你好", "", None, "")])
+    async with background_db() as s:
+        job = (await s.execute(select(Job).where(Job.id == job_id))).scalar_one()
+        job.video_path = str(_vocals(uploads, project_id, job_id))   # any existing file
+        await s.commit()
+    seen = []
+
+    async def retry(job_id, return_status):
+        seen.append(return_status)
+    monkeypatch.setattr("app.api.routes.jobs.run_separation_retry", retry)
+    assert (await client.post(f"/api/v1/jobs/{job_id}/separate")).status_code == 202
+    assert seen == [JobStatus.STEMS_READY]
+
+
 # ── Translate missing lines (recovery after a translation outage) ─────────────
 
 @pytest.mark.asyncio
