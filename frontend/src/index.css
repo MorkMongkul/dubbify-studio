@@ -106,6 +106,7 @@
 [data-theme="light"] .bg-white\/10  { background-color: rgba(11,18,48,0.08) !important; }
 [data-theme="light"] .bg-white\/12  { background-color: rgba(11,18,48,0.09) !important; }
 [data-theme="light"] .bg-white\/15  { background-color: rgba(11,18,48,0.10) !important; }
+[data-theme="light"] .bg-white\/25  { background-color: rgba(11,18,48,0.18) !important; }  /* voice waveform bars */
 [data-theme="light"] .hover\:bg-white\/5:hover  { background-color: rgba(11,18,48,0.04) !important; }
 [data-theme="light"] .hover\:bg-white\/6:hover  { background-color: rgba(11,18,48,0.05) !important; }
 [data-theme="light"] .hover\:bg-white\/8:hover  { background-color: rgba(11,18,48,0.06) !important; }
@@ -172,6 +173,9 @@
 [data-theme="light"] .text-brand-200 { color: #9E2640 !important; }
 [data-theme="light"] .text-brand-300 { color: #C82A5D !important; }
 [data-theme="light"] .text-brand-400 { color: #B8284F !important; }
+
+/* ── Light: blue (voice role tags, blue badges) is made for dark backgrounds ── */
+[data-theme="light"] .text-blue-400 { color: #1D4ED8 !important; }
 
 /* ── Light: status text tints are made for dark backgrounds — darken them ── */
 [data-theme="light"] [class~="text-amber-100"],

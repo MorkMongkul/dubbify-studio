@@ -1,7 +1,7 @@
 // Run with `npm test` (Node's own test runner; Node strips the TypeScript types).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ageLabel, groupVoices, pickerLabel, voiceMatches } from '../src/lib/voiceTags.ts'
+import { addTag, ageLabel, groupVoices, pickerLabel, tagsBlocker, tagsOf, toggleTag, voiceMatches } from '../src/lib/voiceTags.ts'
 import type { Voice } from '../src/types/index.ts'
 
 let n = 0
@@ -24,7 +24,7 @@ test('age label reads who first, then roughly how old', () => {
   assert.equal(ageLabel(voice({})), null)
 })
 
-test('voices are grouped: My voices first, then sections in order, own voices first, then by age and name', () => {
+test('voices are grouped: My voices first, then sections in order, own voices first, then by age and library order', () => {
   const unsortedOld = voice({ name: 'Old mine', created_at: '2026-10-01T00:00:00' })
   const unsortedNew = voice({ name: 'New mine', created_at: '2026-10-05T00:00:00' })
   const rithy = voice({ id: 'builtin-01-a', builtin: true, name: 'Lim Rithy', gender: 'man', age_group: '30s', section: 'young_men' })
@@ -36,7 +36,7 @@ test('voices are grouped: My voices first, then sections in order, own voices fi
   const groups = groupVoices([empress, rithy, unsortedOld, visal, mineYoung, dara, unsortedNew])
   assert.deepEqual(groups.map((g) => [g.key, g.label, g.voices.map((v) => v.name)]), [
     ['mine', 'My voices', ['New mine', 'Old mine']],
-    ['young_men', 'Young men', ['Zed', 'Heng Dara', 'Ly Visal', 'Lim Rithy']],
+    ['young_men', 'Young men', ['Zed', 'Ly Visal', 'Heng Dara', 'Lim Rithy']],   // 20s by id (-b, -c), then 30s
     ['older_women', 'Older women', ['Taing Thida']],
   ])
   assert.equal(groups[1].hint, '20s to 30s')
@@ -66,4 +66,31 @@ test('search matches name, description, tags, who and section, ignoring case', (
   for (const q of ['narrator', 'woman', 'young men']) {
     assert.equal(voiceMatches(villain, q), false, q)
   }
+})
+
+test('adding a typed tag tidies it and ignores repeats, overlong tags and a full list', () => {
+  assert.deepEqual(addTag(['Warm'], '  Very   gentle '), ['Warm', 'Very gentle'])
+  assert.deepEqual(addTag(['Warm'], 'warm'), ['Warm'])
+  assert.deepEqual(addTag(['Warm'], '   '), ['Warm'])
+  assert.deepEqual(addTag([], 'x'.repeat(25)), [])
+  assert.deepEqual(addTag(['a', 'b', 'c', 'd', 'e', 'f'], 'g'), ['a', 'b', 'c', 'd', 'e', 'f'])
+})
+
+test('clicking a tag adds it, and clicking it again removes it whatever its case', () => {
+  assert.deepEqual(toggleTag(['Calm'], 'Warm'), ['Calm', 'Warm'])
+  assert.deepEqual(toggleTag(['Warm', 'Calm'], 'warm'), ['Calm'])
+})
+
+test('a who without an age blocks saving; no who at all is fine', () => {
+  const tags = { gender: null, age_group: null, personality: [], roles: [] }
+  assert.equal(tagsBlocker({ ...tags, gender: 'man' }), 'Choose an age for this voice')
+  assert.equal(tagsBlocker({ ...tags, gender: 'man', age_group: '20s' }), null)
+  assert.equal(tagsBlocker(tags), null)
+})
+
+test('a voice made before tags existed edits as empty tags', () => {
+  assert.deepEqual(tagsOf(voice({ gender: undefined, personality: undefined, roles: undefined })),
+    { gender: null, age_group: null, personality: [], roles: [] })
+  assert.deepEqual(tagsOf(voice({ gender: 'woman', age_group: '40s', personality: ['Calm'], roles: ['Empress'] })),
+    { gender: 'woman', age_group: '40s', personality: ['Calm'], roles: ['Empress'] })
 })

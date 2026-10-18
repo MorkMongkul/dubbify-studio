@@ -4,7 +4,7 @@
 // voice's section (app/services/voice_tags.py); this names the sections and
 // orders the voices inside them. Kept free of runtime imports so
 // tests/voiceTags.test.ts can run it with plain Node.
-import type { Voice, VoiceAgeGroup, VoiceGender, VoiceSectionKey } from '@/types'
+import type { Voice, VoiceAgeGroup, VoiceGender, VoiceSectionKey, VoiceTagValue } from '@/types'
 
 export const SECTIONS: { key: VoiceSectionKey; label: string; hint?: string }[] = [
   { key: 'young_men', label: 'Young men', hint: '20s to 30s' },
@@ -50,6 +50,33 @@ export const ROLE_TAGS = [
 export const MAX_TAGS = 6
 export const MAX_TAG_LENGTH = 24
 
+export const NO_TAGS: VoiceTagValue = { gender: null, age_group: null, personality: [], roles: [] }
+
+/** A voice's tags as the editor holds them (voices made before tags have none). */
+export function tagsOf(v: Voice): VoiceTagValue {
+  return { gender: v.gender ?? null, age_group: v.age_group ?? null,
+    personality: v.personality ?? [], roles: v.roles ?? [] }
+}
+
+/** Add a typed tag, tidied; repeats (ignoring case), overlong tags and a full list leave `tags` as it was. */
+export function addTag(tags: string[], raw: string): string[] {
+  const tag = raw.split(/\s+/).filter(Boolean).join(' ')
+  const repeat = tags.some((t) => t.toLowerCase() === tag.toLowerCase())
+  if (!tag || repeat || tag.length > MAX_TAG_LENGTH || tags.length >= MAX_TAGS) return tags
+  return [...tags, tag]
+}
+
+/** A clicked tag: removed when the voice has it (in any case), added otherwise. */
+export function toggleTag(tags: string[], tag: string): string[] {
+  const kept = tags.filter((t) => t.toLowerCase() !== tag.toLowerCase())
+  return kept.length < tags.length ? kept : addTag(tags, tag)
+}
+
+/** Why these tags can't be saved yet, or null. */
+export function tagsBlocker(tags: VoiceTagValue): string | null {
+  return tags.gender && !tags.age_group ? 'Choose an age for this voice' : null
+}
+
 export type VoiceGroupKey = 'mine' | VoiceSectionKey
 
 export interface VoiceGroup {
@@ -74,12 +101,16 @@ export function sectionLabel(key: VoiceSectionKey | null | undefined): string {
 const AGE_ORDER = AGE_GROUPS.map((a) => a.value)
 const newestFirst = (a: Voice, b: Voice) => b.created_at.localeCompare(a.created_at)
 
-/** Inside a section: the user's own voices first (newest first), then built-in ones by age, then name. */
+/**
+ * Inside a section: the user's own voices first (newest first), then built-in
+ * ones by age, then in library order (their ids run by character, then take),
+ * which keeps each character's takes together; their names are arbitrary.
+ */
 function withinSection(a: Voice, b: Voice): number {
   if (!a.builtin !== !b.builtin) return a.builtin ? 1 : -1
   if (!a.builtin) return newestFirst(a, b)
   const byAge = AGE_ORDER.indexOf(a.age_group as VoiceAgeGroup) - AGE_ORDER.indexOf(b.age_group as VoiceAgeGroup)
-  return byAge || a.name.localeCompare(b.name)
+  return byAge || a.id.localeCompare(b.id)
 }
 
 /** "My voices" (own voices with no section yet), then each section in order; empty groups left out. */
