@@ -11,7 +11,8 @@ folder (UPLOAD_DIR/voices/<id>/reference.wav) — a stable, writable location
 that follows the data folder, unlike the app bundle.
 
 Built-in voices have fixed ids ("builtin-…") so speakers and lines that use
-them keep them across updates. They can't be renamed, edited or deleted; a new
+them keep them across updates. Their names and tags (who they sound like,
+personality, role) also come from the manifest, so an update can correct them. They can't be renamed, edited or deleted; a new
 app version updates or adds them on its first launch. A re-recorded voice gets
 a new id (its installed clip is never replaced), so lines voiced with the old
 one stay consistent.
@@ -80,6 +81,11 @@ async def seed_builtin_voices(assets: Path = ASSETS) -> int:
                 "cfg_value": float(params.get("cfg_value", 2.8)),
                 "inference_timesteps": int(params.get("inference_timesteps", 15)),
                 "seed": -1,
+                # Tags pick the voice's section in the Voices tab (voice_tags.py)
+                "gender": entry.get("gender"),
+                "age_group": entry.get("age_group"),
+                "personality": list(entry.get("personality") or []),
+                "roles": list(entry.get("roles") or []),
             }
             voice = existing.get(entry["id"])
             if voice is None:

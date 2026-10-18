@@ -134,6 +134,27 @@ async def test_a_speaker_keeps_its_built_in_voice_across_an_update(seeded_env, d
 
 
 @pytest.mark.asyncio
+async def test_seeding_writes_tags_and_a_new_manifest_overwrites_them(seeded_env, db_sessionmaker):
+    """Built-in names and tags come from the manifest, so an app update can correct them."""
+    manifest = json.loads((seeded_env / "manifest.json").read_text())
+    manifest["voices"][0] |= {"gender": "woman", "age_group": "20s", "personality": ["Bright"], "roles": ["Lead"]}
+    (seeded_env / "manifest.json").write_text(json.dumps(manifest))
+    await builtin_voices.seed_builtin_voices(seeded_env)
+    async with db_sessionmaker() as db:
+        tagged = await db.get(Voice, "builtin-00-test-a")
+        untagged = await db.get(Voice, "builtin-01-test-a")
+    assert (tagged.gender, tagged.age_group, tagged.personality, tagged.roles) == ("woman", "20s", ["Bright"], ["Lead"])
+    assert (untagged.gender, untagged.personality) == (None, [])
+
+    manifest["voices"][0] |= {"age_group": "30s", "name": "Ly Sophea"}
+    (seeded_env / "manifest.json").write_text(json.dumps(manifest))
+    assert await builtin_voices.seed_builtin_voices(seeded_env) == 1
+    async with db_sessionmaker() as db:
+        tagged = await db.get(Voice, "builtin-00-test-a")
+    assert (tagged.name, tagged.age_group) == ("Ly Sophea", "30s")
+
+
+@pytest.mark.asyncio
 async def test_the_backup_voice_follows_the_description_when_cloning(monkeypatch):
     """Cloning sends no style text; Gemini used to fall back to a male voice for every built-in."""
     seen = {}
