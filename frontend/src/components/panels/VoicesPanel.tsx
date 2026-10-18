@@ -3,19 +3,25 @@
 // voices without leaving the editor. Absorbed from the former /voices page;
 // every behaviour is preserved (blob preview lifecycle, two-step delete with
 // auto-revert, seed reroll, inline rename, blocker-driven save), compacted
-// from the page's two columns into the dock's single one.
+// from the page's two columns into the dock's single one. Voices are listed in
+// sections by age and gender (src/lib/voiceTags.ts), each with its tags.
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  Mic, Upload, Play, Loader2, Trash2, Plus, Copy, Dices,
-  Search, SlidersHorizontal, ChevronDown, RotateCcw, X, Check, AudioLines, Square,
+  Mic, Upload, Loader2, Trash2, Plus, CopyPlus, Dices, Hash, Tag,
+  Search, SlidersHorizontal, ChevronDown, RotateCcw, X, Check, AudioLines,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { useVoices, useCreateVoice, useDeleteVoice, usePreviewVoice, useUpdateVoice } from '@/hooks/useApi'
-import type { Voice, VoiceMode } from '@/types'
+import { useVoices, useCreateVoice, useDeleteVoice, usePreviewVoice, useUpdateVoice, useCopyVoice } from '@/hooks/useApi'
+import type { Voice, VoiceMode, VoiceTagValue } from '@/types'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils'
+import { NO_TAGS, groupVoices, sectionLabel, tagsBlocker, tagsOf, voiceMatches } from '@/lib/voiceTags'
 import { PanelHeader } from './PanelShell'
+import { VoicePlayer } from '@/components/voices/VoicePlayer'
+import { VoiceSection } from '@/components/voices/VoiceSection'
+import { VoiceTagEditor } from '@/components/voices/VoiceTagEditor'
+import { VoiceTags } from '@/components/voices/VoiceTags'
 
 const MODES: { value: VoiceMode; label: string; blurb: string; needs: string }[] = [
   { value: 'design',   label: 'Design',   blurb: 'Create a brand-new voice from a written description alone.', needs: 'Description only' },
@@ -38,6 +44,7 @@ export function VoicesPanel() {
   const deleteVoice = useDeleteVoice()
   const previewVoice = usePreviewVoice()
   const updateVoice = useUpdateVoice()
+  const copyVoice = useCopyVoice()
 
   const [createOpen, setCreateOpen] = useState(false)
   const [mode, setMode] = useState<VoiceMode>('design')
@@ -51,14 +58,20 @@ export function VoicesPanel() {
   const [previewText, setPreviewText] = useState(PREVIEW_DEFAULT)
   const [previewingId, setPreviewingId] = useState<string | null>(null)
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({})
+  // The line each generated preview says
+  const [previewTexts, setPreviewTexts] = useState<Record<string, string>>({})
   const [editingVoiceId, setEditingVoiceId] = useState<string | null>(null)
   const [editingVoiceName, setEditingVoiceName] = useState('')
   const [search, setSearch] = useState('')
   const [modeFilter, setModeFilter] = useState<ModeFilter>('all')
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
-  // Built-in voices play their own clip instantly (no generation needed)
-  const [playingSampleId, setPlayingSampleId] = useState<string | null>(null)
-  const sampleRef = useRef<HTMLAudioElement | null>(null)
+  // The voice whose sample was just made — its player starts by itself
+  const [justGeneratedId, setJustGeneratedId] = useState<string | null>(null)
+  const [tags, setTags] = useState<VoiceTagValue>(NO_TAGS)           // new voice's tags
+  // Open sections ('mine' = My voices); while searching every section is open
+  const [openSections, setOpenSections] = useState<Set<string>>(() => new Set(['mine']))
+  const [taggingId, setTaggingId] = useState<string | null>(null)     // own voice whose tags are being edited
+  const [tagDraft, setTagDraft] = useState<VoiceTagValue>(NO_TAGS)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const needsRef = mode === 'clone' || mode === 'ultimate'
@@ -82,7 +95,7 @@ export function VoicesPanel() {
 
   const resetForm = () => {
     setName(''); setDescription(''); setTranscript(''); setCfg(2.0); setSteps(10)
-    setRefFile(null); setMode('design'); setShowAdvanced(false)
+    setRefFile(null); setMode('design'); setShowAdvanced(false); setTags(NO_TAGS)
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
@@ -91,21 +104,50 @@ export function VoicesPanel() {
     !name.trim() ? 'Give the voice a name to save it'
     : needsRef && !refFile ? 'Upload a reference clip for this mode'
     : needsTranscript && !transcript.trim() ? 'Add the transcript of your reference clip'
-    : null
+    : tagsBlocker(tags)
+
+  // A voice that just moved somewhere: open that section so it stays in view.
+  const showSection = (v: Voice) => setOpenSections((prev) => new Set(prev).add(v.section ?? 'mine'))
 
   const handleSave = async () => {
     if (blocker) return
     try {
-      await createVoice.mutateAsync({
+      const voice = await createVoice.mutateAsync({
         name: name.trim(), mode, description, reference_transcript: transcript,
-        cfg_value: cfg, inference_timesteps: steps, reference_audio: refFile,
+        cfg_value: cfg, inference_timesteps: steps, reference_audio: refFile, ...tags,
       })
-      toast.success(`Voice "${name.trim()}" saved`)
+      showSection(voice)
+      toast.success(`Voice "${voice.name}" saved — it's in ${sectionLabel(voice.section)}`)
       resetForm()
       setCreateOpen(false)
     } catch (e) {
       toast.error(errorMessage(e, 'Failed to save voice'))
     }
+  }
+
+  const handleCopy = async (v: Voice) => {
+    try {
+      const copy = await copyVoice.mutateAsync(v.id)
+      showSection(copy)
+      toast.success(`Copied as “${copy.name}” — it's in ${sectionLabel(copy.section)}`)
+    } catch (e) {
+      toast.error(errorMessage(e, "Couldn't copy this voice"))
+    }
+  }
+
+  const saveTags = (v: Voice) => {
+    if (tagsBlocker(tagDraft)) return
+    updateVoice.mutate(
+      { id: v.id, data: tagDraft },
+      {
+        onSuccess: (updated) => {
+          setTaggingId(null)
+          showSection(updated)
+          toast.success(`Tags saved — it's in ${sectionLabel(updated.section)}`)
+        },
+        onError: (e) => toast.error(errorMessage(e, "Couldn't save the tags")),
+      }
+    )
   }
 
   const handlePreview = async (voice: Voice) => {
@@ -118,6 +160,8 @@ export function VoicesPanel() {
         if (prev[voice.id]) URL.revokeObjectURL(prev[voice.id])
         return { ...prev, [voice.id]: url }
       })
+      setPreviewTexts((prev) => ({ ...prev, [voice.id]: previewText }))
+      setJustGeneratedId(voice.id)
     } catch (e) {
       toast.error(errorMessage(e, 'Preview failed — the voice backend may be cold-starting. Try again.'))
     } finally {
@@ -132,45 +176,257 @@ export function VoicesPanel() {
     ultimate: voiceList.filter((v) => v.mode === 'ultimate').length,
   }), [voiceList])
 
-  useEffect(() => () => sampleRef.current?.pause(), [])
-
-  const playSample = (v: Voice) => {
-    sampleRef.current?.pause()
-    if (playingSampleId === v.id || !v.reference_audio_url) {
-      setPlayingSampleId(null)
-      return
-    }
-    const audio = new Audio(v.reference_audio_url)
-    audio.onended = () => setPlayingSampleId((id) => (id === v.id ? null : id))
-    audio.play().catch(() => {
-      setPlayingSampleId(null)
-      toast.error("Couldn't play this voice's sample")
-    })
-    sampleRef.current = audio
-    setPlayingSampleId(v.id)
+  // What a voice can play right now: a preview it already made of the current
+  // line, or (with the default line) its own sample clip. Otherwise Preview
+  // has to generate one first.
+  const playableUrl = (v: Voice): string | null => {
+    if (previewUrls[v.id] && previewTexts[v.id] === previewText) return previewUrls[v.id]
+    if (previewText === PREVIEW_DEFAULT && v.reference_audio_url) return `${v.reference_audio_url}?v=${v.seed}`
+    return null
   }
 
-  const visibleVoices = useMemo(() => {
-    const q = search.trim().toLowerCase()
-    return voiceList.filter((v) => {
-      if (modeFilter !== 'all' && v.mode !== modeFilter) return false
-      if (!q) return true
-      return v.name.toLowerCase().includes(q) || (v.description || '').toLowerCase().includes(q)
-    })
-  }, [voiceList, search, modeFilter])
+  const player = (v: Voice, bars: number) => (
+    <VoicePlayer
+      key={`${v.id}:${playableUrl(v) ?? ''}`}
+      id={v.id}
+      name={v.name}
+      url={playableUrl(v)}
+      onGenerate={() => handlePreview(v)}
+      generating={previewingId === v.id}
+      busy={previewingId !== null}
+      autoPlay={justGeneratedId === v.id}
+      bars={bars}
+    />
+  )
 
-  const myVisible = useMemo(() => visibleVoices.filter((v) => !v.builtin), [visibleVoices])
-  // Built-in voices grouped by character ("Villain A", "Villain B" → "Villain")
-  const builtinGroups = useMemo(() => {
-    const groups = new Map<string, Voice[]>()
-    for (const v of [...visibleVoices].filter((v) => v.builtin).sort((a, b) => a.id.localeCompare(b.id))) {
-      const character = v.name.replace(/\s[A-Z]$/, '')
-      groups.set(character, [...(groups.get(character) ?? []), v])
-    }
-    return [...groups.entries()]
-  }, [visibleVoices])
+  const visibleVoices = useMemo(
+    () => voiceList.filter((v) => (modeFilter === 'all' || v.mode === modeFilter) && voiceMatches(v, search)),
+    [voiceList, search, modeFilter]
+  )
+  const groups = useMemo(() => groupVoices(visibleVoices), [visibleVoices])
+  const searching = search.trim().length > 0
+  const toggleSection = (key: string) => setOpenSections((prev) => {
+    const next = new Set(prev)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    return next
+  })
 
   const activeMode = MODES.find((m) => m.value === mode)!
+
+  const iconButton = 'flex items-center justify-center h-7 w-7 rounded-md bg-white/[0.04] hover:bg-white/10 text-white/45 hover:text-white transition-colors disabled:opacity-40'
+
+  // A built-in voice: listen, make an editable copy, or copy its ID
+  const builtinRow = (v: Voice) => (
+    <div
+      key={v.id}
+      className="rounded-lg border p-2.5"
+      style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-3)' }}
+    >
+      <p className="text-[12.5px] font-semibold text-white">{v.name}</p>
+      <VoiceTags voice={v} className="mt-1" />
+      <div className="flex items-center gap-1 mt-2">
+        {player(v, 32)}
+        <Tooltip content="Make a copy you can edit">
+          <button
+            onClick={() => handleCopy(v)}
+            disabled={copyVoice.isPending}
+            aria-label={`Make a copy of ${v.name}`}
+            className={cn(iconButton, 'h-6 w-6')}
+          >
+            <CopyPlus size={10} />
+          </button>
+        </Tooltip>
+        <Tooltip content="Copy voice ID">
+          <button
+            onClick={() => { navigator.clipboard.writeText(v.id); toast.success('Voice ID copied') }}
+            aria-label={`Copy ${v.name} ID`}
+            className={cn(iconButton, 'h-6 w-6')}
+          >
+            <Hash size={10} />
+          </button>
+        </Tooltip>
+      </div>
+    </div>
+  )
+
+  // One of the user's own voices: rename, tags, reroll, copy, delete
+  const ownCard = (v: Voice) => {
+    const confirming = confirmDeleteId === v.id
+    const tagging = taggingId === v.id
+    const tagBlocker = tagsBlocker(tagDraft)
+    return (
+      <div
+        key={v.id}
+        className="group rounded-lg border p-2.5 transition-colors hover:border-white/[0.14]"
+        style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-3)' }}
+      >
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {editingVoiceId === v.id ? (
+            <input
+              autoFocus
+              value={editingVoiceName}
+              onChange={(e) => setEditingVoiceName(e.target.value)}
+              onBlur={() => {
+                const trimmed = editingVoiceName.trim()
+                if (trimmed && trimmed !== v.name) {
+                  updateVoice.mutate(
+                    { id: v.id, data: { name: trimmed } },
+                    { onError: () => toast.error('Failed to rename voice') }
+                  )
+                }
+                setEditingVoiceId(null)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur()
+                if (e.key === 'Escape') setEditingVoiceId(null)
+              }}
+              className="text-[12px] font-semibold text-white bg-ink-950 rounded px-1.5 py-0.5 min-w-0 flex-1 focus:outline-none border border-brand-400/60"
+            />
+          ) : (
+            <button
+              className="text-[12px] font-semibold text-white truncate hover:text-brand-200 transition-colors text-left min-w-0 flex-1"
+              onClick={() => { setEditingVoiceId(v.id); setEditingVoiceName(v.name) }}
+              title="Click to rename"
+            >
+              {v.name}
+            </button>
+          )}
+          {v.section && (
+            <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-white/10 text-white/70 uppercase tracking-wide font-semibold shrink-0">
+              Yours
+            </span>
+          )}
+          <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-brand/15 text-brand-300 border border-brand-400/20 uppercase tracking-wide font-semibold shrink-0">
+            {v.mode}
+          </span>
+        </div>
+        {v.description && (
+          <p className="text-[10px] text-white/40 mt-0.5 line-clamp-1 leading-relaxed" title={v.description}>
+            {v.description}
+          </p>
+        )}
+        <VoiceTags voice={v} className="mt-1.5" />
+
+        {/* Actions */}
+        <div className="flex items-center gap-1 mt-2">
+          {player(v, 32)}
+
+          <Tooltip content="Edit tags">
+            <button
+              onClick={() => {
+                if (tagging) return setTaggingId(null)
+                setTagDraft(tagsOf(v))
+                setTaggingId(v.id)
+              }}
+              aria-label={`Edit tags of ${v.name}`}
+              aria-expanded={tagging}
+              className={cn(iconButton, tagging && 'bg-brand/15 text-brand-300')}
+            >
+              <Tag size={11} />
+            </button>
+          </Tooltip>
+
+          <Tooltip content="Reroll voice identity">
+            <button
+              onClick={() => {
+                const newSeed = Math.floor(Math.random() * 2_000_000_000) + 1
+                updateVoice.mutate(
+                  { id: v.id, data: { seed: newSeed } },
+                  {
+                    onSuccess: () => {
+                      setPreviewUrls((p) => {
+                        if (p[v.id]) URL.revokeObjectURL(p[v.id])
+                        const n = { ...p }; delete n[v.id]; return n
+                      })
+                      toast.success('New voice rolled — preview to hear it')
+                    },
+                  }
+                )
+              }}
+              aria-label="Reroll voice identity"
+              className={iconButton}
+            >
+              <Dices size={12} />
+            </button>
+          </Tooltip>
+
+          <Tooltip content="Make a copy you can edit">
+            <button
+              onClick={() => handleCopy(v)}
+              disabled={copyVoice.isPending}
+              aria-label={`Make a copy of ${v.name}`}
+              className={iconButton}
+            >
+              <CopyPlus size={11} />
+            </button>
+          </Tooltip>
+
+          <Tooltip content="Copy voice ID">
+            <button
+              onClick={() => { navigator.clipboard.writeText(v.id); toast.success('Voice ID copied') }}
+              aria-label="Copy voice ID"
+              className={iconButton}
+            >
+              <Hash size={11} />
+            </button>
+          </Tooltip>
+
+          {/* Two-step delete — same safety as confirm(), no dialog */}
+          {confirming ? (
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => { deleteVoice.mutate(v.id); setConfirmDeleteId(null) }}
+                className="flex items-center gap-0.5 px-1.5 h-7 rounded-md bg-red-500 hover:bg-red-400 text-white text-[10px] font-semibold transition-colors"
+              >
+                <Check size={10} /> Delete
+              </button>
+              <button
+                onClick={() => setConfirmDeleteId(null)}
+                aria-label="Cancel delete"
+                className="flex items-center justify-center h-7 w-7 rounded-md bg-white/[0.04] hover:bg-white/10 text-white/50"
+              >
+                <X size={11} />
+              </button>
+            </div>
+          ) : (
+            <Tooltip content="Delete voice">
+              <button
+                onClick={() => setConfirmDeleteId(v.id)}
+                aria-label="Delete voice"
+                className="flex items-center justify-center h-7 w-7 rounded-md bg-white/[0.04] hover:bg-red-500/20 text-white/45 hover:text-red-400 transition-colors"
+              >
+                <Trash2 size={11} />
+              </button>
+            </Tooltip>
+          )}
+        </div>
+
+        {tagging && (
+          <div className="mt-2.5 pt-2.5 border-t border-white/[0.07] space-y-2.5">
+            <VoiceTagEditor value={tagDraft} onChange={setTagDraft} idPrefix={`tags-${v.id}`} />
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <button
+                onClick={() => saveTags(v)}
+                disabled={!!tagBlocker || updateVoice.isPending}
+                className="flex items-center gap-1 px-2.5 h-7 rounded-md bg-brand-400 hover:bg-brand-300 text-white text-[10.5px] font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                {updateVoice.isPending ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
+                Save tags
+              </button>
+              <button
+                onClick={() => setTaggingId(null)}
+                className="px-2 h-7 rounded-md text-[10.5px] text-white/50 hover:text-white hover:bg-white/[0.06] transition-colors"
+              >
+                Cancel
+              </button>
+              {tagBlocker && <span className="text-[10px] text-amber-400/70">{tagBlocker}</span>}
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="h-full flex flex-col min-h-0">
@@ -329,6 +585,9 @@ export function VoicesPanel() {
                   )}
                 </div>
 
+                {/* Tags — sort the voice into its section */}
+                <VoiceTagEditor value={tags} onChange={setTags} idPrefix="new-voice" />
+
                 {/* Advanced — collapsed by default */}
                 <div className="rounded-lg border border-white/[0.07] overflow-hidden">
                   <button
@@ -419,7 +678,7 @@ export function VoicesPanel() {
             placeholder="Type a line to hear…"
             className="w-full rounded-lg bg-ink-950/60 border border-white/10 px-2.5 h-8 text-xs text-white placeholder-white/25 focus:outline-none focus:border-brand-400 transition-all"
           />
-          <p className="text-[9.5px] text-white/30 mt-1">Every voice below is previewed saying this line.</p>
+          <p className="text-[9.5px] text-white/30 mt-1">Voices without a sample can make one saying this line (✦). Once a voice has a sample, ▶ plays it straight away.</p>
         </div>
 
         {/* ── Search + filter ─────────────────────────────────── */}
@@ -486,218 +745,19 @@ export function VoicesPanel() {
             </button>
           </div>
         ) : (
-          <div className="space-y-1.5">
-            {myVisible.map((v) => {
-              const isPreviewing = previewingId === v.id
-              const confirming = confirmDeleteId === v.id
-              return (
-                <div
-                  key={v.id}
-                  className="group rounded-lg border p-2.5 transition-colors hover:border-white/[0.14]"
-                  style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-3)' }}
-                >
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    {editingVoiceId === v.id ? (
-                      <input
-                        autoFocus
-                        value={editingVoiceName}
-                        onChange={(e) => setEditingVoiceName(e.target.value)}
-                        onBlur={() => {
-                          const trimmed = editingVoiceName.trim()
-                          if (trimmed && trimmed !== v.name) {
-                            updateVoice.mutate(
-                              { id: v.id, data: { name: trimmed } },
-                              { onError: () => toast.error('Failed to rename voice') }
-                            )
-                          }
-                          setEditingVoiceId(null)
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') e.currentTarget.blur()
-                          if (e.key === 'Escape') setEditingVoiceId(null)
-                        }}
-                        className="text-[12px] font-semibold text-white bg-ink-950 rounded px-1.5 py-0.5 min-w-0 flex-1 focus:outline-none border border-brand-400/60"
-                      />
-                    ) : (
-                      <button
-                        className="text-[12px] font-semibold text-white truncate hover:text-brand-200 transition-colors text-left min-w-0 flex-1"
-                        onClick={() => { setEditingVoiceId(v.id); setEditingVoiceName(v.name) }}
-                        title="Click to rename"
-                      >
-                        {v.name}
-                      </button>
-                    )}
-                    <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-brand/15 text-brand-300 border border-brand-400/20 uppercase tracking-wide font-semibold shrink-0">
-                      {v.mode}
-                    </span>
-                  </div>
-                  {v.description && (
-                    <p className="text-[10px] text-white/40 mt-0.5 line-clamp-1 leading-relaxed" title={v.description}>
-                      {v.description}
-                    </p>
-                  )}
-
-                  {/* Actions */}
-                  <div className="flex items-center gap-1 mt-2">
-                    <button
-                      onClick={() => handlePreview(v)}
-                      disabled={previewingId !== null}
-                      className="flex items-center gap-1 px-2 h-7 rounded-md bg-brand-400 hover:bg-brand-300 text-white text-[10px] font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                    >
-                      {isPreviewing ? <Loader2 size={11} className="animate-spin" /> : <Play size={10} fill="currentColor" />}
-                      {isPreviewing ? 'Generating…' : 'Preview'}
-                    </button>
-
-                    <div className="flex-1" />
-
-                    <Tooltip content="Reroll voice identity">
-                      <button
-                        onClick={() => {
-                          const newSeed = Math.floor(Math.random() * 2_000_000_000) + 1
-                          updateVoice.mutate(
-                            { id: v.id, data: { seed: newSeed } },
-                            {
-                              onSuccess: () => {
-                                setPreviewUrls((p) => {
-                                  if (p[v.id]) URL.revokeObjectURL(p[v.id])
-                                  const n = { ...p }; delete n[v.id]; return n
-                                })
-                                toast.success('New voice rolled — preview to hear it')
-                              },
-                            }
-                          )
-                        }}
-                        aria-label="Reroll voice identity"
-                        className="flex items-center justify-center h-7 w-7 rounded-md bg-white/[0.04] hover:bg-white/10 text-white/45 hover:text-white transition-colors"
-                      >
-                        <Dices size={12} />
-                      </button>
-                    </Tooltip>
-
-                    <Tooltip content="Copy voice ID">
-                      <button
-                        onClick={() => { navigator.clipboard.writeText(v.id); toast.success('Voice ID copied') }}
-                        aria-label="Copy voice ID"
-                        className="flex items-center justify-center h-7 w-7 rounded-md bg-white/[0.04] hover:bg-white/10 text-white/45 hover:text-white transition-colors"
-                      >
-                        <Copy size={11} />
-                      </button>
-                    </Tooltip>
-
-                    {/* Two-step delete — same safety as confirm(), no dialog */}
-                    {confirming ? (
-                      <div className="flex items-center gap-1">
-                        <button
-                          onClick={() => { deleteVoice.mutate(v.id); setConfirmDeleteId(null) }}
-                          className="flex items-center gap-0.5 px-1.5 h-7 rounded-md bg-red-500 hover:bg-red-400 text-white text-[10px] font-semibold transition-colors"
-                        >
-                          <Check size={10} /> Delete
-                        </button>
-                        <button
-                          onClick={() => setConfirmDeleteId(null)}
-                          aria-label="Cancel delete"
-                          className="flex items-center justify-center h-7 w-7 rounded-md bg-white/[0.04] hover:bg-white/10 text-white/50"
-                        >
-                          <X size={11} />
-                        </button>
-                      </div>
-                    ) : (
-                      <Tooltip content="Delete voice">
-                        <button
-                          onClick={() => setConfirmDeleteId(v.id)}
-                          aria-label="Delete voice"
-                          className="flex items-center justify-center h-7 w-7 rounded-md bg-white/[0.04] hover:bg-red-500/20 text-white/45 hover:text-red-400 transition-colors"
-                        >
-                          <Trash2 size={11} />
-                        </button>
-                      </Tooltip>
-                    )}
-                  </div>
-
-                  <AnimatePresence>
-                    {previewUrls[v.id] && (
-                      <motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.18 }}
-                        className="overflow-hidden"
-                      >
-                        <audio controls autoPlay src={previewUrls[v.id]} className="w-full mt-2 h-8" />
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-              )
-            })}
-
-            {builtinGroups.length > 0 && (
-              <div className={cn('space-y-1.5', myVisible.length > 0 && 'pt-3')}>
-                <div className="flex items-baseline gap-2 px-0.5">
-                  <span className="text-[11px] font-semibold text-white/70">Built-in voices</span>
-                  <span className="text-[10px] text-white/35 tabular-nums">
-                    {builtinGroups.reduce((n, [, g]) => n + g.length, 0)}
-                  </span>
-                </div>
-                {builtinGroups.map(([character, group]) => (
-                  <div
-                    key={character}
-                    className="rounded-lg border p-2.5"
-                    style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-3)' }}
-                  >
-                    <p className="text-[12px] font-semibold text-white">{character}</p>
-                    <p className="text-[10px] text-white/40 mt-0.5 line-clamp-2 leading-relaxed" title={group[0].description}>
-                      {group[0].description}
-                    </p>
-                    <div className="mt-2 space-y-1">
-                      {group.map((v) => {
-                        const isPreviewing = previewingId === v.id
-                        const playing = playingSampleId === v.id
-                        return (
-                          <div key={v.id}>
-                            <div className="flex items-center gap-1">
-                              <span className="text-[11px] text-white/75 w-12 shrink-0">Take {v.name.slice(-1)}</span>
-                              <Tooltip content={playing ? 'Stop' : 'Play its own sample'}>
-                                <button
-                                  onClick={() => playSample(v)}
-                                  aria-label={playing ? `Stop ${v.name}` : `Play ${v.name} sample`}
-                                  className="flex items-center gap-1 px-2 h-6 rounded-md bg-white/[0.06] hover:bg-white/[0.12] text-white/80 text-[10px] font-semibold transition-colors"
-                                >
-                                  {playing ? <Square size={9} fill="currentColor" /> : <Play size={9} fill="currentColor" />}
-                                  Sample
-                                </button>
-                              </Tooltip>
-                              <button
-                                onClick={() => handlePreview(v)}
-                                disabled={previewingId !== null}
-                                title="Say the preview line in this voice"
-                                className="flex items-center gap-1 px-2 h-6 rounded-md bg-brand-400 hover:bg-brand-300 text-white text-[10px] font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                              >
-                                {isPreviewing ? <Loader2 size={10} className="animate-spin" /> : <AudioLines size={10} />}
-                                {isPreviewing ? 'Generating…' : 'Preview'}
-                              </button>
-                              <div className="flex-1" />
-                              <Tooltip content="Copy voice ID">
-                                <button
-                                  onClick={() => { navigator.clipboard.writeText(v.id); toast.success('Voice ID copied') }}
-                                  aria-label={`Copy ${v.name} ID`}
-                                  className="flex items-center justify-center h-6 w-6 rounded-md bg-white/[0.04] hover:bg-white/10 text-white/45 hover:text-white transition-colors"
-                                >
-                                  <Copy size={10} />
-                                </button>
-                              </Tooltip>
-                            </div>
-                            {previewUrls[v.id] && (
-                              <audio controls autoPlay src={previewUrls[v.id]} className="w-full mt-1.5 h-8" />
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+          <div>
+            {groups.map((group) => (
+              <VoiceSection
+                key={group.key}
+                label={group.label}
+                hint={group.hint}
+                count={group.voices.length}
+                open={searching || openSections.has(group.key)}
+                onToggle={searching ? undefined : () => toggleSection(group.key)}
+              >
+                {group.voices.map((v) => (v.builtin ? builtinRow(v) : ownCard(v)))}
+              </VoiceSection>
+            ))}
           </div>
         )}
       </div>

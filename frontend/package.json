@@ -1,12 +1,13 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test": "node --test tests/*.test.ts",
     "preview": "vite preview",
     "tauri": "tauri"
   },

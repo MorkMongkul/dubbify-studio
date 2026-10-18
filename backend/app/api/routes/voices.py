@@ -18,14 +18,16 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
 from fastapi.responses import Response
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from typing import List, Optional
 
 from app.core.database import get_db
 from app.core.config import settings
+from app.core.paths import resolve_media_path
 from app.models.models import Voice, VoiceMode, Segment, Speaker
-from app.schemas.schemas import VoiceResponse, VoiceUpdate, VoicePreviewRequest
+from app.schemas.schemas import VoiceResponse, VoiceTagFields, VoiceUpdate, VoicePreviewRequest
 from app.services.tts_client import tts_client
 from app.services.builtin_voices import is_builtin
 
@@ -141,13 +143,24 @@ async def create_voice(
     cfg_value: float = Form(2.0),
     inference_timesteps: int = Form(10),
     seed: int = Form(-1),
+    gender: Optional[str] = Form(None),
+    age_group: Optional[str] = Form(None),
+    personality: List[str] = Form([]),
+    roles: List[str] = Form([]),
     reference_audio: Optional[UploadFile] = File(None),
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """
     Create a named voice. Send multipart/form-data; include `reference_audio`
-    for clone/ultimate modes.
+    for clone/ultimate modes. Tags: `gender`, `age_group`, and one
+    `personality` / `roles` field per tag.
     """
+    try:
+        tags = VoiceTagFields(gender=gender or None, age_group=age_group or None,
+                              personality=personality, roles=roles)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors(include_url=False, include_context=False))
+
     if mode in (VoiceMode.CLONE, VoiceMode.ULTIMATE) and reference_audio is None:
         raise HTTPException(
             status_code=400,
@@ -173,6 +186,10 @@ async def create_voice(
         cfg_value=cfg_value,
         inference_timesteps=inference_timesteps,
         seed=seed,
+        gender=tags.gender,
+        age_group=tags.age_group,
+        personality=tags.personality or [],
+        roles=tags.roles or [],
     )
     db.add(voice)
     await db.flush()  # assigns voice.id
@@ -201,9 +218,13 @@ async def update_voice(
     if not voice:
         raise HTTPException(status_code=404, detail="Voice not found")
 
-    data = payload.model_dump(exclude_none=True)
+    tag_fields = {"gender", "age_group", "personality", "roles"}
+    data = payload.model_dump(exclude_none=True, exclude=tag_fields)
     if "mode" in data:
         data["mode"] = data["mode"].value  # enum -> stored string
+    # Tags: an explicit null clears one (e.g. "gender": null moves the voice
+    # back to My voices). They never change how the voice sounds.
+    data.update(payload.model_dump(include=tag_fields, exclude_unset=True))
     identity_changed = any(
         k in data for k in ("seed", "description", "cfg_value", "inference_timesteps", "mode")
     )
@@ -216,6 +237,46 @@ async def update_voice(
         await _bake_design_voice(voice, db)
 
     await db.flush()
+    await db.refresh(voice)
+    return voice
+
+
+@router.post("/{voice_id}/copy", response_model=VoiceResponse, status_code=status.HTTP_201_CREATED)
+async def copy_voice(voice_id: str, db: AsyncSession = Depends(get_db, scope="function")):
+    """
+    Make one of the user's own voices from any voice, built-in ones included:
+    same settings and tags, and its own copy of the reference clip, so
+    deleting either voice never touches the other's audio.
+    """
+    result = await db.execute(select(Voice).where(Voice.id == voice_id))
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Voice not found")
+
+    voice = Voice(
+        name=f"{source.name} (copy)"[:120],
+        mode=source.mode,
+        description=source.description,
+        reference_transcript=source.reference_transcript,
+        cfg_value=source.cfg_value,
+        inference_timesteps=source.inference_timesteps,
+        seed=source.seed,
+        gender=source.gender,
+        age_group=source.age_group,
+        personality=list(source.personality or []),
+        roles=list(source.roles or []),
+    )
+    db.add(voice)
+    await db.flush()  # assigns voice.id
+
+    clip = Path(resolve_media_path(source.reference_audio_path)) if source.reference_audio_path else None
+    if clip and clip.is_file():
+        dest = VOICES_DIR / voice.id / f"reference{clip.suffix or '.wav'}"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(clip, dest)
+        voice.reference_audio_path = str(dest)
+
+    await db.commit()
     await db.refresh(voice)
     return voice
 

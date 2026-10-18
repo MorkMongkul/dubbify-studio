@@ -14,9 +14,10 @@ def _check_color(value):
     if value is not None and not _COLOR_RE.match(value):
         raise ValueError("Use a colour name (e.g. white) or a hex value (e.g. #ff0000)")
     return value
-from typing import Optional, List
+from typing import Literal, Optional, List
 from datetime import datetime
 from app.models.models import JobStatus, Gender, AgeGroup, VoiceMode
+from app.services.voice_tags import AGE_GROUPS, GENDERS, normalize_tags, voice_section
 from pathlib import Path
 from app.core.config import settings
 from app.services.source_separator import UNAVAILABLE_MARKER
@@ -379,7 +380,20 @@ class HealthResponse(BaseModel):
 
 
 # ── Voice library (Voice Creator) ─────────────────────────────
-class VoiceUpdate(BaseModel):
+class VoiceTagFields(BaseModel):
+    """Who a voice sounds like, and its tags (app/services/voice_tags.py)."""
+    gender: Optional[Literal[GENDERS]] = None          # type: ignore[valid-type]
+    age_group: Optional[Literal[AGE_GROUPS]] = None    # type: ignore[valid-type]
+    personality: Optional[List[str]] = None
+    roles: Optional[List[str]] = None
+
+    @field_validator("personality", "roles")
+    @classmethod
+    def _clean_tags(cls, tags: Optional[List[str]]) -> Optional[List[str]]:
+        return None if tags is None else normalize_tags(tags)
+
+
+class VoiceUpdate(VoiceTagFields):
     name: Optional[str] = None
     mode: Optional[VoiceMode] = None
     description: Optional[str] = None
@@ -400,6 +414,20 @@ class VoiceResponse(BaseModel):
     inference_timesteps: int
     seed: int
     created_at: datetime
+    gender: Optional[str] = None
+    age_group: Optional[str] = None
+    personality: List[str] = []
+    roles: List[str] = []
+
+    @field_validator("personality", "roles", mode="before")
+    @classmethod
+    def _no_tags_yet(cls, tags):
+        return tags or []          # NULL on voices made before tags existed
+
+    @computed_field
+    def section(self) -> Optional[str]:
+        """Voices-tab section; None = "My voices" (no "who" chosen yet)."""
+        return voice_section(self.gender, self.age_group, self.roles)
 
     @computed_field
     def has_reference(self) -> bool:

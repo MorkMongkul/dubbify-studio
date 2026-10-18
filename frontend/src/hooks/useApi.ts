@@ -526,6 +526,14 @@ export function useDeleteVoice() {
   })
 }
 
+export function useCopyVoice() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => voices.copy(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['voices'] }),
+  })
+}
+
 export function usePreviewVoice() {
   return useMutation({
     mutationFn: ({ id, text }: { id: string; text: string }) =>

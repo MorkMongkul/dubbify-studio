@@ -98,6 +98,14 @@ class Voice(Base):
     # -1 means "not frozen" (random each call); a concrete value locks the voice.
     seed                = Column(Integer, default=-1)
 
+    # Tags for finding a voice (app/services/voice_tags.py): who it sounds
+    # like and roughly how old, which together pick its section in the Voices
+    # tab, plus free personality / role tags. NULL on voices made before tags.
+    gender      = Column(String(10), nullable=True)      # man / woman / boy / girl
+    age_group   = Column(String(10), nullable=True)      # child, teen, 20s … 70s+
+    personality = Column(JSON, default=list)
+    roles       = Column(JSON, default=list)
+
     created_at  = Column(DateTime, server_default=func.now())
     updated_at  = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
