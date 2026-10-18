@@ -23,6 +23,7 @@ from app.services.tts_client import tts_client
 from app.services.audio_extractor import mix_dubbed_audio, probe_video
 from app.services.video_overlay import build_subtitle_track, render_subtitle_pngs
 from app.services.pipeline_common import RUNNING_STATUSES
+from app.services import auto_voice
 from app.core.paths import resolve_media_path, resolve_existing
 
 logger = logging.getLogger(__name__)
@@ -63,17 +64,23 @@ async def _resolve_voice(seg: Segment, db: AsyncSession) -> dict:
         if v:
             return await _voice_kwargs(v)
 
-    # 2 & 3. Speaker-level voice, then legacy design prompt
+    # 2 & 3. Speaker-level voice — a speaker without one gets a built-in voice
+    # picked and kept (auto_voice.py) — then the legacy design prompt
     if seg.speaker_id:
         speaker = (await db.execute(select(Speaker).where(Speaker.id == seg.speaker_id))).scalar_one_or_none()
         if speaker:
+            v = None
             if speaker.voice_id:
                 v = (await db.execute(select(Voice).where(Voice.id == speaker.voice_id))).scalar_one_or_none()
-                if v:
-                    return await _voice_kwargs(v)
+            if not v:
+                v = await auto_voice.ensure_speaker_voice(db, speaker)
+            if v:
+                return await _voice_kwargs(v)
             return {"voice_design": speaker.voice_design_prompt or ""}
 
-    return {"voice_design": ""}
+    # A line with no speaker: a fixed built-in voice by its pitch, not a random one
+    v = await auto_voice.voice_for_line(db, seg)
+    return await _voice_kwargs(v) if v else {"voice_design": ""}
  
  
 class TTSUnavailable(Exception):

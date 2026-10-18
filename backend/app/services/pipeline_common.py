@@ -46,9 +46,10 @@ def vocals_path_for(job: Job) -> Optional[str]:
 # ── Speakers ──────────────────────────────────────────────────────────────────
 
 def is_confirmed_speaker(speaker: Speaker) -> bool:
-    """A speaker the user has made their own — renamed it or gave it a voice."""
+    """A speaker the user has made their own — renamed it or gave it a voice
+    (a voice the app picked by itself, auto_voice.py, doesn't count)."""
     name = (speaker.display_name or "").strip()
-    return bool(speaker.voice_id) or (bool(name) and name != speaker.label)
+    return (bool(speaker.voice_id) and not speaker.voice_auto) or (bool(name) and name != speaker.label)
 
 
 async def project_speaker_labels(db: AsyncSession, project_id: str) -> set:

@@ -197,6 +197,10 @@ class Speaker(Base):
     # Speaker-level voice assignment — applies to all of this speaker's segments
     # unless a segment overrides it. FK to the workspace voice library.
     voice_id = Column(String, ForeignKey("voices.id"), nullable=True)
+    # True when the app picked voice_id itself (app/services/auto_voice.py)
+    # because nobody chose one; False once the user chooses. A picked voice
+    # doesn't make the speaker "confirmed" (pipeline_common.is_confirmed_speaker).
+    voice_auto = Column(Boolean, default=False)
 
     project  = relationship("Project", back_populates="speakers")
     segments = relationship("Segment", back_populates="speaker")
