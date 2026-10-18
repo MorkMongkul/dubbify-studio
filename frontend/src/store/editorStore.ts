@@ -3,6 +3,7 @@
 
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
+import type { JobAction } from '@/lib/jobProgress'
 
 // Which panel the left icon rail has open in the dynamic dock.
 export type RailTab = 'projects' | 'speakers' | 'elements' | 'voices' | 'assistant' | 'settings'
@@ -47,6 +48,11 @@ interface EditorStore {
   batchGeneratingJobId: string | null
   // The backend's id for the running batch (GET /tts/synthesize/batch/{id})
   batchId: string | null
+  // What the user last started on each episode (by job id), so its progress
+  // can say "Detecting speakers…" rather than guess from the status. Outside
+  // DEFAULT_STATE too: the step keeps running across session switches.
+  jobActions: Record<string, JobAction>
+  setJobAction: (jobId: string, action: JobAction) => void
   availableVoices: VoicePreset[]
   inspectorMode: 'global_synthesis' | 'audio_clip_settings' | 'subtitle_settings'
   focusedTimelineItemId: string | null
@@ -183,6 +189,10 @@ export const useEditorStore = create<EditorStore>()(
     batchGeneratingIds: [] as string[],
     batchGeneratingJobId: null as string | null,
     batchId: null as string | null,
+
+    // ── Started actions (not part of DEFAULT_STATE — see interface note) ──
+    jobActions: {} as Record<string, JobAction>,
+    setJobAction: (jobId, action) => set((s) => ({ jobActions: { ...s.jobActions, [jobId]: action } })),
 
     // ── Playback ──────────────────────────────────────────────
     setCurrentTime: (t) => {

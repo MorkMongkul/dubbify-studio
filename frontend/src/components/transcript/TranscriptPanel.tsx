@@ -13,7 +13,8 @@ import { cn, formatTime, getSpeakerColor } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import { segments as segmentsApi, tts as ttsApi, type BatchSynthesisStatus } from '@/api/client'
 import { useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker, useTranslateMissing, useRetrySeparation } from '@/hooks/useApi'
-import { PipelineStepper } from '@/features/upload/PipelineStepper'
+import { ProgressSteps } from '@/components/ui/ProgressSteps'
+import { jobProgress } from '@/lib/jobProgress'
 import { recordSegmentChange, recordSegmentsChange, recordSegmentCreate } from '@/lib/historyHelpers'
 
 interface TranscriptPanelProps {
@@ -55,13 +56,16 @@ export function TranscriptPanel({
     () => segments.filter((s) => s.source_text?.trim() && !s.khmer_text?.trim()).length,
     [segments],
   )
-  const translating = job?.status === 'translating'
   const jobIdle = !job || job.status === 'completed' || job.status === 'failed'
+  // The one place a running step shows its progress: the full view below
+  // before the episode has lines, a thin bar above them after (the top bar
+  // takes over only while this panel is hidden).
+  const jobAction = useEditorStore((s) => s.jobActions[jobId])
+  const progress = jobProgress(job?.status, segments.length > 0, jobAction)
 
   // Music/voices separation fell back to the original audio: say so for as
   // long as it's true, and offer to try again (lines and voices are kept).
   const retrySeparation = useRetrySeparation()
-  const separatingAgain = job?.status === 'separating' && segments.length > 0
   // Also before Analyze: transcription listens to the separated voices
   const separationFailed = job?.stems_separated === false && (jobIdle || job.status === 'stems_ready')
   const handleRetrySeparation = () => {
@@ -590,6 +594,18 @@ export function TranscriptPanel({
         </div>
       </div>
 
+      {/* A step running on an episode whose lines stay on screen meanwhile:
+          speaker detection, re-analysis, missing translations, separation */}
+      {progress && segments.length > 0 && (
+        <div className="px-3 py-1.5 border-b border-ink-800/50 shrink-0 bg-brand-950/20 flex items-start gap-2">
+          <Loader2 size={11} className="animate-spin text-brand-400 shrink-0 mt-0.5" />
+          <div className="min-w-0 leading-snug">
+            <p className="text-[10px] font-semibold text-brand-300">{progress.title}</p>
+            {progress.detail && <p className="text-[10px] text-white/40">{progress.detail}</p>}
+          </div>
+        </div>
+      )}
+
       {/* Batch generation progress — independent of selection, so it stays
           visible for the whole run even after the selection is cleared */}
       {batchSynthesizing && inspectorMode === 'global_synthesis' && (
@@ -607,55 +623,37 @@ export function TranscriptPanel({
         </div>
       )}
 
-      {inspectorMode === 'global_synthesis' && (separatingAgain || separationFailed) && (
+      {inspectorMode === 'global_synthesis' && separationFailed && (
         <div className="px-3 py-1.5 border-b border-ink-800/50 shrink-0 bg-amber-950/20 flex items-center gap-2">
-          {separatingAgain ? (
-            <>
-              <Loader2 size={11} className="animate-spin text-amber-300 shrink-0" />
-              <span className="text-[10px] font-semibold text-amber-200">Separating music and voices…</span>
-            </>
-          ) : (
-            <>
-              <AudioLines size={11} className="text-amber-300 shrink-0" />
-              <span className="flex-1 text-[10px] text-amber-200 leading-snug">
-                Music and voices couldn't be separated, so the music track still has the original voices.
-              </span>
-              <button
-                onClick={handleRetrySeparation}
-                disabled={retrySeparation.isPending}
-                className="shrink-0 text-[10px] font-semibold text-amber-100 bg-amber-600/30 hover:bg-amber-600/50 px-2 py-0.5 rounded transition-colors disabled:opacity-50"
-                title="Run the separation again. Lines, translations and voices are kept."
-              >
-                Try again
-              </button>
-            </>
-          )}
+          <AudioLines size={11} className="text-amber-300 shrink-0" />
+          <span className="flex-1 text-[10px] text-amber-200 leading-snug">
+            Music and voices couldn't be separated, so the music track still has the original voices.
+          </span>
+          <button
+            onClick={handleRetrySeparation}
+            disabled={retrySeparation.isPending}
+            className="shrink-0 text-[10px] font-semibold text-amber-100 bg-amber-600/30 hover:bg-amber-600/50 px-2 py-0.5 rounded transition-colors disabled:opacity-50"
+            title="Run the separation again. Lines, translations and voices are kept."
+          >
+            Try again
+          </button>
         </div>
       )}
 
-      {inspectorMode === 'global_synthesis' && (translating || (missingTranslations > 0 && jobIdle)) && (
+      {inspectorMode === 'global_synthesis' && missingTranslations > 0 && jobIdle && (
         <div className="px-3 py-1.5 border-b border-ink-800/50 shrink-0 bg-amber-950/20 flex items-center gap-2">
-          {translating ? (
-            <>
-              <Loader2 size={11} className="animate-spin text-amber-300 shrink-0" />
-              <span className="text-[10px] font-semibold text-amber-200">Translating missing lines…</span>
-            </>
-          ) : (
-            <>
-              <Languages size={11} className="text-amber-300 shrink-0" />
-              <span className="flex-1 text-[10px] text-amber-200 leading-snug">
-                {missingTranslations} line{missingTranslations === 1 ? ' has' : 's have'} no translation
-              </span>
-              <button
-                onClick={handleTranslateMissing}
-                disabled={translateMissing.isPending}
-                className="shrink-0 text-[10px] font-semibold text-amber-100 bg-amber-600/30 hover:bg-amber-600/50 px-2 py-0.5 rounded transition-colors disabled:opacity-50"
-                title="Translate only the lines without a translation — translated and edited lines stay as they are"
-              >
-                Translate missing lines
-              </button>
-            </>
-          )}
+          <Languages size={11} className="text-amber-300 shrink-0" />
+          <span className="flex-1 text-[10px] text-amber-200 leading-snug">
+            {missingTranslations} line{missingTranslations === 1 ? ' has' : 's have'} no translation
+          </span>
+          <button
+            onClick={handleTranslateMissing}
+            disabled={translateMissing.isPending}
+            className="shrink-0 text-[10px] font-semibold text-amber-100 bg-amber-600/30 hover:bg-amber-600/50 px-2 py-0.5 rounded transition-colors disabled:opacity-50"
+            title="Translate only the lines without a translation — translated and edited lines stay as they are"
+          >
+            Translate missing lines
+          </button>
         </div>
       )}
 
@@ -712,19 +710,14 @@ export function TranscriptPanel({
           </div>
         ) : segments.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-8 gap-3">
-            {/* Stage 1 running — extracting / separating */}
-            {job && (job.status === 'extracting' || job.status === 'separating' || job.status === 'pending') ? (
+            {progress ? (
               <>
                 <Loader2 size={24} className="text-brand-400 animate-spin mb-1" />
-                <p className="text-[12px] font-semibold text-brand-300">
-                  {job.status === 'separating' ? 'Splitting vocals from BGM…' : 'Extracting audio…'}
-                </p>
-                <p className="text-[11px] text-white/40 max-w-[200px] leading-normal">
-                  Stems will appear on the timeline when ready
-                </p>
-                <div className="w-48 mt-1">
-                  <PipelineStepper job={job} compact />
-                </div>
+                <p className="text-[12px] font-semibold text-brand-300">{progress.title}</p>
+                {progress.detail && (
+                  <p className="text-[11px] text-white/40 max-w-[220px] leading-normal">{progress.detail}</p>
+                )}
+                <ProgressSteps steps={progress.steps} className="w-48 mt-1" />
               </>
             ) : job?.status === 'stems_ready' ? (
               /* Stage 1 done — waiting for user to click Analyze */
@@ -736,24 +729,6 @@ export function TranscriptPanel({
                 <p className="text-[11px] text-white/40 max-w-[200px] leading-normal">
                   Click the <span className="text-emerald-400 font-semibold">Analyze</span> button on the Vocals track to detect speakers and transcribe.
                 </p>
-              </>
-            ) : job && (job.status === 'diarizing' || job.status === 'transcribing' || job.status === 'translating') ? (
-              /* Stage 2 running */
-              <>
-                <Loader2 size={24} className="text-brand-400 animate-spin mb-1" />
-                <p className="text-[12px] font-semibold text-brand-300">
-                  {job.status === 'diarizing'    ? 'Detecting speakers…'
-                  : job.status === 'transcribing' ? 'Transcribing speech…'
-                  : 'Translating dialogue…'}
-                </p>
-                <p className="text-[11px] text-white/40 max-w-[200px] leading-normal">
-                  {job.status === 'diarizing'    ? 'Identifying who speaks when'
-                  : job.status === 'transcribing' ? 'Converting speech to text'
-                  : 'Translating to Khmer'}
-                </p>
-                <div className="w-48 mt-1">
-                  <PipelineStepper job={job} compact />
-                </div>
               </>
             ) : (
               <>

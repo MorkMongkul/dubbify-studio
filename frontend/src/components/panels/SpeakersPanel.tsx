@@ -4,7 +4,7 @@
 // dedupes the segment/speaker subscriptions it shares with the editor).
 import { VoiceOptions } from '@/components/voices/VoiceOptions'
 import { useState } from 'react'
-import { AudioLines, Loader2, RefreshCw, Users } from 'lucide-react'
+import { AudioLines, RefreshCw, Users } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
@@ -45,7 +45,10 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
 
   const busy = job ? isJobRunning(job.status) : false
   const finished = job?.status === 'completed' || job?.status === 'failed'
-  const canRelabel = finished && segs.length > 0
+  // The actions stay in place while a step runs, just unavailable: what's
+  // running shows in the transcript panel, not here as well.
+  const showActions = segs.length > 0 && (finished || busy)
+  const UNAVAILABLE = 'Available when the current step finishes'
 
   const runDetectSpeakers = () => {
     if (!jobId) return
@@ -85,65 +88,57 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
     <div className="h-full flex flex-col min-h-0">
       <PanelHeader icon={Users} title="Speakers" count={sessionSpeakers.length} />
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
-        {(canRelabel || busy) && (
+        {showActions && (
           <div className="p-2 rounded bg-ink-800/30 border border-ink-800/40 space-y-1.5">
-            {busy ? (
-              <p className="flex items-center gap-1.5 text-[10px] text-ink-400">
-                <Loader2 size={11} className="animate-spin shrink-0" />
-                {job?.status === 'diarizing' ? 'Listening for speakers…' : 'Working on this session…'}
+            {!busy && sessionSpeakers.length === 1 && segs.length >= 4 && (
+              <p className="text-[9px] text-amber-300/80">
+                Only one voice is assigned. If more people speak in this video, detect speakers again.
               </p>
-            ) : (
-              <>
-                {sessionSpeakers.length === 1 && segs.length >= 4 && (
-                  <p className="text-[9px] text-amber-300/80">
-                    Only one voice is assigned. If more people speak in this video, detect speakers again.
-                  </p>
-                )}
-                <button
-                  onClick={runDetectSpeakers}
-                  disabled={detectSpeakers.isPending}
-                  className="w-full flex items-center justify-center gap-1.5 py-1 rounded bg-brand-600 hover:bg-brand-500 disabled:opacity-60 text-white text-[10px] font-semibold transition-colors"
-                >
-                  <AudioLines size={11} />
-                  Detect speakers
-                </button>
-                <p className="text-[9px] text-ink-500 leading-snug">
-                  Re-listens to the audio and reassigns who speaks each line. Text, translations and
-                  generated voices stay as they are.
+            )}
+            <button
+              onClick={runDetectSpeakers}
+              disabled={busy || detectSpeakers.isPending}
+              title={busy ? UNAVAILABLE : undefined}
+              className="w-full flex items-center justify-center gap-1.5 py-1 rounded bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:hover:bg-brand-600 disabled:cursor-not-allowed text-white text-[10px] font-semibold transition-colors"
+            >
+              <AudioLines size={11} />
+              Detect speakers
+            </button>
+            <p className="text-[9px] text-ink-500 leading-snug">
+              Re-listens to the audio and reassigns who speaks each line. Text, translations and
+              generated voices stay as they are.
+            </p>
+            {confirmReanalyze && !busy ? (
+              <div className="space-y-1.5 pt-1 border-t border-ink-800/60">
+                <p className="text-[9px] text-amber-300/90 leading-snug">
+                  Replace every segment with a fresh transcription, speakers and translation?
+                  Your text edits and generated voices in this session will be discarded.
                 </p>
-                {confirmReanalyze ? (
-                  <div className="space-y-1.5 pt-1 border-t border-ink-800/60">
-                    <p className="text-[9px] text-amber-300/90 leading-snug">
-                      Replace every segment with a fresh transcription, speakers and translation?
-                      Your text edits and generated voices in this session will be discarded.
-                    </p>
-                    <div className="flex gap-1.5">
-                      <button
-                        onClick={runReanalyze}
-                        className="flex-1 py-1 rounded bg-red-600/80 hover:bg-red-500 text-white text-[10px] font-semibold transition-colors"
-                      >
-                        Replace segments
-                      </button>
-                      <button
-                        onClick={() => setConfirmReanalyze(false)}
-                        className="flex-1 py-1 rounded bg-ink-800 hover:bg-ink-700 text-ink-300 text-[10px] transition-colors"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : (
+                <div className="flex gap-1.5">
                   <button
-                    onClick={() => setConfirmReanalyze(true)}
-                    disabled={analyze.isPending}
-                    className="w-full flex items-center justify-center gap-1.5 py-1 rounded bg-ink-800 hover:bg-ink-700 disabled:opacity-60 text-ink-300 text-[10px] transition-colors"
-                    title="Transcribe, detect speakers and translate this session again from scratch"
+                    onClick={runReanalyze}
+                    className="flex-1 py-1 rounded bg-red-600/80 hover:bg-red-500 text-white text-[10px] font-semibold transition-colors"
                   >
-                    <RefreshCw size={10} />
-                    Re-analyze…
+                    Replace segments
                   </button>
-                )}
-              </>
+                  <button
+                    onClick={() => setConfirmReanalyze(false)}
+                    className="flex-1 py-1 rounded bg-ink-800 hover:bg-ink-700 text-ink-300 text-[10px] transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => setConfirmReanalyze(true)}
+                disabled={busy || analyze.isPending}
+                className="w-full flex items-center justify-center gap-1.5 py-1 rounded bg-ink-800 hover:bg-ink-700 disabled:opacity-40 disabled:hover:bg-ink-800 disabled:cursor-not-allowed text-ink-300 text-[10px] transition-colors"
+                title={busy ? UNAVAILABLE : 'Transcribe, detect speakers and translate this session again from scratch'}
+              >
+                <RefreshCw size={10} />
+                Re-analyze…
+              </button>
             )}
           </div>
         )}
@@ -151,7 +146,7 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
           <div className="flex flex-col items-center justify-center py-6 text-center">
             <Users size={18} className="text-ink-700 mb-2" />
             <p className="text-[10px] text-ink-600">No speakers yet</p>
-            <p className="text-[9px] text-ink-700 mt-0.5">Appear here once segments are analyzed</p>
+            <p className="text-[9px] text-ink-700 mt-0.5">They appear here when the episode has been analyzed</p>
           </div>
         ) : (
           sessionSpeakers.map(({ sp: speaker, projectIndex }) => {
