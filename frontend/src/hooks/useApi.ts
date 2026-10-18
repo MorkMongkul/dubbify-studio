@@ -348,8 +348,10 @@ export function useSynthesizeSegment() {
       tts.synthesizeSegment(segmentId),
     onSuccess: (_, { jobId }) => {
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
-      qc.invalidateQueries({ queryKey: ['speakers'] })   // speakers without a voice get one picked
     },
+    // A speaker without a voice gets one picked before the voice server is
+    // asked, so the pick is there even when the server then fails
+    onSettled: () => qc.invalidateQueries({ queryKey: ['speakers'] }),
   })
 }
 

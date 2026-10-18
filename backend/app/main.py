@@ -146,8 +146,8 @@ if FRONTEND_DIST:
     # The desktop window keeps pages it has loaded. Unless the page says to
     # check back every time, an updated app shows the previous version's page,
     # and so its code, until that saved copy expires. Checking back is cheap
-    # (a 304 from this local server); the JS/CSS files have hashed names, so
-    # a new page always points at new ones.
+    # (a small file from this local server); the JS/CSS files have hashed
+    # names, so a new page always points at new ones.
     _CHECK_EVERY_TIME = {"Cache-Control": "no-cache"}
 
     @app.get("/{full_path:path}", include_in_schema=False)

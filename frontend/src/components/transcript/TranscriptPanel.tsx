@@ -402,10 +402,10 @@ export function TranscriptPanel({
         } catch {
           // the next pass refreshes the lines
         }
+        qc.invalidateQueries({ queryKey: ['speakers'] })   // speakers without a voice get one picked as lines are voiced
         if (!status.finished) continue
 
         stopTracking()
-        qc.invalidateQueries({ queryKey: ['speakers'] })   // speakers without a voice got one picked
         const failed = status.failed.length
         if (failed === 0) {
           toast.success(`Generated ${status.done} voice${status.done === 1 ? '' : 's'}`)

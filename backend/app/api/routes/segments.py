@@ -340,6 +340,8 @@ async def update_speaker(
         raise HTTPException(status_code=404, detail="Speaker not found")
 
     update_data = payload.model_dump(exclude_unset=True)
+    if update_data.get("voice_id") and not await db.get(Voice, update_data["voice_id"]):
+        raise HTTPException(status_code=404, detail="Voice not found")
     for field, value in update_data.items():
         setattr(speaker, field, value)
     if "voice_id" in update_data:

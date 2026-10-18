@@ -101,7 +101,15 @@ async def build_speaker_references(db: AsyncSession, project_id: str, tmp_dir: s
     label — and with it the name and voice the user assigned.
     """
     result = await db.execute(select(Speaker).where(Speaker.project_id == project_id))
-    confirmed = {sp.id: sp for sp in result.scalars().all() if is_confirmed_speaker(sp)}
+    # A voice the app picked (auto_voice.py) counts once lines were voiced with
+    # it: the speaker must be recognised again, or it's replaced and re-voiced
+    # differently. A pick nobody has heard yet doesn't count.
+    heard = set((await db.execute(
+        select(Segment.speaker_id).where(Segment.speaker_id.is_not(None), Segment.tts_audio_path.is_not(None),
+                                         Segment.tts_audio_path != "")
+    )).scalars().all())
+    confirmed = {sp.id: sp for sp in result.scalars().all()
+                 if is_confirmed_speaker(sp) or (sp.voice_id and sp.voice_auto and sp.id in heard)}
     if not confirmed:
         return []
 
