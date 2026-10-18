@@ -2,9 +2,11 @@
 // Speakers tab of the dock — rename the session's speakers and assign each a
 // library voice. Extracted from EditorPage; fully self-contained (React Query
 // dedupes the segment/speaker subscriptions it shares with the editor).
-import { VoiceOptions } from '@/components/voices/VoiceOptions'
+import { VoiceBrowser } from '@/components/voices/VoiceBrowser'
+import { VoiceTrigger } from '@/components/voices/VoiceTrigger'
 import { useState } from 'react'
-import { AudioLines, RefreshCw, Users } from 'lucide-react'
+import { AnimatePresence, motion } from 'framer-motion'
+import { AudioLines, ChevronLeft, RefreshCw, Users } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
@@ -12,6 +14,8 @@ import {
 } from '@/hooks/useApi'
 import { getSpeakerColor, getSpeakerDisplayName, isJobRunning } from '@/lib/utils'
 import { recordSpeakerChange } from '@/lib/historyHelpers'
+import { voiceUsers } from '@/lib/voiceTags'
+import type { Speaker } from '@/types'
 import { useHistoryStore } from '@/store/historyStore'
 import { PanelHeader, PanelEmptyState } from './PanelShell'
 
@@ -24,7 +28,7 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
   const qc = useQueryClient()
   const { data: segs = [] } = useSegments(jobId ?? null)
   const { data: spks = [] } = useSpeakers(projectId ?? null)
-  const { data: availableVoices = [] } = useVoices()
+  const { data: availableVoices = [], isSuccess: voicesLoaded } = useVoices()
   const updateSpeaker = useUpdateSpeaker()
   const [editingSpeakerId, setEditingSpeakerId] = useState<string | null>(null)
   const [editingSpeakerName, setEditingSpeakerName] = useState('')
@@ -32,6 +36,8 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
   const detectSpeakers = useDetectSpeakers()
   const analyze = useAnalyzeJob()
   const [confirmReanalyze, setConfirmReanalyze] = useState(false)
+  // The speaker whose voice is being chosen: the voice browser covers the list meanwhile
+  const [browsingId, setBrowsingId] = useState<string | null>(null)
 
   // Speakers actually present in this session, each keeping the index it has
   // in the FULL project speaker list: that index is what getSpeakerColor() is
@@ -42,6 +48,19 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
     .map((sp, projectIndex) => ({ sp, projectIndex }))
     .filter(({ sp }) => sessionSpeakerIds.has(sp.id))
     .sort((a, b) => a.sp.label.localeCompare(b.sp.label))
+
+  const browsing = sessionSpeakers.find(({ sp }) => sp.id === browsingId)
+  // The speaker left the episode meanwhile (e.g. its last line went to someone
+  // else): close for good, so the browser doesn't pop up again if it returns
+  if (browsingId && !browsing) setBrowsingId(null)
+
+  const chooseVoice = (speaker: Speaker, voiceId: string | null) => {
+    setBrowsingId(null)
+    const before = speaker.voice_id ?? null
+    if (before === voiceId) return
+    updateSpeaker.mutate({ speakerId: speaker.id, data: { voice_id: voiceId } })
+    recordSpeakerChange(qc, projectId!, speaker.id, { voice_id: before }, { voice_id: voiceId }, 'Change speaker voice')
+  }
 
   const busy = job ? isJobRunning(job.status) : false
   const finished = job?.status === 'completed' || job?.status === 'failed'
@@ -85,7 +104,7 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
   }
 
   return (
-    <div className="h-full flex flex-col min-h-0">
+    <div className="h-full flex flex-col min-h-0 relative">
       <PanelHeader icon={Users} title="Speakers" count={sessionSpeakers.length} />
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
         {showActions && (
@@ -189,21 +208,15 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
                     </span>
                   )}
                 </div>
-                <select
-                  className="w-full bg-ink-900 text-ink-300 text-[10px] rounded border border-ink-700/60 hover:border-ink-600 py-1 px-1.5 focus:outline-none focus:border-brand-500/50 cursor-pointer"
-                  value={speaker.voice_id || ''}
-                  onChange={(e) => {
-                    const before = speaker.voice_id ?? null
-                    const after = e.target.value || null
-                    updateSpeaker.mutate({ speakerId: speaker.id, data: { voice_id: after } })
-                    recordSpeakerChange(qc, projectId, speaker.id,
-                      { voice_id: before }, { voice_id: after }, 'Change speaker voice')
-                  }}
-                  title="Voice used for all of this speaker's clips"
-                >
-                  <option value="">Choose for me</option>
-                  <VoiceOptions voices={availableVoices} />
-                </select>
+                <VoiceTrigger
+                  voice={speaker.voice_id ? availableVoices.find((v) => v.id === speaker.voice_id) : undefined}
+                  missing={voicesLoaded && !!speaker.voice_id && !availableVoices.some((v) => v.id === speaker.voice_id)}
+                  emptyLabel={speaker.voice_id && !voicesLoaded ? 'Loading…' : 'Choose for me'}
+                  emptyHint={speaker.voice_id && !voicesLoaded ? '' : "A voice that fits the actor is picked the first time it's voiced"}
+                  playerId={`card:${speaker.id}`}
+                  onOpen={() => setBrowsingId(speaker.id)}
+                  title="Choose the voice for all of this speaker's lines"
+                />
                 {speaker.voice_auto && speaker.voice_id && (
                   <p className="text-[9.5px] text-ink-500 leading-snug">
                     Picked for you to fit the actor — change it if it doesn't suit.
@@ -214,6 +227,47 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
           })
         )}
       </div>
+
+      <AnimatePresence>
+        {browsing && (
+          <motion.div
+            key="voice-browser"
+            className="absolute inset-0 z-20 flex flex-col bg-ink-900"
+            initial={{ x: '100%' }}
+            animate={{ x: 0 }}
+            exit={{ x: '100%' }}
+            transition={{ type: 'spring', stiffness: 420, damping: 40 }}
+          >
+            <VoiceBrowser
+              className="flex-1"
+              voices={availableVoices}
+              currentVoiceId={browsing.sp.voice_id ?? null}
+              usedBy={voiceUsers(sessionSpeakers.map(({ sp }) => sp), browsing.sp.id)}
+              auto={{
+                label: 'Choose for me',
+                hint: "A built-in voice that fits the actor is picked the first time this speaker is voiced, and kept.",
+              }}
+              onChoose={(voiceId) => chooseVoice(browsing.sp, voiceId)}
+              onClose={() => setBrowsingId(null)}
+              header={
+                <div className="flex items-center gap-2 px-3 h-11 border-b border-ink-800/60 shrink-0">
+                  <button
+                    onClick={() => setBrowsingId(null)}
+                    className="flex items-center gap-0.5 text-[11px] text-ink-400 hover:text-white transition-colors"
+                  >
+                    <ChevronLeft size={14} /> Speakers
+                  </button>
+                  <span className="text-[12px] font-semibold text-white ml-1">Voice for</span>
+                  <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: browsing.sp.color ?? getSpeakerColor(browsing.projectIndex) }} />
+                  <span className="text-[12px] font-semibold text-white truncate">
+                    {getSpeakerDisplayName(browsing.sp, browsing.projectIndex)}
+                  </span>
+                </div>
+              }
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

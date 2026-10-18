@@ -52,9 +52,11 @@ interface Props {
   /** Start playing as soon as `url` arrives (a sample that was just made). */
   autoPlay?: boolean
   bars?: number
+  /** Just the round play button (nothing when there's no sample), for tight spots like a speaker card. */
+  compact?: boolean
 }
 
-export function VoicePlayer({ id, name, url, onGenerate, generating, busy, autoPlay, bars = 32 }: Props) {
+export function VoicePlayer({ id, name, url, onGenerate, generating, busy, autoPlay, bars = 32, compact }: Props) {
   const [wave, setWave] = useState<Wave | null>(null)
   const [playing, setPlaying] = useState(false)
   const [position, setPosition] = useState(0)          // seconds
@@ -102,7 +104,7 @@ export function VoicePlayer({ id, name, url, onGenerate, generating, busy, autoP
   // Load the waveform once the player is on screen. (A new clip mounts a new
   // player: the panel keys each one by its audio.)
   useEffect(() => {
-    if (!url) return
+    if (!url || compact) return
     let cancelled = false
     const load = () => loadWave(url, bars).then((w) => { if (!cancelled) setWave(w) }).catch(() => {})
     const el = boxRef.current
@@ -112,7 +114,7 @@ export function VoicePlayer({ id, name, url, onGenerate, generating, busy, autoP
     }, { rootMargin: '200px' })
     seen.observe(el)
     return () => { cancelled = true; seen.disconnect() }
-  }, [url, bars])
+  }, [url, bars, compact])
 
   useEffect(() => { if (url && autoPlay) play() }, [url, autoPlay])  // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -120,6 +122,20 @@ export function VoicePlayer({ id, name, url, onGenerate, generating, busy, autoP
     stop()
     if (active?.id === id) active = null
   }, [stop, id])
+
+  if (compact) {
+    if (!url) return null
+    return (
+      <button
+        onClick={(e) => { e.stopPropagation(); if (playing) stop(); else play() }}
+        aria-label={playing ? `Pause ${name}` : `Play ${name}`}
+        title={playing ? 'Pause' : `Listen to ${name}`}
+        className="flex items-center justify-center h-6 w-6 shrink-0 rounded-full bg-brand-400 hover:bg-brand-300 text-white transition-colors"
+      >
+        {playing ? <Pause size={10} fill="currentColor" /> : <Play size={10} fill="currentColor" className="ml-px" />}
+      </button>
+    )
+  }
 
   if (!url) {
     return (
