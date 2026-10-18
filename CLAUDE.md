@@ -20,7 +20,7 @@ alembic revision -m "description"      # new migration (hand-written, not autoge
 ```
 
 - No DB setup needed for dev: empty `DATABASE_URL` → SQLite (`khmer_dubber_dev.db`, WAL mode). Production uses Postgres/Neon via `postgresql+asyncpg://`.
-- `init_db()` runs `Base.metadata.create_all` at startup, so brand-new tables appear automatically in dev — but columns added to existing tables require an alembic migration. `alembic/env.py` derives its URL from `settings.effective_db_url` (converts async drivers to sync).
+- `init_db()` runs `Base.metadata.create_all` at startup, so brand-new tables appear automatically — but a column added to an existing table needs **both** an alembic migration (dev, Postgres) **and** an entry in `init_db`'s `add_missing_columns` lists (`app/core/database.py`): installed desktop apps never run alembic, and without the column every query on that table fails after an update. `add_missing_columns` inspects the table first, so no ALTER ever fails (on Postgres one would abort the transaction). `alembic/env.py` derives its URL from `settings.effective_db_url` (converts async drivers to sync); run it as `venv/bin/python -m alembic` (the `venv/bin/alembic` script has a stale shebang), and never against `backend/.env`'s database.
 - Tests use in-memory SQLite with a `get_db` override. `app/tests/conftest.py` blanks the API keys and points `DATABASE_URL`/`UPLOAD_DIR` at a temp dir BEFORE importing the app (env vars override `backend/.env`), so no test can reach real services or the developer's database — tests that need a "configured" key set it with `monkeypatch`. Patch AI calls at the service boundary (`pipeline.transcribe_audio`, `pipeline.translate_batch_with_report`, `asr._call_window`, `tts_client.synthesize`).
 - `test_tts_concurrency.py::test_batch_segments_synthesize_concurrently` is flaky (~1 in 5–20 runs, also on older code): every session shares the one `StaticPool` connection, so concurrent workers can roll back each other's pending writes. Fix by moving tests to a file-backed SQLite with a normal pool.
 
@@ -30,7 +30,10 @@ alembic revision -m "description"      # new migration (hand-written, not autoge
 npm run dev        # http://localhost:5173 — proxies /api, /health, /uploads to 127.0.0.1:8000
 npm run lint       # eslint
 npm run build      # tsc -b && vite build
+npm test           # node --test tests/*.test.ts — Node ≥ 22.18 runs the TypeScript directly (no test framework)
 ```
+
+`npm test` covers pure logic kept free of runtime imports (`src/lib/voiceTags.ts`) and checks that the built-in voices' tags are in the tag editor's vocabulary; `tests/` is outside the tsconfig, so it isn't type-checked by the build.
 
 Run both servers together for dev; the Vite proxy handles all backend calls (frontend uses relative `/api/v1` baseURL).
 
@@ -78,7 +81,7 @@ The dubbing pipeline is **two user-controlled stages plus on-demand steps**, orc
 
 ### Data model
 
-`Project` → `Job`s → `Segment`s + `Overlay`s; `Speaker`s belong to the project. `Voice` is a **workspace-global** voice library (not project-scoped). **Built-in voices** (`app/services/builtin_voices.py`) ship in `app/assets/builtin_voices/` (FLAC + `manifest.json`, made from the voice-casting sessions): on startup each is installed as an ultimate voice (reference clip in `uploads/voices/<id>/` + transcript) with a fixed `builtin-…` id, so speakers keep them across updates. The voices routes refuse to edit or delete them (403), and a re-recorded voice gets a new id. Voice resolution precedence for TTS: `Segment.voice_id` override → `Speaker.voice_id` → legacy `Speaker.voice_design_prompt`. Overlay positions/sizes are stored as **fractions (0–1) of video dimensions** so the live canvas preview and the full-resolution ffmpeg export map identically.
+`Project` → `Job`s → `Segment`s + `Overlay`s; `Speaker`s belong to the project. `Voice` is a **workspace-global** voice library (not project-scoped). **Built-in voices** (`app/services/builtin_voices.py`) ship in `app/assets/builtin_voices/` (FLAC + `manifest.json`, made from the voice-casting sessions): on startup each is installed as an ultimate voice (reference clip in `uploads/voices/<id>/` + transcript) with a fixed `builtin-…` id, so speakers keep them across updates. The voices routes refuse to edit or delete them (403), and a re-recorded voice gets a new id. Their names (Sino-Khmer, Latin letters) and tags (`gender`, `age_group`, `personality`, `roles`) also come from the manifest, which is the source of truth for them (the casting script keeps them on a re-run). Every voice, built-in or the user's own, can carry those tags; `app/services/voice_tags.voice_section` turns them into the Voices-tab section (`VoiceResponse.section`), and `src/lib/voiceTags.ts` groups voices for the tab and the voice pickers (no section → "My voices" for the user's own, "Other voices" otherwise). `POST /voices/{id}/copy` makes an editable copy of any voice with its own clip. Voice resolution precedence for TTS: `Segment.voice_id` override → `Speaker.voice_id` → legacy `Speaker.voice_design_prompt`. Overlay positions/sizes are stored as **fractions (0–1) of video dimensions** so the live canvas preview and the full-resolution ffmpeg export map identically.
 
 ### Frontend state
 
