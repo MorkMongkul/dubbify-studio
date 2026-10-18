@@ -4,6 +4,7 @@ transcript, installed into the voices folder at startup, usable like any voice
 but never editable or deletable.
 """
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +18,7 @@ from app.core.config import settings
 from app.models.models import Speaker, Voice
 from app.services import builtin_voices
 from app.services.tts_client import tts_client
+from app.services.voice_tags import AGE_GROUPS, GENDERS, SECTIONS, voice_section
 
 
 def _pack(tmp_path: Path, n: int = 2) -> Path:
@@ -184,3 +186,9 @@ def test_the_shipped_library_is_complete():
         assert builtin_voices.is_builtin(v["id"]) and v["name"] and v["transcript"] and v["description"]
         info = sf.info(str(builtin_voices.ASSETS / v["file"]))
         assert info.samplerate == 48000 and 2.0 < info.duration < 15.0
+        # A person's name (Sino-Khmer, Latin letters) and the tags that sort it into a section
+        assert re.fullmatch(r"[A-Z][a-z]+ [A-Z][a-z]+", v["name"]), v["name"]
+        assert v.get("gender") in GENDERS and v.get("age_group") in AGE_GROUPS, v["id"]
+        assert 1 <= len(v.get("personality", [])) <= 3 and 1 <= len(v.get("roles", [])) <= 2, v["id"]
+    assert len({v["name"] for v in voices}) == len(voices), "every voice has a name of its own"
+    assert {voice_section(v["gender"], v["age_group"], v["roles"]) for v in voices} == set(SECTIONS)
