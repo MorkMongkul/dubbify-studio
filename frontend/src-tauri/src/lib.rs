@@ -198,6 +198,7 @@ fn start_backend(app: &AppHandle, folders: migrate::Folders) -> Result<(), Box<d
     let window = app.get_webview_window("main").ok_or("main window not found")?;
     let handle = app.clone();
     let log_dir_text = log_dir.display().to_string();
+    let editor = editor_url(port, &version);
     std::thread::spawn(move || {
         let started = Instant::now();
         while started.elapsed() < READY_TIMEOUT {
@@ -205,7 +206,7 @@ fn start_backend(app: &AppHandle, folders: migrate::Folders) -> Result<(), Box<d
                 return; // already reported as backend-stopped
             }
             if backend_ready(port, &instance) {
-                let _ = window.eval(format!("window.location.replace('http://127.0.0.1:{port}/')"));
+                let _ = window.eval(format!("window.location.replace('{editor}')"));
                 std::thread::sleep(UPDATE_CHECK_DELAY);
                 updater::check(&handle, updater::Trigger::Launch);
                 return;
@@ -278,6 +279,14 @@ fn free_port() -> std::io::Result<u16> {
     Ok(TcpListener::bind("127.0.0.1:0")?.local_addr()?.port())
 }
 
+/// Where the window opens the editor. The window keeps pages it has loaded, so
+/// the address carries the app version: a page saved by an earlier version is
+/// never reused after an update (0.2.3 showed 0.2.2's page until it expired).
+/// The backend also marks the page to be checked again on every load.
+fn editor_url(port: u16, version: &str) -> String {
+    format!("http://127.0.0.1:{port}/?v={version}")
+}
+
 fn instance_id() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -329,5 +338,21 @@ fn rotated_log(log_dir: &Path) -> PathBuf {
 fn append_log(path: &Path, text: &str) {
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = file.write_all(text.as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_version_opens_the_editor_at_its_own_address_on_the_same_origin() {
+        // A page the window saved under 0.2.3 must not be reused by 0.2.4, yet the
+        // address must stay on the backend's origin (navigation guard, capability).
+        let old = tauri::Url::parse(&editor_url(51734, "0.2.3")).unwrap();
+        let new = tauri::Url::parse(&editor_url(51734, "0.2.4")).unwrap();
+        assert_ne!(old, new);
+        assert_eq!(new.origin().ascii_serialization(), "http://127.0.0.1:51734");
+        assert_eq!(new.path(), "/");
     }
 }
