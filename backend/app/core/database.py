@@ -10,9 +10,9 @@ Neon/PostgreSQL: Uses asyncpg driver, connection pooling via Neon's built-in
         PgBouncer (use the -pooler connection string from Neon console).
         No WAL config needed — Postgres handles concurrency natively.
 """
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import event, text
+from sqlalchemy import event, inspect, text
 from app.core.config import settings
 
 
@@ -86,21 +86,40 @@ async def get_db():
 import logging
 logger = logging.getLogger(__name__)
 
+# Voice tags (app/services/voice_tags.py), added in 0.2.3.
+VOICE_TAG_COLUMNS = [("gender", "VARCHAR(10)"), ("age_group", "VARCHAR(10)"), ("personality", "JSON"), ("roles", "JSON")]
+
+
+async def add_missing_columns(conn: AsyncConnection, table: str, columns: list[tuple[str, str]]) -> list[str]:
+    """
+    Add the listed columns a table doesn't have yet; return the names added.
+
+    Installed desktop apps never run alembic, so a column added to an
+    existing table must also be listed in init_db, or every query on that
+    table fails after an update. Only missing columns are altered: on Postgres
+    a failing ALTER would abort the whole transaction.
+    """
+    existing = await conn.run_sync(lambda sync: {c["name"] for c in inspect(sync).get_columns(table)})
+    added = []
+    for name, col_type in columns:
+        if name not in existing:
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}"))
+            added.append(name)
+    return added
+
+
 # ── Create all tables on startup ──────────────────────────────
-async def init_db():
-    async with engine.begin() as conn:
+async def init_db(bind: AsyncEngine | None = None):
+    bind = bind or engine
+    async with bind.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # Run safe column additions for audio effects parameters
-    async with engine.begin() as conn:
-        for col, col_type in [
-            ("volume_db", "DOUBLE PRECISION" if "postgresql" in settings.effective_db_url else "FLOAT"),
-            ("voice_filter", "VARCHAR(50)"),
-            ("voice_speed", "DOUBLE PRECISION" if "postgresql" in settings.effective_db_url else "FLOAT"),
-        ]:
-            try:
-                await conn.execute(text(f"ALTER TABLE segments ADD COLUMN {col} {col_type}"))
-                logger.info(f"Added column {col} to segments table.")
-            except Exception:
-                # Column likely already exists, ignore error
-                pass
+    # Columns added to existing tables since their first release
+    float_type = "DOUBLE PRECISION" if bind.dialect.name == "postgresql" else "FLOAT"
+    async with bind.begin() as conn:
+        for table, columns in (
+            ("segments", [("volume_db", float_type), ("voice_filter", "VARCHAR(50)"), ("voice_speed", float_type)]),
+            ("voices", VOICE_TAG_COLUMNS),
+        ):
+            for name in await add_missing_columns(conn, table, columns):
+                logger.info(f"Added column {name} to the {table} table.")

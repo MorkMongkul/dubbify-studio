@@ -9,7 +9,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 import soundfile as sf
-from sqlalchemy import select
+from sqlalchemy import inspect, select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.core.database as core_db
 from app.core.config import settings
@@ -56,6 +57,44 @@ async def test_seeding_installs_each_voice_once_and_repairs_a_lost_clip(seeded_e
     clip.unlink()
     await builtin_voices.seed_builtin_voices(seeded_env)
     assert clip.exists()
+
+
+# The voices table as 0.2.2 created it, before voices had tags.
+OLD_VOICES_TABLE = """
+CREATE TABLE voices (
+    id VARCHAR PRIMARY KEY, name VARCHAR(120) NOT NULL, mode VARCHAR(20), description TEXT,
+    reference_audio_path VARCHAR, reference_transcript TEXT, cfg_value FLOAT,
+    inference_timesteps INTEGER, seed INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)
+"""
+
+
+@pytest.mark.asyncio
+async def test_startup_adds_tag_columns_to_a_0_2_2_database(tmp_path, monkeypatch):
+    """Installed apps never run alembic: starting the app must add the tag columns itself."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/old.db")
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(OLD_VOICES_TABLE))
+            await conn.execute(text(
+                "INSERT INTO voices (id, name, mode, description, reference_audio_path, reference_transcript,"
+                " cfg_value, inference_timesteps, seed) VALUES ('v1', 'Narrator', 'design', '', '', '', 2.0, 10, 5)"))
+        await core_db.init_db(engine)
+        await core_db.init_db(engine)   # the next launch: nothing left to add, and no error
+        async with engine.connect() as conn:
+            columns = await conn.run_sync(lambda c: {col["name"] for col in inspect(c).get_columns("voices")})
+        assert {"gender", "age_group", "personality", "roles"} <= columns
+
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        async with sessions() as db:
+            v = (await db.execute(select(Voice))).scalar_one()
+        assert (v.id, v.name, v.seed, v.gender, v.personality) == ("v1", "Narrator", 5, None, None)
+
+        monkeypatch.setattr(core_db, "AsyncSessionLocal", sessions)
+        monkeypatch.setattr(settings, "UPLOAD_DIR", str(tmp_path / "uploads"))
+        assert await builtin_voices.seed_builtin_voices(_pack(tmp_path)) == 2
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
