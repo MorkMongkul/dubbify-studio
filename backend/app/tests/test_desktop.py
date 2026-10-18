@@ -225,5 +225,5 @@ def test_self_test_reports_khmer_shaping(capsys):
     code = sidecar_entry.self_test()
     out = capsys.readouterr().out
     assert "backend imports: ok" in out and "Khmer text shaping:" in out
-    assert "built-in voices: 62" in out and "missing" not in out   # the voice pack is bundled
+    assert "built-in voices: 67" in out and "missing" not in out   # the voice pack is bundled
     assert code == (0 if "shaping: ok" in out else 1)

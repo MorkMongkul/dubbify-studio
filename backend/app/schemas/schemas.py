@@ -146,6 +146,7 @@ class SpeakerCreate(BaseModel):
     gender: Gender = Gender.UNKNOWN
     age_group: AgeGroup = AgeGroup.ADULT
     voice_design_prompt: str = ""
+    voice_id: Optional[str] = None   # a library voice chosen when the speaker is added
 
 
 class SpeakerUpdate(BaseModel):
@@ -166,6 +167,12 @@ class SpeakerResponse(BaseModel):
     voice_design_prompt: str
     reference_audio_path: str
     voice_id: Optional[str]
+    voice_auto: bool = False         # the app picked voice_id; nobody chose it
+
+    @field_validator("voice_auto", mode="before")
+    @classmethod
+    def _not_picked(cls, value):
+        return bool(value)           # NULL on speakers from before 0.2.4
 
     model_config = {"from_attributes": True}
 

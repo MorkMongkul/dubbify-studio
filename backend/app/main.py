@@ -143,6 +143,12 @@ FRONTEND_DIST = _frontend_dist_dir()
 
 if FRONTEND_DIST:
     _FRONTEND_ROOT = FRONTEND_DIST.resolve()
+    # The desktop window keeps pages it has loaded. Unless the page says to
+    # check back every time, an updated app shows the previous version's page,
+    # and so its code, until that saved copy expires. Checking back is cheap
+    # (a small file from this local server); the JS/CSS files have hashed
+    # names, so a new page always points at new ones.
+    _CHECK_EVERY_TIME = {"Cache-Control": "no-cache"}
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_frontend(full_path: str):
@@ -155,9 +161,9 @@ if FRONTEND_DIST:
         # the resolved file is required to stay inside the build.
         candidate = (_FRONTEND_ROOT / full_path).resolve()
         if full_path and candidate.is_relative_to(_FRONTEND_ROOT) and candidate.is_file():
-            return FileResponse(candidate)
+            return FileResponse(candidate, headers=_CHECK_EVERY_TIME if candidate.suffix == ".html" else None)
         # SPA fallback — client-side routes (e.g. /projects/123) resolve to index.html
-        return FileResponse(_FRONTEND_ROOT / "index.html")
+        return FileResponse(_FRONTEND_ROOT / "index.html", headers=_CHECK_EVERY_TIME)
 else:
     @app.get("/", include_in_schema=False)
     async def root():

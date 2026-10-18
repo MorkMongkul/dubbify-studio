@@ -627,117 +627,6 @@
    ]
   },
   {
-   "id": "builtin-13-girl-c",
-   "name": "Chhay Sophorn",
-   "character": "Girl (about 8)",
-   "description": "An eight-year-old girl with a high, cute and lively voice, sweet and cheerful.",
-   "transcript": "បងប្រុស ចាំខ្ញុំផង! ខ្ញុំក៏ចង់ទៅលេងជាមួយដែរ! សុំខ្ញុំទៅផងណា៎!",
-   "file": "builtin-13-girl-c.flac",
-   "duration_s": 4.64,
-   "gender": "girl",
-   "age_group": "child",
-   "personality": [
-    "Sweet",
-    "Cheerful",
-    "Playful"
-   ],
-   "roles": [
-    "Child"
-   ]
-  },
-  {
-   "id": "builtin-14-teen-boy-a",
-   "name": "Ung Sambath",
-   "character": "Teen boy",
-   "description": "A sixteen-year-old boy with an energetic, youthful and clear voice, excited and quick.",
-   "transcript": "ពិតមែនហើយ? ថ្ងៃស្អែកយើងបានទៅលេងសមុទ្រមែនទេ? ល្អណាស់! ខ្ញុំនឹងរៀបចំឥវ៉ាន់ឥឡូវនេះតែម្ដង!",
-   "file": "builtin-14-teen-boy-a.flac",
-   "duration_s": 5.28,
-   "gender": "boy",
-   "age_group": "teen",
-   "personality": [
-    "Lively",
-    "Bright"
-   ],
-   "roles": [
-    "Student"
-   ]
-  },
-  {
-   "id": "builtin-14-teen-boy-b",
-   "name": "Hong Seyha",
-   "character": "Teen boy",
-   "description": "A sixteen-year-old boy with an energetic, youthful and clear voice, excited and quick.",
-   "transcript": "ពិតមែនហើយ? ថ្ងៃស្អែកយើងបានទៅលេងសមុទ្រមែនទេ? ល្អណាស់! ខ្ញុំនឹងរៀបចំឥវ៉ាន់ឥឡូវនេះតែម្ដង!",
-   "file": "builtin-14-teen-boy-b.flac",
-   "duration_s": 6.88,
-   "gender": "boy",
-   "age_group": "teen",
-   "personality": [
-    "Lively",
-    "Bright"
-   ],
-   "roles": [
-    "Student"
-   ]
-  },
-  {
-   "id": "builtin-14-teen-boy-c",
-   "name": "Chhun Raksa",
-   "character": "Teen boy",
-   "description": "A sixteen-year-old boy with an energetic, youthful and clear voice, excited and quick.",
-   "transcript": "ពិតមែនហើយ? ថ្ងៃស្អែកយើងបានទៅលេងសមុទ្រមែនទេ? ល្អណាស់! ខ្ញុំនឹងរៀបចំឥវ៉ាន់ឥឡូវនេះតែម្ដង!",
-   "file": "builtin-14-teen-boy-c.flac",
-   "duration_s": 5.76,
-   "gender": "boy",
-   "age_group": "teen",
-   "personality": [
-    "Lively",
-    "Bright"
-   ],
-   "roles": [
-    "Student"
-   ]
-  },
-  {
-   "id": "builtin-15-teen-girl-a",
-   "name": "Kong Kunthea",
-   "character": "Teen girl",
-   "description": "A sixteen-year-old girl with a cheerful, bright and quick voice, playful and expressive.",
-   "transcript": "ស្ដាប់ខ្ញុំសិន! ថ្ងៃនេះមានរឿងកំប្លែងមួយកើតឡើងនៅសាលា ហើយគ្រូរបស់យើងសើចរហូតដល់ស្រក់ទឹកភ្នែក!",
-   "file": "builtin-15-teen-girl-a.flac",
-   "duration_s": 5.76,
-   "gender": "girl",
-   "age_group": "teen",
-   "personality": [
-    "Cheerful",
-    "Playful",
-    "Bright"
-   ],
-   "roles": [
-    "Student"
-   ]
-  },
-  {
-   "id": "builtin-15-teen-girl-b",
-   "name": "Sieng Sreyleak",
-   "character": "Teen girl",
-   "description": "A sixteen-year-old girl with a cheerful, bright and quick voice, playful and expressive.",
-   "transcript": "ស្ដាប់ខ្ញុំសិន! ថ្ងៃនេះមានរឿងកំប្លែងមួយកើតឡើងនៅសាលា ហើយគ្រូរបស់យើងសើចរហូតដល់ស្រក់ទឹកភ្នែក!",
-   "file": "builtin-15-teen-girl-b.flac",
-   "duration_s": 4.64,
-   "gender": "girl",
-   "age_group": "teen",
-   "personality": [
-    "Cheerful",
-    "Playful",
-    "Bright"
-   ],
-   "roles": [
-    "Student"
-   ]
-  },
-  {
    "id": "builtin-16-comic-sidekick-a",
    "name": "Yim Thearith",
    "character": "Comic sidekick",
@@ -1170,6 +1059,216 @@
    "roles": [
     "Narrator"
    ]
+  },
+  {
+   "id": "builtin-25-boy-7-c",
+   "name": "Chhun Kakada",
+   "character": "Boy (about 7)",
+   "description": "A seven-year-old boy with a small, light and high child's voice, playful and excited, speaking quickly with a cheeky giggle.",
+   "transcript": "ម៉ាក់! មើលនេះ! ខ្ញុំចាប់បានមេអំបៅមួយ! វាស្អាតណាស់ ពណ៌ខៀវទាំងអស់!",
+   "file": "builtin-25-boy-7-c.flac",
+   "duration_s": 4.64,
+   "gender": "boy",
+   "age_group": "child",
+   "personality": [
+    "Playful",
+    "Lively"
+   ],
+   "roles": [
+    "Child"
+   ]
+  },
+  {
+   "id": "builtin-26-girl-7-a",
+   "name": "Kong Monika",
+   "character": "Girl (about 7)",
+   "description": "A seven-year-old girl with a small, high and sweet child's voice, cheerful and lively, a little shy and then excited.",
+   "transcript": "បងប្រុស ចាំខ្ញុំផង! ខ្ញុំក៏ចង់ទៅលេងជាមួយដែរ! សុំខ្ញុំទៅផងណា៎!",
+   "file": "builtin-26-girl-7-a.flac",
+   "duration_s": 3.68,
+   "gender": "girl",
+   "age_group": "child",
+   "personality": [
+    "Sweet",
+    "Cheerful"
+   ],
+   "roles": [
+    "Child"
+   ]
+  },
+  {
+   "id": "builtin-26-girl-7-c",
+   "name": "Sieng Sovanny",
+   "character": "Girl (about 7)",
+   "description": "A seven-year-old girl with a small, high and sweet child's voice, cheerful and lively, a little shy and then excited.",
+   "transcript": "បងប្រុស ចាំខ្ញុំផង! ខ្ញុំក៏ចង់ទៅលេងជាមួយដែរ! សុំខ្ញុំទៅផងណា៎!",
+   "file": "builtin-26-girl-7-c.flac",
+   "duration_s": 4.8,
+   "gender": "girl",
+   "age_group": "child",
+   "personality": [
+    "Sweet",
+    "Cheerful"
+   ],
+   "roles": [
+    "Child"
+   ]
+  },
+  {
+   "id": "builtin-27-boy-10-a",
+   "name": "Yim Sovath",
+   "character": "Boy (about 10)",
+   "description": "A ten-year-old boy with a clear, bright and high child's voice, curious and energetic, speaking eagerly.",
+   "transcript": "លោកគ្រូ! ខ្ញុំធ្វើលំហាត់រួចហើយ! តើខ្ញុំអាចទៅលេងបាល់ទាត់ជាមួយមិត្តភក្តិបានទេ?",
+   "file": "builtin-27-boy-10-a.flac",
+   "duration_s": 4.48,
+   "gender": "boy",
+   "age_group": "child",
+   "personality": [
+    "Bright",
+    "Lively"
+   ],
+   "roles": [
+    "Child",
+    "Student"
+   ]
+  },
+  {
+   "id": "builtin-27-boy-10-b",
+   "name": "Heng Bora",
+   "character": "Boy (about 10)",
+   "description": "A ten-year-old boy with a clear, bright and high child's voice, curious and energetic, speaking eagerly.",
+   "transcript": "លោកគ្រូ! ខ្ញុំធ្វើលំហាត់រួចហើយ! តើខ្ញុំអាចទៅលេងបាល់ទាត់ជាមួយមិត្តភក្តិបានទេ?",
+   "file": "builtin-27-boy-10-b.flac",
+   "duration_s": 4.48,
+   "gender": "boy",
+   "age_group": "child",
+   "personality": [
+    "Bright",
+    "Lively"
+   ],
+   "roles": [
+    "Child",
+    "Student"
+   ]
+  },
+  {
+   "id": "builtin-28-girl-10-b",
+   "name": "Ly Vanny",
+   "character": "Girl (about 10)",
+   "description": "A ten-year-old girl with a clear, bright and high child's voice, chatty and proud, speaking quickly and happily.",
+   "transcript": "ម៉ាក់! ថ្ងៃនេះខ្ញុំបានពិន្ទុល្អណាស់! គ្រូសរសើរខ្ញុំនៅមុខថ្នាក់ទៀតផង!",
+   "file": "builtin-28-girl-10-b.flac",
+   "duration_s": 5.28,
+   "gender": "girl",
+   "age_group": "child",
+   "personality": [
+    "Bright",
+    "Cheerful"
+   ],
+   "roles": [
+    "Child",
+    "Student"
+   ]
+  },
+  {
+   "id": "builtin-28-girl-10-c",
+   "name": "Lim Lida",
+   "character": "Girl (about 10)",
+   "description": "A ten-year-old girl with a clear, bright and high child's voice, chatty and proud, speaking quickly and happily.",
+   "transcript": "ម៉ាក់! ថ្ងៃនេះខ្ញុំបានពិន្ទុល្អណាស់! គ្រូសរសើរខ្ញុំនៅមុខថ្នាក់ទៀតផង!",
+   "file": "builtin-28-girl-10-c.flac",
+   "duration_s": 5.28,
+   "gender": "girl",
+   "age_group": "child",
+   "personality": [
+    "Bright",
+    "Cheerful"
+   ],
+   "roles": [
+    "Child",
+    "Student"
+   ]
+  },
+  {
+   "id": "builtin-29-boy-14-a",
+   "name": "Tan Sakda",
+   "character": "Boy (about 14)",
+   "description": "A fourteen-year-old boy with a young, light teenage voice just starting to deepen, energetic and a bit cheeky, speaking quickly.",
+   "transcript": "ពិតមែនហើយ? ថ្ងៃស្អែកយើងបានទៅលេងសមុទ្រមែនទេ? ល្អណាស់! ខ្ញុំនឹងរៀបចំឥវ៉ាន់ឥឡូវនេះតែម្ដង!",
+   "file": "builtin-29-boy-14-a.flac",
+   "duration_s": 5.6,
+   "gender": "boy",
+   "age_group": "teen",
+   "personality": [
+    "Lively",
+    "Playful"
+   ],
+   "roles": [
+    "Student"
+   ]
+  },
+  {
+   "id": "builtin-29-boy-14-c",
+   "name": "Chea Vathana",
+   "character": "Boy (about 14)",
+   "description": "A fourteen-year-old boy with a young, light teenage voice just starting to deepen, energetic and a bit cheeky, speaking quickly.",
+   "transcript": "ពិតមែនហើយ? ថ្ងៃស្អែកយើងបានទៅលេងសមុទ្រមែនទេ? ល្អណាស់! ខ្ញុំនឹងរៀបចំឥវ៉ាន់ឥឡូវនេះតែម្ដង!",
+   "file": "builtin-29-boy-14-c.flac",
+   "duration_s": 6.08,
+   "gender": "boy",
+   "age_group": "teen",
+   "personality": [
+    "Lively",
+    "Playful"
+   ],
+   "roles": [
+    "Student"
+   ]
+  },
+  {
+   "id": "builtin-30-girl-14-a",
+   "name": "Kim Nita",
+   "character": "Girl (about 14)",
+   "description": "A fourteen-year-old girl with a bright, light and youthful teenage voice, cheerful and expressive, speaking quickly with excitement.",
+   "transcript": "ស្ដាប់ខ្ញុំសិន! ថ្ងៃនេះមានរឿងកំប្លែងមួយកើតឡើងនៅសាលា ហើយគ្រូរបស់យើងសើចរហូតដល់ស្រក់ទឹកភ្នែក!",
+   "file": "builtin-30-girl-14-a.flac",
+   "duration_s": 6.24,
+   "gender": "girl",
+   "age_group": "teen",
+   "personality": [
+    "Cheerful",
+    "Bright"
+   ],
+   "roles": [
+    "Student"
+   ]
+  },
+  {
+   "id": "builtin-30-girl-14-b",
+   "name": "Seng Sreypich",
+   "character": "Girl (about 14)",
+   "description": "A fourteen-year-old girl with a bright, light and youthful teenage voice, cheerful and expressive, speaking quickly with excitement.",
+   "transcript": "ស្ដាប់ខ្ញុំសិន! ថ្ងៃនេះមានរឿងកំប្លែងមួយកើតឡើងនៅសាលា ហើយគ្រូរបស់យើងសើចរហូតដល់ស្រក់ទឹកភ្នែក!",
+   "file": "builtin-30-girl-14-b.flac",
+   "duration_s": 5.76,
+   "gender": "girl",
+   "age_group": "teen",
+   "personality": [
+    "Cheerful",
+    "Bright"
+   ],
+   "roles": [
+    "Student"
+   ]
   }
+ ],
+ "retired": [
+  "builtin-13-girl-c",
+  "builtin-14-teen-boy-a",
+  "builtin-14-teen-boy-b",
+  "builtin-14-teen-boy-c",
+  "builtin-15-teen-girl-a",
+  "builtin-15-teen-girl-b"
  ]
 }

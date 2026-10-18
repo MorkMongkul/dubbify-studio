@@ -13,7 +13,7 @@ from pathlib import Path
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.paths import resolve_media_path
-from app.models.models import Segment, Speaker, Job, Project
+from app.models.models import Segment, Speaker, Job, Project, Voice
 from app.schemas.schemas import (
     SegmentResponse, SegmentUpdate, SegmentCreate,
     SpeakerResponse, SpeakerUpdate, SpeakerCreate,
@@ -313,8 +313,10 @@ async def create_speaker(
     data = payload.model_dump()
     if not data.get("label"):
         data["label"] = f"MANUAL_{uuid.uuid4().hex[:8]}"
+    if data.get("voice_id") and not await db.get(Voice, data["voice_id"]):
+        raise HTTPException(status_code=404, detail="Voice not found")
 
-    speaker = Speaker(project_id=project_id, **data)
+    speaker = Speaker(project_id=project_id, voice_auto=False, **data)
     db.add(speaker)
     await db.flush()
     await db.refresh(speaker)
@@ -338,8 +340,12 @@ async def update_speaker(
         raise HTTPException(status_code=404, detail="Speaker not found")
 
     update_data = payload.model_dump(exclude_unset=True)
+    if update_data.get("voice_id") and not await db.get(Voice, update_data["voice_id"]):
+        raise HTTPException(status_code=404, detail="Voice not found")
     for field, value in update_data.items():
         setattr(speaker, field, value)
+    if "voice_id" in update_data:
+        speaker.voice_auto = False      # chosen by the user, not picked by the app
 
     await db.flush()
     await db.refresh(speaker)

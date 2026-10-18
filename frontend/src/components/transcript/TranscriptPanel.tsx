@@ -6,7 +6,7 @@ import { AlignLeft, Loader2, ChevronRight, Sliders, Volume2, Type, RefreshCw, Mi
 import type { Segment, Speaker, Job } from '@/types'
 import { useEditorStore, useActiveSegmentId } from '@/store/editorStore'
 import { SegmentCardSkeleton } from '@/components/ui/Skeleton'
-import { Modal, InputField } from '@/components/ui/Modal'
+import { Modal, InputField, Field } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
 import { toast } from 'sonner'
 import { cn, formatTime, getSpeakerColor } from '@/lib/utils'
@@ -104,6 +104,7 @@ export function TranscriptPanel({
   const createSpeaker = useCreateSpeaker()
   const [newSpeakerModal, setNewSpeakerModal] = useState<{ segmentId: string } | null>(null)
   const [newSpeakerName, setNewSpeakerName] = useState('')
+  const [newSpeakerVoice, setNewSpeakerVoice] = useState('')   // '' = choose for me
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const cardRefs = useRef<Map<string, HTMLTableRowElement>>(new Map())
@@ -198,6 +199,7 @@ export function TranscriptPanel({
   const handleSpeakerSelectChange = async (segmentId: string, value: string) => {
     if (value === '__new__') {
       setNewSpeakerName('')
+      setNewSpeakerVoice('')
       setNewSpeakerModal({ segmentId })
       return
     }
@@ -226,7 +228,9 @@ export function TranscriptPanel({
       const seg = segments.find((s) => s.id === newSpeakerModal.segmentId)
       const speaker = await createSpeaker.mutateAsync({
         projectId,
-        data: { display_name: name },
+        // No voice chosen: the backend picks a fitting built-in one the first
+        // time this speaker is voiced (never a random voice per line).
+        data: { display_name: name, voice_id: newSpeakerVoice || null },
       })
       await segmentsApi.update(newSpeakerModal.segmentId, { speaker_id: speaker.id })
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
@@ -398,6 +402,7 @@ export function TranscriptPanel({
         } catch {
           // the next pass refreshes the lines
         }
+        qc.invalidateQueries({ queryKey: ['speakers'] })   // speakers without a voice get one picked as lines are voiced
         if (!status.finished) continue
 
         stopTracking()
@@ -887,10 +892,10 @@ export function TranscriptPanel({
                         className="bg-ink-900 text-ink-200 text-[10px] rounded border border-ink-800 hover:border-ink-700 hover:bg-ink-800 py-0.5 px-1 focus:outline-none focus:border-brand-500/50 cursor-pointer w-full max-w-[100px] truncate"
                         value={seg.voice_id || ''}
                         onChange={(e) => handleVoiceChange(seg.id, e.target.value)}
-                        title={speakerVoiceName ? `Inherits ${speakerVoiceName} from speaker` : 'No speaker voice assigned — uses voice design'}
+                        title={speakerVoiceName ? `Inherits ${speakerVoiceName} from speaker` : 'No voice chosen yet — a fitting built-in voice is picked the first time this line is voiced'}
                       >
                         <option value="">
-                          {speakerVoiceName || 'Default Voice'}
+                          {speakerVoiceName || 'Choose for me'}
                         </option>
                         <VoiceOptions voices={availableVoices} />
                       </select>
@@ -1200,6 +1205,27 @@ export function TranscriptPanel({
             placeholder="e.g. Narrator"
             autoFocus
           />
+          <Field label="Voice">
+            <select
+              aria-label="Voice"
+              value={newSpeakerVoice}
+              onChange={(e) => setNewSpeakerVoice(e.target.value)}
+              className="glass-input w-full rounded-lg px-3 py-2 text-sm focus:outline-none transition-all duration-150 cursor-pointer"
+              style={{
+                background: 'var(--glass-input-bg)',
+                borderColor: 'var(--color-border)',
+                color: 'var(--color-text-primary)',
+                fontFamily: 'var(--font-sans)',
+              }}
+            >
+              <option value="">Choose for me</option>
+              <VoiceOptions voices={availableVoices} />
+            </select>
+            <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+              "Choose for me" gives this speaker a built-in voice that fits the actor (a man's, woman's or
+              child's) the first time it's voiced, and keeps it. You can change it later in Speakers.
+            </p>
+          </Field>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setNewSpeakerModal(null)}>Cancel</Button>
             <Button onClick={handleCreateSpeakerConfirm} disabled={createSpeaker.isPending}>

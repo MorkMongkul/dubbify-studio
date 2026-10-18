@@ -494,3 +494,42 @@ async def test_translate_missing_failure_restores_the_job(client, monkeypatch, u
     assert resp.status_code == 202
     job = await _job(background_db, job_id)
     assert job.status == JobStatus.COMPLETED and "translator crashed" in job.error_msg
+
+
+@pytest.mark.asyncio
+async def test_a_speaker_heard_with_a_picked_voice_is_offered_as_a_reference(monkeypatch, uploads, background_db):
+    """
+    The app picks voices for speakers nobody voiced (auto_voice.py). Once lines
+    were voiced with a pick, detecting speakers again (or the next episode) must
+    recognise that speaker — else it's replaced and gets a different voice.
+    A picked voice nobody has heard yet doesn't make a speaker a reference.
+    """
+    project_id, ep1 = await _seed(
+        background_db,
+        speakers=[("SPEAKER_00", "SPEAKER_00", True), ("SPEAKER_01", "SPEAKER_01", True)],
+        segments=[(10.0, 13.5, "我已经有工作了", "x", "SPEAKER_00", "tts/seg_1.wav"),
+                  (20.0, 23.5, "随便看看吧", "y", "SPEAKER_01", "")],
+    )
+    async with background_db() as s:
+        for speaker in (await s.execute(select(Speaker).where(Speaker.project_id == project_id))).scalars():
+            speaker.voice_auto = True
+        await s.commit()
+    _vocals(uploads, project_id, ep1)
+    async with background_db() as s:
+        ep2 = Job(project_id=project_id, status=JobStatus.STEMS_READY, video_path="v2.mp4")
+        s.add(ep2)
+        await s.commit()
+        ep2_id = ep2.id
+    _vocals(uploads, project_id, ep2_id)
+
+    async def fake_slice(audio_path, start, end, out_path):
+        Path(out_path).write_bytes(b"RIFFref")
+
+    monkeypatch.setattr(asr, "_slice_chunk", fake_slice)
+    seen = {}
+    monkeypatch.setattr(pipeline, "transcribe_audio", _fake_transcribe(
+        [DiarizedSegment("SPEAKER_00", 0.0, 1.0, "unknown", "adult", "又见面了")], capture=seen))
+    monkeypatch.setattr(pipeline, "translate_batch_with_report", _fake_translate)
+    await pipeline.run_analysis_pipeline(ep2_id)
+
+    assert [(r.label, r.text) for r in seen["references"]] == [("SPEAKER_00", "我已经有工作了")]

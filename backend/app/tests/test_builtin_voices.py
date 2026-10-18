@@ -157,6 +157,31 @@ async def test_seeding_writes_tags_and_a_new_manifest_overwrites_them(seeded_env
 
 
 @pytest.mark.asyncio
+async def test_retired_built_in_voices_go_unless_someone_uses_them(seeded_env, db_sessionmaker, tmp_path):
+    """A re-cast voice replaces an old one: the old one leaves the library, but a
+    speaker or line already using it keeps it."""
+    await builtin_voices.seed_builtin_voices(seeded_env)
+    async with db_sessionmaker() as db:
+        from app.models.models import Project
+        project = Project(name="Ep")
+        db.add(project)
+        await db.flush()
+        db.add(Speaker(project_id=project.id, label="SPEAKER_00", voice_id="builtin-01-test-a"))
+        await db.commit()
+    manifest = json.loads((seeded_env / "manifest.json").read_text())
+    manifest["retired"] = [v["id"] for v in manifest["voices"]]
+    manifest["voices"] = []
+    (seeded_env / "manifest.json").write_text(json.dumps(manifest))
+
+    await builtin_voices.seed_builtin_voices(seeded_env)
+    async with db_sessionmaker() as db:
+        assert await db.get(Voice, "builtin-00-test-a") is None
+        assert await db.get(Voice, "builtin-01-test-a") is not None, "a speaker still uses it"
+    assert not (tmp_path / "uploads" / "voices" / "builtin-00-test-a").exists()
+    assert (tmp_path / "uploads" / "voices" / "builtin-01-test-a" / "reference.wav").exists()
+
+
+@pytest.mark.asyncio
 async def test_the_backup_voice_follows_the_description_when_cloning(monkeypatch):
     """Cloning sends no style text; Gemini used to fall back to a male voice for every built-in."""
     seen = {}

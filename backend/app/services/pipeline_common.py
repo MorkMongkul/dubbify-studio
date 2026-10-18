@@ -46,9 +46,10 @@ def vocals_path_for(job: Job) -> Optional[str]:
 # ── Speakers ──────────────────────────────────────────────────────────────────
 
 def is_confirmed_speaker(speaker: Speaker) -> bool:
-    """A speaker the user has made their own — renamed it or gave it a voice."""
+    """A speaker the user has made their own — renamed it or gave it a voice
+    (a voice the app picked by itself, auto_voice.py, doesn't count)."""
     name = (speaker.display_name or "").strip()
-    return bool(speaker.voice_id) or (bool(name) and name != speaker.label)
+    return (bool(speaker.voice_id) and not speaker.voice_auto) or (bool(name) and name != speaker.label)
 
 
 async def project_speaker_labels(db: AsyncSession, project_id: str) -> set:
@@ -100,7 +101,15 @@ async def build_speaker_references(db: AsyncSession, project_id: str, tmp_dir: s
     label — and with it the name and voice the user assigned.
     """
     result = await db.execute(select(Speaker).where(Speaker.project_id == project_id))
-    confirmed = {sp.id: sp for sp in result.scalars().all() if is_confirmed_speaker(sp)}
+    # A voice the app picked (auto_voice.py) counts once lines were voiced with
+    # it: the speaker must be recognised again, or it's replaced and re-voiced
+    # differently. A pick nobody has heard yet doesn't count.
+    heard = set((await db.execute(
+        select(Segment.speaker_id).where(Segment.speaker_id.is_not(None), Segment.tts_audio_path.is_not(None),
+                                         Segment.tts_audio_path != "")
+    )).scalars().all())
+    confirmed = {sp.id: sp for sp in result.scalars().all()
+                 if is_confirmed_speaker(sp) or (sp.voice_id and sp.voice_auto and sp.id in heard)}
     if not confirmed:
         return []
 

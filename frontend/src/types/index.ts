@@ -140,6 +140,8 @@ export interface Speaker {
   display_name: string
   color?: string
   voice_id?: string
+  /** The app picked voice_id because nobody chose one (backend auto_voice.py). */
+  voice_auto?: boolean
   voice_design_prompt?: string
   gender?: string
   age_group?: string
@@ -252,6 +254,8 @@ export interface SpeakerCreate {
   gender?: string
   age_group?: string
   voice_design_prompt?: string
+  /** null: the app picks a fitting built-in voice the first time it's voiced */
+  voice_id?: string | null
 }
 
 // ── API Responses ─────────────────────────────────────────────────
