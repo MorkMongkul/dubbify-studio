@@ -19,13 +19,14 @@ one stay consistent.
 """
 import json
 import logging
+import shutil
 from pathlib import Path
 
 import soundfile as sf
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models.models import Voice, VoiceMode
+from app.models.models import Segment, Speaker, Voice, VoiceMode
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +52,20 @@ def _install_clip(src: Path, dest: Path) -> None:
     tmp.replace(dest)
 
 
+async def _in_use(db, voice_id: str) -> bool:
+    for column in (Speaker.voice_id, Segment.voice_id):
+        if (await db.execute(select(column).where(column == voice_id).limit(1))).first():
+            return True
+    return False
+
+
 async def seed_builtin_voices(assets: Path = ASSETS) -> int:
     """
     Make the database and voices folder match the manifest: add missing
     built-in voices, refresh changed ones, and restore a missing clip. Voices
-    a newer manifest no longer lists are kept (lines may still use them).
-    Returns how many voices were added or changed.
+    the manifest lists as "retired" (replaced by a re-cast) are removed, unless
+    a speaker or line uses one; others it no longer lists are simply kept.
+    Returns how many voices were added, changed or removed.
     """
     from app.core.database import AsyncSessionLocal
 
@@ -95,7 +104,20 @@ async def seed_builtin_voices(assets: Path = ASSETS) -> int:
                 for k, v in wanted.items():
                     setattr(voice, k, v)
                 changed += 1
+        # Voices a re-cast replaced leave the library, unless a speaker or a
+        # line still uses one: that keeps working until the user changes it.
+        listed = {entry["id"] for entry in manifest.get("voices", [])}
+        retired = []
+        for voice_id in manifest.get("retired", []):
+            voice = existing.get(voice_id)
+            if voice is None or voice_id in listed or await _in_use(db, voice_id):
+                continue
+            await db.delete(voice)
+            retired.append(voice_id)
         await db.commit()
+    for voice_id in retired:
+        shutil.rmtree(voices_dir / voice_id, ignore_errors=True)
+    changed += len(retired)
     if changed:
         logger.info(f"Built-in voices: {changed} added or updated ({len(manifest.get('voices', []))} in the library)")
     return changed
