@@ -11,8 +11,7 @@ import type { Segment, Speaker, Job, SegmentUpdate } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { useUpdateSegment, useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useSetBgmVolume } from '@/hooks/useApi'
 import { segments as segmentsApi } from '@/api/client'
-import { PipelineStepper } from '@/features/upload/PipelineStepper'
-import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, hexToRgba, cn, isJobRunning, getJobStatusConfig, originalVoicesReplaced } from '@/lib/utils'
+import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, hexToRgba, cn, isJobRunning, originalVoicesReplaced } from '@/lib/utils'
 import { recordSegmentChange, recordSegmentsChange, recordSegmentDelete, recordSegmentsDelete, recordSegmentCreate, recordSegmentSplit } from '@/lib/historyHelpers'
 import { Tooltip } from '@/components/ui/Tooltip'
 
@@ -1192,22 +1191,11 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
             })}
             </div>
 
-            {/* Empty state */}
-            {segments.length === 0 && (
+            {/* Empty state — not while a step runs: its progress shows in the
+                transcript panel, and only there */}
+            {segments.length === 0 && !(job && isJobRunning(job.status)) && (
               <div className="flex flex-col items-center justify-center h-24 text-text-disabled text-xs gap-3 w-full">
-                {job && isJobRunning(job.status) ? (
-                  <>
-                    <div className="flex items-center gap-2 text-brand-300 font-medium">
-                      <Loader2 size={14} className="animate-spin" />
-                      <span>{getJobStatusConfig(job.status).description}</span>
-                    </div>
-                    <div className="w-64">
-                      <PipelineStepper job={job} compact />
-                    </div>
-                  </>
-                ) : (
-                  <span>No segments yet — process a video to populate the timeline</span>
-                )}
+                <span>No segments yet — process a video to populate the timeline</span>
               </div>
             )}
           </div>

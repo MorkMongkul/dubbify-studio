@@ -47,6 +47,9 @@ export const ROLE_TAGS = [
 ]
 
 /** Per kind of tag, as the backend allows. */
+/** What a voice says in a sample made for listening ("Hello, this is a test voice from Movelo Studio."). */
+export const SAMPLE_LINE = 'សួស្តី នេះគឺជាសំឡេងសាកល្បងពី Movelo Studio។'
+
 export const MAX_TAGS = 6
 export const MAX_TAG_LENGTH = 24
 
@@ -131,13 +134,6 @@ export function groupVoices(voices: Voice[]): VoiceGroup[] {
   return groups.filter((g) => g.voices.length > 0)
 }
 
-/** "Heng Dara — Man, 20s, warm, gentle"; the user's own voices in a section say "(yours)". */
-export function pickerLabel(v: Voice): string {
-  const name = !v.builtin && v.section ? `${v.name} (yours)` : v.name
-  const details = [ageLabel(v), ...(v.personality ?? []).slice(0, 2).map((t) => t.toLowerCase())].filter(Boolean)
-  return details.length ? `${name} — ${details.join(', ')}` : name
-}
-
 /**
  * Search by name, description, tags, who ("man, 40s") or section ("older
  * men"), ignoring case. The query must start a word, so "man" finds men but
@@ -150,4 +146,43 @@ export function voiceMatches(v: Voice, query: string): boolean {
   const fields = [v.name, v.description, ageLabel(v), v.section ? sectionLabel(v.section) : null,
     ...(v.personality ?? []), ...(v.roles ?? [])]
   return fields.some((field) => atWordStart.test((field ?? '').toLowerCase()))
+}
+
+export type VoiceFilterKey = 'all' | 'men' | 'women' | 'kids' | 'elders' | 'narrators' | 'mine'
+
+/** The voice browser's quick filters: whole sections, or every voice of the user's own. */
+export const VOICE_FILTERS: { key: VoiceFilterKey; label: string; sections?: VoiceSectionKey[] }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'men', label: 'Men', sections: ['young_men', 'older_men'] },
+  { key: 'women', label: 'Women', sections: ['young_women', 'older_women'] },
+  { key: 'kids', label: 'Kids & teens', sections: ['teens_children'] },
+  { key: 'elders', label: 'Elders', sections: ['elders'] },
+  { key: 'narrators', label: 'Narrators', sections: ['narrators'] },
+  { key: 'mine', label: 'Mine' },
+]
+
+/** The voices a filter and a search (voiceMatches) both let through, in their original order. */
+export function filterVoices(voices: Voice[], query: string, filter: VoiceFilterKey): Voice[] {
+  const sections = VOICE_FILTERS.find((f) => f.key === filter)?.sections
+  return voices.filter((v) => {
+    if (filter === 'mine' && v.builtin) return false
+    if (sections && !sections.includes(v.section as VoiceSectionKey)) return false
+    return voiceMatches(v, query)
+  })
+}
+
+/**
+ * Which speakers use each voice, by name ({voice id: names}), leaving out one
+ * speaker (the one choosing). Pass the episode's speakers.
+ */
+export function voiceUsers(
+  speakers: { id: string; label: string; display_name?: string | null; voice_id?: string | null }[],
+  exceptSpeakerId?: string | null,
+): Record<string, string[]> {
+  const users: Record<string, string[]> = {}
+  for (const sp of speakers) {
+    if (!sp.voice_id || sp.id === exceptSpeakerId) continue
+    ;(users[sp.voice_id] ??= []).push(sp.display_name?.trim() || sp.label)
+  }
+  return users
 }

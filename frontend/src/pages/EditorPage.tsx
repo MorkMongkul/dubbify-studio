@@ -43,10 +43,11 @@ import { PanelHeader, PanelEmptyState } from '@/components/panels/PanelShell'
 import { Button } from '@/components/ui/Button'
 import { Modal, InputField } from '@/components/ui/Modal'
 import { MoveloStudioLogo } from '@/components/brand/Movelo'
-import { PipelineStepper } from '@/features/upload/PipelineStepper'
+import { ProgressSteps } from '@/components/ui/ProgressSteps'
 import { LANGUAGE_OPTIONS } from '@/types'
 import type { Job } from '@/types'
-import { getJobStatusConfig, isJobRunning, cn } from '@/lib/utils'
+import { isJobRunning, cn } from '@/lib/utils'
+import { jobProgress } from '@/lib/jobProgress'
 import { chooseVideoSavePath, isDesktop } from '@/lib/desktop'
 import { useHistoryStore } from '@/store/historyStore'
 
@@ -285,11 +286,13 @@ export default function EditorPage() {
 
   // ── Stage flags ───────────────────────────────────────────────────────────
   const isRunning    = job ? isJobRunning(job.status) : false
-  const statusConfig = job ? getJobStatusConfig(job.status) : null
   // A separation retry on an episode that already has lines keeps the editor open.
   const isStage1     = (job?.status === 'pending' || job?.status === 'extracting' || job?.status === 'separating')
     && segs.length === 0
-  const isStage2     = job?.status === 'diarizing' || job?.status === 'transcribing' || job?.status === 'translating'
+  // A running step shows its progress in the transcript panel (Stage 1: in
+  // the video's place). The top bar repeats it only while that panel is hidden.
+  const jobAction    = useEditorStore((s) => (jobId ? s.jobActions[jobId] : undefined))
+  const hiddenProgress = rightPanelCollapsed && !isStage1 ? jobProgress(job?.status, segs.length > 0, jobAction) : null
   // Mixing runs in the background — the editor stays fully usable during it
   const isMixing     = job?.status === 'mixing'
 
@@ -378,7 +381,7 @@ export default function EditorPage() {
   const handleAnalyze = (maxSpeakers?: number) => {
     if (!jobId) return
     analyze({ jobId, maxSpeakers }, {
-      onSuccess: () => toast.success('Analysis started — detecting speakers…'),
+      onSuccess: () => toast.success('Analysis started'),
       onError:   () => toast.error('Failed to start analysis'),
     })
   }
@@ -632,22 +635,29 @@ export default function EditorPage() {
     )
   }
 
-  const renderPipelineView = (activeJob: Job) => (
-    <div className="flex flex-col h-full w-full justify-center p-6 text-center">
-      <div className="max-w-md mx-auto w-full space-y-4">
-        <div className="space-y-1">
-          <div className="h-9 w-9 rounded-full bg-brand/10 border border-brand/20 flex items-center justify-center mx-auto text-brand-300 mb-1">
-            <Activity size={16} className="animate-pulse" />
+  // Before an episode has lines, its first steps show here, in the video's
+  // place (the transcript panel isn't open yet).
+  const renderPipelineView = (activeJob: Job) => {
+    const progress = jobProgress(activeJob.status, false)
+    return (
+      <div className="flex flex-col h-full w-full justify-center p-6 text-center">
+        <div className="max-w-md mx-auto w-full space-y-4">
+          <div className="space-y-1">
+            <div className="h-9 w-9 rounded-full bg-brand/10 border border-brand/20 flex items-center justify-center mx-auto text-brand-300 mb-1">
+              <Activity size={16} className="animate-pulse" />
+            </div>
+            <h3 className="text-sm font-bold text-white">{progress?.title ?? 'Working…'}</h3>
+            {progress?.detail && <p className="text-[10px] text-text-secondary leading-normal">{progress.detail}</p>}
           </div>
-          <h3 className="text-sm font-bold text-white">Processing…</h3>
-          <p className="text-[10px] text-text-secondary leading-normal">{statusConfig?.description ?? 'Pipeline running'}</p>
-        </div>
-        <div className="text-left bg-neutral-bg3 rounded-lg border border-border p-3">
-          <PipelineStepper job={activeJob} compact />
+          {progress && progress.steps.length > 0 && (
+            <div className="text-left bg-neutral-bg3 rounded-lg border border-border p-3">
+              <ProgressSteps steps={progress.steps} />
+            </div>
+          )}
         </div>
       </div>
-    </div>
-  )
+    )
+  }
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -716,15 +726,13 @@ export default function EditorPage() {
             )}
           </div>
 
-          {/* Center: stage status hint — Stage 1 is already shown on the main
-              panel's own processing card, so only Stage 2 needs a top-bar hint;
-              stems_ready has no banner here either, the Vocals track's own
-              Analyze button and the transcript panel's hint already cover it. */}
+          {/* Center: what's running, only while the transcript panel (which
+              shows it otherwise) is hidden */}
           <div className="flex-1 flex items-center justify-center gap-2">
-            {isStage2 && (
+            {hiddenProgress && (
               <div className="flex items-center gap-1.5 text-[11px] text-brand-300">
                 <Loader2 size={11} className="animate-spin" />
-                <span>{statusConfig?.description ?? 'Processing…'}</span>
+                <span>{hiddenProgress.title}</span>
               </div>
             )}
           </div>
@@ -823,7 +831,7 @@ export default function EditorPage() {
                   </div>
                 ) : jobId && job && isStage1 ? (
                   // Stage 1 running — show pipeline progress view
-                  <div className="w-full max-w-[800px] aspect-video shrink-0 bg-ink-900 relative flex items-center justify-center overflow-hidden">
+                  <div className="w-full h-full max-w-[800px] shrink-0 bg-ink-900 relative flex items-center justify-center overflow-y-auto">
                     {renderPipelineView(job)}
                   </div>
                 ) : jobId && job && !isStage1 && videoUrl ? (

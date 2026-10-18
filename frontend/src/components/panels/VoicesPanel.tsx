@@ -16,7 +16,7 @@ import { useVoices, useCreateVoice, useDeleteVoice, usePreviewVoice, useUpdateVo
 import type { Voice, VoiceMode, VoiceTagValue } from '@/types'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils'
-import { NO_TAGS, groupVoices, sectionLabel, tagsBlocker, tagsOf, voiceMatches } from '@/lib/voiceTags'
+import { NO_TAGS, SAMPLE_LINE, groupVoices, sectionLabel, tagsBlocker, tagsOf, voiceMatches } from '@/lib/voiceTags'
 import { PanelHeader } from './PanelShell'
 import { VoicePlayer } from '@/components/voices/VoicePlayer'
 import { VoiceSection } from '@/components/voices/VoiceSection'
@@ -29,7 +29,7 @@ const MODES: { value: VoiceMode; label: string; blurb: string; needs: string }[]
   { value: 'ultimate', label: 'Ultimate', blurb: 'Clip + its exact transcript, for the highest-fidelity copy.', needs: 'Needs clip + text' },
 ]
 
-const PREVIEW_DEFAULT = 'សួស្តី នេះគឺជាសំឡេងសាកល្បងពី Movelo Studio។'
+const PREVIEW_DEFAULT = SAMPLE_LINE
 
 type ModeFilter = 'all' | VoiceMode
 

@@ -1,8 +1,9 @@
 // src/components/transcript/TranscriptPanel.tsx
-import { VoiceOptions } from '@/components/voices/VoiceOptions'
+import { VoiceBrowser } from '@/components/voices/VoiceBrowser'
+import { VoiceTrigger } from '@/components/voices/VoiceTrigger'
 import { useRef, useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { AlignLeft, Loader2, ChevronRight, Sliders, Volume2, Type, RefreshCw, Mic, Plus, Languages, AudioLines } from 'lucide-react'
+import { AlignLeft, Loader2, ChevronLeft, ChevronRight, Sliders, Volume2, Type, RefreshCw, Mic, Plus, Languages, AudioLines, X } from 'lucide-react'
 import type { Segment, Speaker, Job } from '@/types'
 import { useEditorStore, useActiveSegmentId } from '@/store/editorStore'
 import { SegmentCardSkeleton } from '@/components/ui/Skeleton'
@@ -13,8 +14,10 @@ import { cn, formatTime, getSpeakerColor } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import { segments as segmentsApi, tts as ttsApi, type BatchSynthesisStatus } from '@/api/client'
 import { useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker, useTranslateMissing, useRetrySeparation } from '@/hooks/useApi'
-import { PipelineStepper } from '@/features/upload/PipelineStepper'
+import { ProgressSteps } from '@/components/ui/ProgressSteps'
+import { jobProgress } from '@/lib/jobProgress'
 import { recordSegmentChange, recordSegmentsChange, recordSegmentCreate } from '@/lib/historyHelpers'
+import { voiceUsers } from '@/lib/voiceTags'
 
 interface TranscriptPanelProps {
   segments: Segment[]
@@ -55,13 +58,16 @@ export function TranscriptPanel({
     () => segments.filter((s) => s.source_text?.trim() && !s.khmer_text?.trim()).length,
     [segments],
   )
-  const translating = job?.status === 'translating'
   const jobIdle = !job || job.status === 'completed' || job.status === 'failed'
+  // The one place a running step shows its progress: the full view below
+  // before the episode has lines, a thin bar above them after (the top bar
+  // takes over only while this panel is hidden).
+  const jobAction = useEditorStore((s) => s.jobActions[jobId])
+  const progress = jobProgress(job?.status, segments.length > 0, jobAction)
 
   // Music/voices separation fell back to the original audio: say so for as
   // long as it's true, and offer to try again (lines and voices are kept).
   const retrySeparation = useRetrySeparation()
-  const separatingAgain = job?.status === 'separating' && segments.length > 0
   // Also before Analyze: transcription listens to the separated voices
   const separationFailed = job?.stems_separated === false && (jobIdle || job.status === 'stems_ready')
   const handleRetrySeparation = () => {
@@ -105,6 +111,10 @@ export function TranscriptPanel({
   const [newSpeakerModal, setNewSpeakerModal] = useState<{ segmentId: string } | null>(null)
   const [newSpeakerName, setNewSpeakerName] = useState('')
   const [newSpeakerVoice, setNewSpeakerVoice] = useState('')   // '' = choose for me
+  // The New Speaker box shows the voice browser instead of its form
+  const [pickingNewSpeakerVoice, setPickingNewSpeakerVoice] = useState(false)
+  // The line whose own voice is being chosen (the voice browser in a window)
+  const [lineVoiceFor, setLineVoiceFor] = useState<string | null>(null)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const cardRefs = useRef<Map<string, HTMLTableRowElement>>(new Map())
@@ -200,6 +210,7 @@ export function TranscriptPanel({
     if (value === '__new__') {
       setNewSpeakerName('')
       setNewSpeakerVoice('')
+      setPickingNewSpeakerVoice(false)
       setNewSpeakerModal({ segmentId })
       return
     }
@@ -590,6 +601,18 @@ export function TranscriptPanel({
         </div>
       </div>
 
+      {/* A step running on an episode whose lines stay on screen meanwhile:
+          speaker detection, re-analysis, missing translations, separation */}
+      {progress && segments.length > 0 && (
+        <div className="px-3 py-1.5 border-b border-ink-800/50 shrink-0 bg-brand-950/20 flex items-start gap-2">
+          <Loader2 size={11} className="animate-spin text-brand-400 shrink-0 mt-0.5" />
+          <div className="min-w-0 leading-snug">
+            <p className="text-[10px] font-semibold text-brand-300">{progress.title}</p>
+            {progress.detail && <p className="text-[10px] text-white/40">{progress.detail}</p>}
+          </div>
+        </div>
+      )}
+
       {/* Batch generation progress — independent of selection, so it stays
           visible for the whole run even after the selection is cleared */}
       {batchSynthesizing && inspectorMode === 'global_synthesis' && (
@@ -607,55 +630,37 @@ export function TranscriptPanel({
         </div>
       )}
 
-      {inspectorMode === 'global_synthesis' && (separatingAgain || separationFailed) && (
+      {inspectorMode === 'global_synthesis' && separationFailed && (
         <div className="px-3 py-1.5 border-b border-ink-800/50 shrink-0 bg-amber-950/20 flex items-center gap-2">
-          {separatingAgain ? (
-            <>
-              <Loader2 size={11} className="animate-spin text-amber-300 shrink-0" />
-              <span className="text-[10px] font-semibold text-amber-200">Separating music and voices…</span>
-            </>
-          ) : (
-            <>
-              <AudioLines size={11} className="text-amber-300 shrink-0" />
-              <span className="flex-1 text-[10px] text-amber-200 leading-snug">
-                Music and voices couldn't be separated, so the music track still has the original voices.
-              </span>
-              <button
-                onClick={handleRetrySeparation}
-                disabled={retrySeparation.isPending}
-                className="shrink-0 text-[10px] font-semibold text-amber-100 bg-amber-600/30 hover:bg-amber-600/50 px-2 py-0.5 rounded transition-colors disabled:opacity-50"
-                title="Run the separation again. Lines, translations and voices are kept."
-              >
-                Try again
-              </button>
-            </>
-          )}
+          <AudioLines size={11} className="text-amber-300 shrink-0" />
+          <span className="flex-1 text-[10px] text-amber-200 leading-snug">
+            Music and voices couldn't be separated, so the music track still has the original voices.
+          </span>
+          <button
+            onClick={handleRetrySeparation}
+            disabled={retrySeparation.isPending}
+            className="shrink-0 text-[10px] font-semibold text-amber-100 bg-amber-600/30 hover:bg-amber-600/50 px-2 py-0.5 rounded transition-colors disabled:opacity-50"
+            title="Run the separation again. Lines, translations and voices are kept."
+          >
+            Try again
+          </button>
         </div>
       )}
 
-      {inspectorMode === 'global_synthesis' && (translating || (missingTranslations > 0 && jobIdle)) && (
+      {inspectorMode === 'global_synthesis' && missingTranslations > 0 && jobIdle && (
         <div className="px-3 py-1.5 border-b border-ink-800/50 shrink-0 bg-amber-950/20 flex items-center gap-2">
-          {translating ? (
-            <>
-              <Loader2 size={11} className="animate-spin text-amber-300 shrink-0" />
-              <span className="text-[10px] font-semibold text-amber-200">Translating missing lines…</span>
-            </>
-          ) : (
-            <>
-              <Languages size={11} className="text-amber-300 shrink-0" />
-              <span className="flex-1 text-[10px] text-amber-200 leading-snug">
-                {missingTranslations} line{missingTranslations === 1 ? ' has' : 's have'} no translation
-              </span>
-              <button
-                onClick={handleTranslateMissing}
-                disabled={translateMissing.isPending}
-                className="shrink-0 text-[10px] font-semibold text-amber-100 bg-amber-600/30 hover:bg-amber-600/50 px-2 py-0.5 rounded transition-colors disabled:opacity-50"
-                title="Translate only the lines without a translation — translated and edited lines stay as they are"
-              >
-                Translate missing lines
-              </button>
-            </>
-          )}
+          <Languages size={11} className="text-amber-300 shrink-0" />
+          <span className="flex-1 text-[10px] text-amber-200 leading-snug">
+            {missingTranslations} line{missingTranslations === 1 ? ' has' : 's have'} no translation
+          </span>
+          <button
+            onClick={handleTranslateMissing}
+            disabled={translateMissing.isPending}
+            className="shrink-0 text-[10px] font-semibold text-amber-100 bg-amber-600/30 hover:bg-amber-600/50 px-2 py-0.5 rounded transition-colors disabled:opacity-50"
+            title="Translate only the lines without a translation — translated and edited lines stay as they are"
+          >
+            Translate missing lines
+          </button>
         </div>
       )}
 
@@ -712,19 +717,14 @@ export function TranscriptPanel({
           </div>
         ) : segments.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-8 gap-3">
-            {/* Stage 1 running — extracting / separating */}
-            {job && (job.status === 'extracting' || job.status === 'separating' || job.status === 'pending') ? (
+            {progress ? (
               <>
                 <Loader2 size={24} className="text-brand-400 animate-spin mb-1" />
-                <p className="text-[12px] font-semibold text-brand-300">
-                  {job.status === 'separating' ? 'Splitting vocals from BGM…' : 'Extracting audio…'}
-                </p>
-                <p className="text-[11px] text-white/40 max-w-[200px] leading-normal">
-                  Stems will appear on the timeline when ready
-                </p>
-                <div className="w-48 mt-1">
-                  <PipelineStepper job={job} compact />
-                </div>
+                <p className="text-[12px] font-semibold text-brand-300">{progress.title}</p>
+                {progress.detail && (
+                  <p className="text-[11px] text-white/40 max-w-[220px] leading-normal">{progress.detail}</p>
+                )}
+                <ProgressSteps steps={progress.steps} className="w-48 mt-1" />
               </>
             ) : job?.status === 'stems_ready' ? (
               /* Stage 1 done — waiting for user to click Analyze */
@@ -736,24 +736,6 @@ export function TranscriptPanel({
                 <p className="text-[11px] text-white/40 max-w-[200px] leading-normal">
                   Click the <span className="text-emerald-400 font-semibold">Analyze</span> button on the Vocals track to detect speakers and transcribe.
                 </p>
-              </>
-            ) : job && (job.status === 'diarizing' || job.status === 'transcribing' || job.status === 'translating') ? (
-              /* Stage 2 running */
-              <>
-                <Loader2 size={24} className="text-brand-400 animate-spin mb-1" />
-                <p className="text-[12px] font-semibold text-brand-300">
-                  {job.status === 'diarizing'    ? 'Detecting speakers…'
-                  : job.status === 'transcribing' ? 'Transcribing speech…'
-                  : 'Translating dialogue…'}
-                </p>
-                <p className="text-[11px] text-white/40 max-w-[200px] leading-normal">
-                  {job.status === 'diarizing'    ? 'Identifying who speaks when'
-                  : job.status === 'transcribing' ? 'Converting speech to text'
-                  : 'Translating to Khmer'}
-                </p>
-                <div className="w-48 mt-1">
-                  <PipelineStepper job={job} compact />
-                </div>
               </>
             ) : (
               <>
@@ -888,17 +870,24 @@ export function TranscriptPanel({
 
                     {/* Voice Clone Select */}
                     <td className="p-2" onClick={(e) => e.stopPropagation()}>
-                      <select
-                        className="bg-ink-900 text-ink-200 text-[10px] rounded border border-ink-800 hover:border-ink-700 hover:bg-ink-800 py-0.5 px-1 focus:outline-none focus:border-brand-500/50 cursor-pointer w-full max-w-[100px] truncate"
-                        value={seg.voice_id || ''}
-                        onChange={(e) => handleVoiceChange(seg.id, e.target.value)}
-                        title={speakerVoiceName ? `Inherits ${speakerVoiceName} from speaker` : 'No voice chosen yet — a fitting built-in voice is picked the first time this line is voiced'}
-                      >
-                        <option value="">
-                          {speakerVoiceName || 'Choose for me'}
-                        </option>
-                        <VoiceOptions voices={availableVoices} />
-                      </select>
+                      {(() => {
+                        const ownVoiceName = seg.voice_id ? availableVoices.find((v) => v.id === seg.voice_id)?.name : null
+                        return (
+                          <button
+                            onClick={() => setLineVoiceFor(seg.id)}
+                            className={cn(
+                              'flex items-center gap-1 bg-ink-900 text-[10px] rounded border border-ink-800 hover:border-ink-700 hover:bg-ink-800 py-0.5 px-1.5 focus:outline-none focus:border-brand-500/50 w-full max-w-[110px] text-left',
+                              ownVoiceName ? 'text-ink-200' : 'text-ink-500',
+                            )}
+                            title={ownVoiceName ? `This line uses ${ownVoiceName}`
+                              : speakerVoiceName ? `Uses the speaker's voice, ${speakerVoiceName}`
+                              : 'No voice chosen yet — a fitting built-in voice is picked the first time this line is voiced'}
+                          >
+                            <span className="truncate flex-1">{ownVoiceName || speakerVoiceName || 'Choose for me'}</span>
+                            <ChevronRight size={10} className="shrink-0 opacity-60" />
+                          </button>
+                        )
+                      })()}
                     </td>
 
                     {/* Status Badge */}
@@ -1190,50 +1179,113 @@ export function TranscriptPanel({
 
       <Modal
         open={!!newSpeakerModal}
-        onClose={() => setNewSpeakerModal(null)}
-        title="New Speaker"
-        description="Create a reusable speaker profile and assign it to this segment."
-        size="sm"
+        onClose={() => { setNewSpeakerModal(null); setPickingNewSpeakerVoice(false) }}
+        title={pickingNewSpeakerVoice ? undefined : 'New Speaker'}
+        description={pickingNewSpeakerVoice ? undefined : 'Create a reusable speaker profile and assign it to this segment.'}
+        size={pickingNewSpeakerVoice ? 'xl' : 'sm'}
+        className={pickingNewSpeakerVoice ? 'p-0 overflow-hidden' : undefined}
       >
-        <div className="space-y-4">
-          <InputField
-            label="Speaker Name"
-            required
-            value={newSpeakerName}
-            onChange={(e) => setNewSpeakerName(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleCreateSpeakerConfirm() }}
-            placeholder="e.g. Narrator"
-            autoFocus
+        {pickingNewSpeakerVoice ? (
+          <VoiceBrowser
+            className="h-[min(70vh,600px)]"
+            voices={availableVoices}
+            currentVoiceId={newSpeakerVoice || null}
+            usedBy={voiceUsers(jobSpeakers)}
+            auto={{
+              label: 'Choose for me',
+              hint: "A built-in voice that fits the actor is picked the first time this speaker is voiced, and kept.",
+            }}
+            onChoose={(voiceId) => { setNewSpeakerVoice(voiceId ?? ''); setPickingNewSpeakerVoice(false) }}
+            onClose={() => setPickingNewSpeakerVoice(false)}
+            header={
+              <div className="flex items-center gap-2 px-3 h-11 border-b border-ink-800/60 shrink-0">
+                <button
+                  onClick={() => setPickingNewSpeakerVoice(false)}
+                  className="flex items-center gap-0.5 text-[11px] text-ink-400 hover:text-white transition-colors"
+                >
+                  <ChevronLeft size={14} /> New Speaker
+                </button>
+                <span className="text-[12px] font-semibold text-white ml-1 truncate">
+                  Voice for {newSpeakerName.trim() || 'the new speaker'}
+                </span>
+              </div>
+            }
           />
-          <Field label="Voice">
-            <select
-              aria-label="Voice"
-              value={newSpeakerVoice}
-              onChange={(e) => setNewSpeakerVoice(e.target.value)}
-              className="glass-input w-full rounded-lg px-3 py-2 text-sm focus:outline-none transition-all duration-150 cursor-pointer"
-              style={{
-                background: 'var(--glass-input-bg)',
-                borderColor: 'var(--color-border)',
-                color: 'var(--color-text-primary)',
-                fontFamily: 'var(--font-sans)',
-              }}
-            >
-              <option value="">Choose for me</option>
-              <VoiceOptions voices={availableVoices} />
-            </select>
-            <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-              "Choose for me" gives this speaker a built-in voice that fits the actor (a man's, woman's or
-              child's) the first time it's voiced, and keeps it. You can change it later in Speakers.
-            </p>
-          </Field>
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={() => setNewSpeakerModal(null)}>Cancel</Button>
-            <Button onClick={handleCreateSpeakerConfirm} disabled={createSpeaker.isPending}>
-              {createSpeaker.isPending ? 'Creating…' : 'Create & Assign'}
-            </Button>
+        ) : (
+          <div className="space-y-4">
+            <InputField
+              label="Speaker Name"
+              required
+              value={newSpeakerName}
+              onChange={(e) => setNewSpeakerName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleCreateSpeakerConfirm() }}
+              placeholder="e.g. Narrator"
+              autoFocus
+            />
+            <Field label="Voice">
+              <VoiceTrigger
+                voice={newSpeakerVoice ? availableVoices.find((v) => v.id === newSpeakerVoice) : undefined}
+                emptyLabel="Choose for me"
+                emptyHint="A voice that fits the actor is picked the first time it's voiced"
+                playerId="new-speaker"
+                onOpen={() => setPickingNewSpeakerVoice(true)}
+                title="Choose this speaker's voice"
+              />
+              <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+                You can change it later in Speakers.
+              </p>
+            </Field>
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setNewSpeakerModal(null)}>Cancel</Button>
+              <Button onClick={handleCreateSpeakerConfirm} disabled={createSpeaker.isPending}>
+                {createSpeaker.isPending ? 'Creating…' : 'Create & Assign'}
+              </Button>
+            </div>
           </div>
-        </div>
+        )}
       </Modal>
+
+      {(() => {
+        const seg = lineVoiceFor ? segments.find((s) => s.id === lineVoiceFor) : undefined
+        const speaker = seg ? getSpeaker(seg) : undefined
+        const speakerVoice = speaker?.voice_id ? availableVoices.find((v) => v.id === speaker.voice_id) : undefined
+        return (
+          <Modal open={!!seg} onClose={() => setLineVoiceFor(null)} size="xl" className="p-0 overflow-hidden">
+            {seg && (
+              <VoiceBrowser
+                className="h-[min(70vh,600px)]"
+                voices={availableVoices}
+                currentVoiceId={seg.voice_id ?? null}
+                usedBy={voiceUsers(jobSpeakers)}
+                auto={{
+                  label: !speaker ? 'Choose for me'
+                    : speakerVoice ? `The speaker's voice (${speakerVoice.name})` : "The speaker's voice",
+                  hint: !speaker ? "A fitting built-in voice is picked by this line's own pitch the first time it's voiced."
+                    : 'This line sounds like the rest of its speaker\'s lines.',
+                }}
+                onChoose={(voiceId) => {
+                  setLineVoiceFor(null)
+                  if ((seg.voice_id ?? null) !== voiceId) handleVoiceChange(seg.id, voiceId ?? '')
+                }}
+                onClose={() => setLineVoiceFor(null)}
+                header={
+                  <div className="flex items-center gap-2 px-3 h-11 border-b border-ink-800/60 shrink-0">
+                    <span className="text-[12px] font-semibold text-white">Voice for this line</span>
+                    <span className="text-[10.5px] text-ink-500 font-mono">{formatTime(seg.start_time)} – {formatTime(seg.end_time)}</span>
+                    <button
+                      onClick={() => setLineVoiceFor(null)}
+                      aria-label="Close"
+                      className="ml-auto flex items-center justify-center h-6 w-6 rounded text-ink-400 hover:text-white hover:bg-white/10"
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                }
+              />
+            )}
+          </Modal>
+        )
+      })()}
     </div>
   )
 }

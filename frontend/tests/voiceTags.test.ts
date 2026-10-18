@@ -1,7 +1,7 @@
 // Run with `npm test` (Node's own test runner; Node strips the TypeScript types).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { addTag, ageLabel, groupVoices, pickerLabel, tagsBlocker, tagsOf, toggleTag, voiceMatches } from '../src/lib/voiceTags.ts'
+import { addTag, ageLabel, filterVoices, groupVoices, tagsBlocker, tagsOf, toggleTag, voiceMatches, voiceUsers } from '../src/lib/voiceTags.ts'
 import type { Voice } from '../src/types/index.ts'
 
 let n = 0
@@ -50,16 +50,6 @@ test('voices without a known section still show, under Other voices, and never a
     ['mine', 'My voices', ['Mine']],
     ['other', 'Other voices', ['From a newer app', 'Untagged']],
   ])
-})
-
-test('picker labels show the name, who and the first two personality tags', () => {
-  const dara = voice({ builtin: true, name: 'Heng Dara', gender: 'man', age_group: '20s',
-    personality: ['Warm', 'Gentle', 'Bright'], section: 'young_men' })
-  assert.equal(pickerLabel(dara), 'Heng Dara — Man, 20s, warm, gentle')
-  const mineSorted = voice({ name: 'Kim Sothy (copy)', gender: 'man', age_group: '50s', personality: ['Regal'], section: 'older_men' })
-  assert.equal(pickerLabel(mineSorted), 'Kim Sothy (copy) (yours) — Man, 50s, regal')
-  assert.equal(pickerLabel(voice({ name: 'Plain' })), 'Plain')
-  assert.equal(pickerLabel(voice({ name: 'Moody', personality: ['Dark'] })), 'Moody — dark')
 })
 
 test('search matches name, description, tags, who and section, ignoring case', () => {
@@ -112,4 +102,39 @@ test('search matches the start of words, so "man" finds men but not women', () =
     assert.deepEqual([voiceMatches(sophea, q), voiceMatches(dara, q)], [true, false], q)
   }
   assert.equal(voiceMatches(sophea, 'ophea'), false, 'the middle of a word is not a match')
+})
+
+test('the browser filters pick whole sections, and Mine is every voice of your own', () => {
+  const youngMan = voice({ builtin: true, section: 'young_men', name: 'Seng Vannak', personality: ['Cold'] })
+  const olderMan = voice({ builtin: true, section: 'older_men', name: 'Kheang Davuth', personality: ['Rough'] })
+  const youngWoman = voice({ builtin: true, section: 'young_women', name: 'Hong Malis', personality: ['Cold'] })
+  const boy = voice({ builtin: true, section: 'teens_children', name: 'Chhun Kakada' })
+  const elder = voice({ builtin: true, section: 'elders', name: 'Old Man' })
+  const narrator = voice({ builtin: true, section: 'narrators', name: 'Teller' })
+  const mineTagged = voice({ builtin: false, section: 'young_men', name: 'My Hero' })
+  const mineUntagged = voice({ builtin: false, section: null, name: 'My Draft' })
+  const all = [youngMan, olderMan, youngWoman, boy, elder, narrator, mineTagged, mineUntagged]
+  const names = (filter: Parameters<typeof filterVoices>[2], query = '') => filterVoices(all, query, filter).map((v) => v.name)
+
+  assert.deepEqual(names('all'), all.map((v) => v.name))
+  assert.deepEqual(names('men'), ['Seng Vannak', 'Kheang Davuth', 'My Hero'])
+  assert.deepEqual(names('women'), ['Hong Malis'])
+  assert.deepEqual(names('kids'), ['Chhun Kakada'])
+  assert.deepEqual(names('elders'), ['Old Man'])
+  assert.deepEqual(names('narrators'), ['Teller'])
+  assert.deepEqual(names('mine'), ['My Hero', 'My Draft'])
+  // Search and filter together
+  assert.deepEqual(names('all', 'cold'), ['Seng Vannak', 'Hong Malis'])
+  assert.deepEqual(names('men', 'cold'), ['Seng Vannak'])
+})
+
+test("'Used by' lists the other speakers that have a voice, by their name", () => {
+  const speakers = [
+    { id: 's0', label: 'SPEAKER_00', display_name: 'SPEAKER_00', voice_id: 'v-a' },
+    { id: 's1', label: 'SPEAKER_01', display_name: 'Doctor Yun', voice_id: 'v-a' },
+    { id: 's2', label: 'SPEAKER_02', display_name: '', voice_id: 'v-b' },
+    { id: 's3', label: 'SPEAKER_03', display_name: 'Nobody yet', voice_id: null },
+  ]
+  assert.deepEqual(voiceUsers(speakers, 's0'), { 'v-a': ['Doctor Yun'], 'v-b': ['SPEAKER_02'] })
+  assert.deepEqual(voiceUsers(speakers), { 'v-a': ['SPEAKER_00', 'Doctor Yun'], 'v-b': ['SPEAKER_02'] })
 })

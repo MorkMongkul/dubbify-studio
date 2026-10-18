@@ -4,6 +4,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions, chat, appSettings } from '@/api/client'
 import type { VoiceCreateInput } from '@/api/client'
+import { useEditorStore } from '@/store/editorStore'
 import type {
   Segment, ProjectCreate, ProjectUpdate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice, OverlayUpdate, AppSettingsUpdate, GeminiModelSetting,
 } from '@/types'
@@ -294,6 +295,8 @@ export function useAnalyzeJob() {
     mutationFn: ({ jobId, maxSpeakers }: { jobId: string; maxSpeakers?: number | null }) =>
       jobs.analyze(jobId, maxSpeakers),
     onSuccess: (_, { jobId }) => {
+      // Remembered so the progress can name what's running (lib/jobProgress.ts)
+      useEditorStore.getState().setJobAction(jobId, 'analyze')
       qc.invalidateQueries({ queryKey: ['job', jobId] })
     },
   })
@@ -304,6 +307,7 @@ export function useTranslateMissing() {
   return useMutation({
     mutationFn: (jobId: string) => jobs.translateMissing(jobId),
     onSuccess: (_, jobId) => {
+      useEditorStore.getState().setJobAction(jobId, 'translate-missing')
       qc.invalidateQueries({ queryKey: ['job', jobId] })
     },
   })
@@ -324,6 +328,7 @@ export function useDetectSpeakers() {
   return useMutation({
     mutationFn: (jobId: string) => jobs.detectSpeakers(jobId),
     onSuccess: (_, jobId) => {
+      useEditorStore.getState().setJobAction(jobId, 'detect-speakers')
       qc.invalidateQueries({ queryKey: ['job', jobId] })
     },
   })
