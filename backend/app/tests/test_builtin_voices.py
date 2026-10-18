@@ -18,7 +18,7 @@ from app.core.config import settings
 from app.models.models import Speaker, Voice
 from app.services import builtin_voices
 from app.services.tts_client import tts_client
-from app.services.voice_tags import AGE_GROUPS, GENDERS, SECTIONS, voice_section
+from app.services.voice_tags import AGE_GROUPS, GENDERS, SECTIONS, normalize_tags, voice_section
 
 
 def _pack(tmp_path: Path, n: int = 2) -> Path:
@@ -190,5 +190,7 @@ def test_the_shipped_library_is_complete():
         assert re.fullmatch(r"[A-Z][a-z]+ [A-Z][a-z]+", v["name"]), v["name"]
         assert v.get("gender") in GENDERS and v.get("age_group") in AGE_GROUPS, v["id"]
         assert 1 <= len(v.get("personality", [])) <= 3 and 1 <= len(v.get("roles", [])) <= 2, v["id"]
+        for kind in ("personality", "roles"):      # hand edits: a list of tidy tags, not "Sly" or "warm "
+            assert isinstance(v[kind], list) and normalize_tags(v[kind]) == v[kind], (v["id"], kind, v[kind])
     assert len({v["name"] for v in voices}) == len(voices), "every voice has a name of its own"
     assert {voice_section(v["gender"], v["age_group"], v["roles"]) for v in voices} == set(SECTIONS)

@@ -77,7 +77,7 @@ export function tagsBlocker(tags: VoiceTagValue): string | null {
   return tags.gender && !tags.age_group ? 'Choose an age for this voice' : null
 }
 
-export type VoiceGroupKey = 'mine' | VoiceSectionKey
+export type VoiceGroupKey = 'mine' | VoiceSectionKey | 'other'
 
 export interface VoiceGroup {
   key: VoiceGroupKey
@@ -113,11 +113,20 @@ function withinSection(a: Voice, b: Voice): number {
   return byAge || a.id.localeCompare(b.id)
 }
 
-/** "My voices" (own voices with no section yet), then each section in order; empty groups left out. */
+/**
+ * "My voices" (own voices with no section yet), then each section in order,
+ * then "Other voices": any other voice without a known section (a built-in
+ * voice whose tags didn't install), so no voice ever disappears from the tab
+ * or the pickers. Empty groups are left out.
+ */
 export function groupVoices(voices: Voice[]): VoiceGroup[] {
+  const known = new Set<string>(SECTIONS.map((s) => s.key))
+  const mine = (v: Voice) => !v.builtin && !v.section
   const groups: VoiceGroup[] = [
-    { key: 'mine', label: 'My voices', voices: voices.filter((v) => !v.builtin && !v.section).sort(newestFirst) },
+    { key: 'mine', label: 'My voices', voices: voices.filter(mine).sort(newestFirst) },
     ...SECTIONS.map((s) => ({ ...s, voices: voices.filter((v) => v.section === s.key).sort(withinSection) })),
+    { key: 'other', label: 'Other voices',
+      voices: voices.filter((v) => !mine(v) && !known.has(v.section ?? '')).sort(withinSection) },
   ]
   return groups.filter((g) => g.voices.length > 0)
 }
@@ -129,11 +138,16 @@ export function pickerLabel(v: Voice): string {
   return details.length ? `${name} — ${details.join(', ')}` : name
 }
 
-/** Search by name, description, tags, who ("man, 40s") or section ("older men"), ignoring case. */
+/**
+ * Search by name, description, tags, who ("man, 40s") or section ("older
+ * men"), ignoring case. The query must start a word, so "man" finds men but
+ * not "woman".
+ */
 export function voiceMatches(v: Voice, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (!q) return true
+  const atWordStart = new RegExp(`(^|[^\\p{L}\\p{N}])${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'u')
   const fields = [v.name, v.description, ageLabel(v), v.section ? sectionLabel(v.section) : null,
     ...(v.personality ?? []), ...(v.roles ?? [])]
-  return fields.some((field) => (field ?? '').toLowerCase().includes(q))
+  return fields.some((field) => atWordStart.test((field ?? '').toLowerCase()))
 }

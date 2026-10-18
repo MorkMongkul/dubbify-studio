@@ -42,9 +42,14 @@ test('voices are grouped: My voices first, then sections in order, own voices fi
   assert.equal(groups[1].hint, '20s to 30s')
 })
 
-test('a built-in voice that has no section yet is never shown as one of mine', () => {
+test('voices without a known section still show, under Other voices, and never as one of mine', () => {
   const untagged = voice({ id: 'builtin-99-a', builtin: true, name: 'Untagged' })
-  assert.deepEqual(groupVoices([untagged]).map((g) => g.key), [])
+  const unknown = voice({ name: 'From a newer app', gender: 'man', section: 'martians' as never })
+  const mine = voice({ name: 'Mine' })
+  assert.deepEqual(groupVoices([untagged, unknown, mine]).map((g) => [g.key, g.label, g.voices.map((v) => v.name)]), [
+    ['mine', 'My voices', ['Mine']],
+    ['other', 'Other voices', ['From a newer app', 'Untagged']],
+  ])
 })
 
 test('picker labels show the name, who and the first two personality tags', () => {
@@ -93,4 +98,18 @@ test('a voice made before tags existed edits as empty tags', () => {
     { gender: null, age_group: null, personality: [], roles: [] })
   assert.deepEqual(tagsOf(voice({ gender: 'woman', age_group: '40s', personality: ['Calm'], roles: ['Empress'] })),
     { gender: 'woman', age_group: '40s', personality: ['Calm'], roles: ['Empress'] })
+})
+
+test('search matches the start of words, so "man" finds men but not women', () => {
+  const sophea = voice({ builtin: true, name: 'Tan Sophea', description: 'A young woman with a bright voice.',
+    gender: 'woman', age_group: '20s', personality: ['Sweet'], roles: ['Lead'], section: 'young_women' })
+  const dara = voice({ builtin: true, name: 'Heng Dara', description: 'A young man with a warm voice.',
+    gender: 'man', age_group: '20s', personality: ['Warm'], roles: ['Lead'], section: 'young_men' })
+  for (const q of ['man', 'men', 'young men', 'man, 2']) {
+    assert.deepEqual([voiceMatches(sophea, q), voiceMatches(dara, q)], [false, true], q)
+  }
+  for (const q of ['woman', 'women', 'young women', 'soph']) {
+    assert.deepEqual([voiceMatches(sophea, q), voiceMatches(dara, q)], [true, false], q)
+  }
+  assert.equal(voiceMatches(sophea, 'ophea'), false, 'the middle of a word is not a match')
 })
