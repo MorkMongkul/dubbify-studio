@@ -336,6 +336,7 @@ export function useSynthesizeJob() {
     mutationFn: (jobId: string) => tts.synthesizeJob(jobId),
     onSuccess: (_, jobId) => {
       qc.invalidateQueries({ queryKey: ['job', jobId] })
+      qc.invalidateQueries({ queryKey: ['speakers'] })   // speakers without a voice get one picked
     },
   })
 }
@@ -347,6 +348,7 @@ export function useSynthesizeSegment() {
       tts.synthesizeSegment(segmentId),
     onSuccess: (_, { jobId }) => {
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      qc.invalidateQueries({ queryKey: ['speakers'] })   // speakers without a voice get one picked
     },
   })
 }

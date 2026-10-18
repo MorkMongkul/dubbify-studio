@@ -206,9 +206,14 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
                   }}
                   title="Voice used for all of this speaker's clips"
                 >
-                  <option value="">Auto (voice design)</option>
+                  <option value="">Choose for me</option>
                   <VoiceOptions voices={availableVoices} />
                 </select>
+                {speaker.voice_auto && speaker.voice_id && (
+                  <p className="text-[9.5px] text-ink-500 leading-snug">
+                    Picked for you to fit the actor — change it if it doesn't suit.
+                  </p>
+                )}
               </div>
             )
           })
