@@ -157,6 +157,21 @@ export interface SpeakerUpdate {
 
 export type VoiceMode = 'design' | 'clone' | 'ultimate'
 
+/** Who a voice sounds like, and roughly how old (backend app/services/voice_tags.py). */
+export type VoiceGender = 'man' | 'woman' | 'boy' | 'girl'
+export type VoiceAgeGroup = 'child' | 'teen' | '20s' | '30s' | '40s' | '50s' | '60s' | '70s+'
+/** Voices-tab section; the backend derives it from gender, age and roles. */
+export type VoiceSectionKey =
+  'young_men' | 'young_women' | 'older_men' | 'older_women' | 'elders' | 'teens_children' | 'narrators'
+
+/** The tags a person edits on one of their own voices. */
+export interface VoiceTagValue {
+  gender: VoiceGender | null
+  age_group: VoiceAgeGroup | null
+  personality: string[]
+  roles: string[]
+}
+
 export interface Voice {
   id: string
   name: string
@@ -173,6 +188,12 @@ export interface Voice {
   reference_audio_url?: string | null
   /** Ships with the app: can't be renamed, edited or deleted. */
   builtin?: boolean
+  gender?: VoiceGender | null
+  age_group?: VoiceAgeGroup | null
+  personality?: string[]
+  roles?: string[]
+  /** null = "My voices": no "who" chosen yet */
+  section?: VoiceSectionKey | null
 }
 
 export interface Segment {

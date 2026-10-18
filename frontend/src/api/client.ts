@@ -3,7 +3,7 @@
 
 import axios from 'axios'
 import type {
-  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, Segment, SegmentUpdate, SegmentCreate, TTSResponse, HealthResponse, Voice, VoiceMode, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult,
+  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, Segment, SegmentUpdate, SegmentCreate, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult,
 } from '@/types'
 
 const api = axios.create({
@@ -321,10 +321,18 @@ export interface VoiceCreateInput {
   cfg_value?: number
   inference_timesteps?: number
   reference_audio?: File | null
+  gender?: VoiceGender | null
+  age_group?: VoiceAgeGroup | null
+  personality?: string[]
+  roles?: string[]
 }
 
 function voiceFormData(data: Partial<VoiceCreateInput>): FormData {
   const form = new FormData()
+  if (data.gender) form.append('gender', data.gender)
+  if (data.age_group) form.append('age_group', data.age_group)
+  data.personality?.forEach((tag) => form.append('personality', tag))   // one field per tag
+  data.roles?.forEach((tag) => form.append('roles', tag))
   if (data.name !== undefined) form.append('name', data.name)
   if (data.mode !== undefined) form.append('mode', data.mode)
   if (data.description !== undefined) form.append('description', data.description)
@@ -347,8 +355,13 @@ export const voices = {
       timeout: 600_000,
     }).then((r) => r.data),
 
-  update: (id: string, data: Partial<Pick<Voice, 'name' | 'mode' | 'description' | 'reference_transcript' | 'cfg_value' | 'inference_timesteps' | 'seed'>>) =>
+  // A null gender / age_group clears it (the voice goes back to My voices).
+  update: (id: string, data: Partial<Pick<Voice, 'name' | 'mode' | 'description' | 'reference_transcript' | 'cfg_value' | 'inference_timesteps' | 'seed' | 'gender' | 'age_group' | 'personality' | 'roles'>>) =>
     api.patch<Voice>(`/voices/${id}`, data, { timeout: 600_000 }).then((r) => r.data),
+
+  // One of the user's own voices made from any voice (built-in ones too), with its own clip.
+  copy: (id: string) =>
+    api.post<Voice>(`/voices/${id}/copy`).then((r) => r.data),
 
   uploadReference: (id: string, file: File) => {
     const form = new FormData()
