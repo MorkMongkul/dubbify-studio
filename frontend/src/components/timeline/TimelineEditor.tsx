@@ -1195,7 +1195,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                 transcript panel, and only there */}
             {segments.length === 0 && !(job && isJobRunning(job.status)) && (
               <div className="flex flex-col items-center justify-center h-24 text-text-disabled text-xs gap-3 w-full">
-                <span>No segments yet — process a video to populate the timeline</span>
+                <span>No lines yet</span>
               </div>
             )}
           </div>
@@ -1811,7 +1811,7 @@ const InteractiveSegment = memo(function InteractiveSegment({
             className="h-4 w-4 rounded-full bg-red-500 hover:bg-red-400 flex items-center justify-center shadow transition-colors"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => { e.stopPropagation(); onDelete(seg.id) }}
-            title="Delete segment (Delete key)"
+            title="Delete line (Delete key)"
           >
             <X size={8} className="text-white" strokeWidth={3} />
           </button>

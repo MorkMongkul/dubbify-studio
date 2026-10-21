@@ -297,9 +297,9 @@ function StorageSection({ data }: { data: AppSettings }) {
 
 type ThemeOption = 'dark' | 'light'
 
-const THEME_OPTIONS: { value: ThemeOption; icon: typeof Sun; label: string; description: string }[] = [
-  { value: 'dark',  icon: Moon, label: 'Dark',  description: 'Cinematic dark interface — easy on the eyes' },
-  { value: 'light', icon: Sun,  label: 'Light', description: 'Clean bright interface for well-lit rooms' },
+const THEME_OPTIONS: { value: ThemeOption; icon: typeof Sun; label: string }[] = [
+  { value: 'dark',  icon: Moon, label: 'Dark' },
+  { value: 'light', icon: Sun,  label: 'Light' },
 ]
 
 function ThemeCard({
@@ -343,7 +343,6 @@ function ThemeCard({
           <Icon size={12} className={active ? 'text-brand-400' : 'text-white/40'} />
           <p className={cn('text-[12px] font-semibold', active ? 'text-white' : 'text-white/80')}>{option.label}</p>
         </div>
-        <p className="text-[10px] text-white/40 leading-snug mt-0.5">{option.description}</p>
       </div>
 
       {active && (
@@ -403,8 +402,6 @@ export function SettingsPanel() {
             </div>
             <div className="space-y-1 text-[10px] text-white/40">
               <div className="flex justify-between"><span>Version</span><span className="text-white/60 font-mono">{appSettings?.version ?? '—'}</span></div>
-              <div className="flex justify-between"><span>Frontend</span><span className="text-white/60 font-mono">React 19 · Vite</span></div>
-              <div className="flex justify-between"><span>State</span><span className="text-white/60 font-mono">Zustand · TanStack Query</span></div>
             </div>
           </div>
         </section>

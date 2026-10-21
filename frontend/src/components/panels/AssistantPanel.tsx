@@ -77,7 +77,7 @@ export function AssistantPanel({ projectId }: AssistantPanelProps) {
         <PanelEmptyState
           icon={Bot}
           title="No project open"
-          hint="Open a project to ask the Assistant about its translations across episodes."
+          hint="Open a project to use the Assistant"
         />
       </div>
     )
@@ -166,7 +166,7 @@ export function AssistantPanel({ projectId }: AssistantPanelProps) {
             <Bot size={18} className="text-ink-700 mb-2" />
             <p className="text-[10px] text-ink-600">Ask about this project's translations</p>
             <p className="text-[9px] text-ink-700 mt-0.5 max-w-[200px] leading-normal">
-              e.g. "How was 老公 translated in episode 2?" or "Make segment 14 sound less formal"
+              e.g. "How was 老公 translated in episode 2?" or "Make line 14 sound less formal"
             </p>
           </div>
         ) : (

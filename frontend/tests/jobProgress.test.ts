@@ -4,37 +4,28 @@ import assert from 'node:assert/strict'
 import { holdPercent, jobProgress, stagePercent, uploadPercent } from '../src/lib/jobProgress.ts'
 
 test('a first analysis says what the long step really does, in plain words', () => {
-  const p = jobProgress('diarizing', false)!
-  assert.equal(p.title, 'Transcribing and finding speakers…')
-  assert.equal(p.detail, 'Writing down each line and who says it')
+  assert.equal(jobProgress('diarizing', false)!.title, 'Transcribing and finding speakers…')
   assert.equal(jobProgress('transcribing', false)!.title, 'Transcribing and finding speakers…')
   assert.equal(jobProgress('translating', false)!.title, 'Translating to Khmer…')
   for (const status of ['diarizing', 'transcribing', 'translating']) {
-    const p = jobProgress(status, false)!
-    assert.doesNotMatch(`${p.title} ${p.detail}`, /diariz/i)
+    assert.doesNotMatch(jobProgress(status, false)!.title, /diariz/i)
   }
 })
 
 test('with lines on screen, the bar names the action that was started', () => {
-  const detect = jobProgress('diarizing', true, 'detect-speakers')!
-  assert.equal(detect.title, 'Detecting speakers…')
-  assert.equal(detect.detail, 'Text, translations and voices stay as they are')
+  assert.equal(jobProgress('diarizing', true, 'detect-speakers')!.title, 'Detecting speakers…')
 
   assert.equal(jobProgress('diarizing', true, 'analyze')!.title, 'Analyzing again: transcribing and finding speakers…')
   assert.equal(jobProgress('translating', true, 'analyze')!.title, 'Analyzing again: translating…')
-  assert.equal(jobProgress('translating', true, 'analyze')!.detail, "These lines are replaced when it's done")
 
   assert.equal(jobProgress('translating', true, 'translate-missing')!.title, 'Translating missing lines…')
 
-  const separating = jobProgress('separating', true)!
-  assert.equal(separating.title, 'Separating music and voices…')
-  assert.equal(separating.detail, 'Lines, translations and voices are kept')
+  assert.equal(jobProgress('separating', true)!.title, 'Separating music and voices…')
 })
 
 test("without a known action, or one that can't be running now, the bar claims nothing it doesn't know", () => {
   // After a reload the started action is unknown
   assert.equal(jobProgress('diarizing', true)!.title, 'Detecting speakers…')
-  assert.equal(jobProgress('diarizing', true)!.detail, undefined)
   assert.equal(jobProgress('translating', true)!.title, 'Translating…')
   // Speaker detection never translates: an older action doesn't describe this run
   assert.equal(jobProgress('translating', true, 'detect-speakers')!.title, 'Translating…')

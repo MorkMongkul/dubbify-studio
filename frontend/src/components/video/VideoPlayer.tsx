@@ -488,7 +488,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
                 <button
                   className="h-7 w-7 rounded-md flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 transition-colors"
                   onClick={goToSegmentStart}
-                  title="Go to segment start"
+                  title="Go to the start of the line"
                 >
                   <SkipBack size={14} />
                 </button>
@@ -509,7 +509,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
                 <button
                   className="h-7 w-7 rounded-md flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 transition-colors"
                   onClick={goToSegmentEnd}
-                  title="Go to segment end"
+                  title="Go to the end of the line"
                 >
                   <SkipForward size={14} />
                 </button>

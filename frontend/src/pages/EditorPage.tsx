@@ -498,11 +498,11 @@ export default function EditorPage() {
     const prev = prevQualityStatusRef.current
     prevQualityStatusRef.current = job?.status
     if (prev === undefined || !job?.error_msg) return
-    const stemsReadyFromStage1 = job.status === 'stems_ready'
-      && (prev === 'pending' || prev === 'extracting' || prev === 'separating')
+    // Only after Analyze: a new video's one warning (music and voices weren't
+    // separated) already stays on the transcript as a banner with Try again
     const completedFromStage2 = job.status === 'completed'
       && (prev === 'diarizing' || prev === 'transcribing' || prev === 'translating')
-    if (stemsReadyFromStage1 || completedFromStage2) {
+    if (completedFromStage2) {
       toast.error(job.error_msg, { duration: 12000 })
     }
   }, [job?.status, job?.error_msg])
@@ -594,7 +594,7 @@ export default function EditorPage() {
               {/* Session name + language (always shown since we have a project) */}
               <div className="space-y-2">
                 <div>
-                  <label className="block text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-1">Session Name</label>
+                  <label className="block text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-1">Episode name</label>
                   <input className="w-full h-8 px-2.5 rounded-lg border outline-none bg-neutral-bg3 text-xs text-text-primary border-border focus:border-brand" value={sessionName} onChange={e => setSessionName(e.target.value)} disabled={isSetupLoading} />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
@@ -784,8 +784,7 @@ export default function EditorPage() {
                     <PanelHeader icon={ImagePlus} title="Elements" />
                     <PanelEmptyState
                       icon={ImagePlus}
-                      title="No session open"
-                      hint="Overlays — logos, subtitles, cover boxes — attach to a session's video."
+                      title="No episode open"
                     />
                   </div>
                 )
@@ -816,7 +815,7 @@ export default function EditorPage() {
                 ) : loadingJob && jobId ? (
                   <div className="flex flex-col items-center gap-3 text-text-muted">
                     <Loader2 size={22} className="animate-spin text-brand" />
-                    <span className="text-xs">Loading session…</span>
+                    <span className="text-xs">Loading episode…</span>
                   </div>
                 ) : jobId && job?.status === 'failed' ? (
                   <div className="flex flex-col items-center gap-3 text-center max-w-sm">

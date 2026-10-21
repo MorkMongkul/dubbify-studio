@@ -11,7 +11,6 @@ export type JobAction = 'analyze' | 'detect-speakers' | 'translate-missing'
 
 export interface JobProgress {
   title: string
-  detail?: string
 }
 
 export const UPLOADING_TITLE = 'Uploading video…'
@@ -33,20 +32,13 @@ export function jobProgress(
 
   if (hasLines) {
     if (status === 'separating') {
-      return { title: 'Separating music and voices…', detail: 'Lines, translations and voices are kept' }
+      return { title: 'Separating music and voices…' }
     }
     if (!listening && status !== 'translating') return null
     if (action === 'analyze') {
-      return {
-        title: listening ? 'Analyzing again: transcribing and finding speakers…' : 'Analyzing again: translating…',
-        detail: "These lines are replaced when it's done",
-      }
+      return { title: listening ? 'Analyzing again: transcribing and finding speakers…' : 'Analyzing again: translating…' }
     }
-    if (listening) {
-      return action === 'detect-speakers'
-        ? { title: 'Detecting speakers…', detail: 'Text, translations and voices stay as they are' }
-        : { title: 'Detecting speakers…' }
-    }
+    if (listening) return { title: 'Detecting speakers…' }
     return { title: action === 'translate-missing' ? 'Translating missing lines…' : 'Translating…' }
   }
 
@@ -56,12 +48,12 @@ export function jobProgress(
     case 'extracting':
       return { title: 'Extracting the audio…' }
     case 'separating':
-      return { title: 'Separating music and voices…', detail: 'The music and the original voices become separate tracks' }
+      return { title: 'Separating music and voices…' }
     case 'diarizing':
     case 'transcribing':
-      return { title: 'Transcribing and finding speakers…', detail: 'Writing down each line and who says it' }
+      return { title: 'Transcribing and finding speakers…' }
     case 'translating':
-      return { title: 'Translating to Khmer…', detail: "The lines appear here when it's done" }
+      return { title: 'Translating to Khmer…' }
     default:
       return null
   }
