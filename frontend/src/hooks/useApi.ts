@@ -5,8 +5,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions, chat, appSettings } from '@/api/client'
 import type { VoiceCreateInput } from '@/api/client'
 import { useEditorStore } from '@/store/editorStore'
+import { standInMessage, withTurn } from '@/lib/chatMessages'
 import type {
   Segment, ProjectCreate, ProjectUpdate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice, OverlayUpdate, AppSettingsUpdate, GeminiModelSetting,
+  ChatMessage,
 } from '@/types'
 
 // ── Health ────────────────────────────────────────────────────
@@ -559,17 +561,36 @@ export function useChatMessages(projectId: string | null) {
   })
 }
 
+/** Sending runs as `['chat-send']`, so the panel can tell a turn is running
+ *  even after it was closed and opened again (useIsMutating). */
 export function useSendChatMessage() {
   const qc = useQueryClient()
   return useMutation({
+    mutationKey: ['chat-send'],
     mutationFn: ({ projectId, text }: { projectId: string; text: string }) =>
       chat.sendMessage(projectId, text),
-    onSuccess: (_, { projectId }) => {
-      qc.invalidateQueries({ queryKey: ['chat-messages', projectId] })
+    // What you sent shows at once; the saved turn (your message and the reply)
+    // takes its place when the Assistant answers, which can take a minute.
+    onMutate: async ({ projectId, text }) => {
+      await qc.cancelQueries({ queryKey: ['chat-messages', projectId] })
+      const sent = standInMessage(projectId, text, new Date())
+      qc.setQueryData<ChatMessage[]>(['chat-messages', projectId], (list = []) => [...list, sent])
+      return { standInId: sent.id }
+    },
+    onSuccess: (data, { projectId }, sending) => {
+      qc.setQueryData<ChatMessage[]>(['chat-messages', projectId], (list = []) =>
+        withTurn(list, sending?.standInId ?? '', data.messages))
       qc.invalidateQueries({ queryKey: ['chat-pending-edits', projectId] })
       // A tool call may have applied an auto-mode edit straight to a segment.
       qc.invalidateQueries({ queryKey: ['segments'] })
     },
+    onError: (_err, { projectId }, sending) => {
+      if (sending) {
+        qc.setQueryData<ChatMessage[]>(['chat-messages', projectId], (list = []) => withTurn(list, sending.standInId, []))
+      }
+    },
+    // The server keeps what was sent even when the Assistant fails
+    onSettled: (_data, _err, { projectId }) => qc.invalidateQueries({ queryKey: ['chat-messages', projectId] }),
   })
 }
 

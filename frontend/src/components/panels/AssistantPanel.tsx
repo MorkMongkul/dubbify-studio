@@ -5,7 +5,13 @@
 // toggle): "manual" stages every edit for approval below the chat before it
 // touches a segment; "auto" applies immediately but still logs an
 // approved-status row so there's an audit trail to review or revert from.
+// Your messages are bubbles on the right; the Assistant's replies are markdown,
+// shown as open text across the panel. What you send shows at once, with
+// "Thinking…" where the reply will appear (useSendChatMessage).
 import { useEffect, useRef, useState } from 'react'
+import { useIsMutating } from '@tanstack/react-query'
+import Markdown, { type Components } from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { Bot, Send, Check, X, Search, ListTree, Pencil, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
@@ -36,20 +42,33 @@ function ToolStep({ label, icon: Icon }: { label: string; icon: typeof Search })
   )
 }
 
+// Tables, lists and the rest of GitHub-style markdown; no pictures (a reply
+// could point one anywhere), and links open outside the editor
+const REMARK_PLUGINS = [remarkGfm]
+const MARKDOWN_COMPONENTS: Components = {
+  a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+}
+
 function ChatBubble({ message }: { message: ChatMessage }) {
-  const isUser = message.role === 'user'
+  if (message.role === 'user') {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[85%] rounded-lg px-2.5 py-1.5 text-[11px] leading-relaxed whitespace-pre-wrap break-words bg-brand-500/15 text-ink-100">
+          {message.text}
+        </div>
+      </div>
+    )
+  }
   return (
-    <div className={cn('flex', isUser ? 'justify-end' : 'justify-start')}>
-      <div
-        className={cn(
-          'max-w-[85%] rounded-lg px-2.5 py-1.5 text-[11px] leading-relaxed whitespace-pre-wrap break-words',
-          isUser
-            ? 'bg-brand-500/15 text-ink-100'
-            : 'bg-ink-800/60 text-ink-200'
-        )}
+    <div className="chat-md px-1 text-[11px] leading-relaxed break-words text-ink-200">
+      <Markdown
+        remarkPlugins={REMARK_PLUGINS}
+        components={MARKDOWN_COMPONENTS}
+        disallowedElements={['img']}
+        unwrapDisallowed
       >
         {message.text}
-      </div>
+      </Markdown>
     </div>
   )
 }
@@ -62,13 +81,19 @@ export function AssistantPanel({ projectId }: AssistantPanelProps) {
   const { data: pendingEdits = [] } = usePendingEdits(projectId ?? null)
   const approveEdit = useApproveEdit()
   const rejectEdit = useRejectEdit()
+  // The turn runs on when this panel closes, so ask the mutation cache rather
+  // than this panel's own useMutation
+  const thinking = useIsMutating({
+    mutationKey: ['chat-send'],
+    predicate: (m) => (m.state.variables as { projectId?: string } | undefined)?.projectId === projectId,
+  }) > 0
 
   const [draft, setDraft] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
-  }, [messages.length])
+  }, [messages.length, thinking])
 
   if (!projectId) {
     return (
@@ -91,11 +116,16 @@ export function AssistantPanel({ projectId }: AssistantPanelProps) {
 
   const handleSend = () => {
     const text = draft.trim()
-    if (!text || sendMessage.isPending) return
+    if (!text || thinking) return
     setDraft('')
     sendMessage.mutate(
       { projectId, text },
-      { onError: (err: Error) => toast.error(err.message || 'Assistant request failed') }
+      {
+        onError: (err: Error) => {
+          toast.error(err.message || 'Assistant request failed')
+          setDraft((d) => d || text)   // back in the box, to send again
+        },
+      }
     )
   }
 
@@ -156,7 +186,7 @@ export function AssistantPanel({ projectId }: AssistantPanelProps) {
         </div>
       )}
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-2 min-h-0">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-3 min-h-0">
         {loadingMessages ? (
           <div className="flex items-center justify-center py-6">
             <Loader2 size={16} className="animate-spin text-ink-600" />
@@ -180,9 +210,10 @@ export function AssistantPanel({ projectId }: AssistantPanelProps) {
             return <ChatBubble key={m.id} message={m} />
           })
         )}
-        {sendMessage.isPending && (
-          <div className="flex items-center gap-1.5 text-[10px] text-ink-600 pl-1">
-            <Loader2 size={11} className="animate-spin" /> Thinking…
+        {thinking && (
+          // Where the reply will appear
+          <div className="px-1 text-[11px] leading-relaxed">
+            <span className="shimmer-text font-medium">Thinking…</span>
           </div>
         )}
       </div>
@@ -203,7 +234,7 @@ export function AssistantPanel({ projectId }: AssistantPanelProps) {
         />
         <button
           onClick={handleSend}
-          disabled={!draft.trim() || sendMessage.isPending}
+          disabled={!draft.trim() || thinking}
           className="h-7 w-7 shrink-0 rounded-md bg-brand-500/20 text-brand-300 hover:bg-brand-500/30 disabled:opacity-30 disabled:hover:bg-brand-500/20 flex items-center justify-center transition-colors"
           aria-label="Send"
         >
