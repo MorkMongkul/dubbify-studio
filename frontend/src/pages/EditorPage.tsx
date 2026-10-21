@@ -793,7 +793,7 @@ export default function EditorPage() {
               ) : railTab === 'story' ? (
                 <StoryPanel projectId={projectId} jobId={jobId} />
               ) : (
-                <AssistantPanel projectId={projectId} />
+                <AssistantPanel projectId={projectId} jobId={jobId} />
               )}
             </div>
 

@@ -7,24 +7,30 @@
 // approved-status row so there's an audit trail to review or revert from.
 // Your messages are bubbles on the right; the Assistant's replies are markdown,
 // shown as open text across the panel. What you send shows at once, with
-// "Thinking…" where the reply will appear (useSendChatMessage).
+// "Thinking…" where the reply will appear (useSendChatMessage). The line your
+// text cursor was last in (editorStore.assistantLineId) is "this line": a tag
+// above the box shows it, and it goes with the message.
 import { useEffect, useRef, useState } from 'react'
 import { useIsMutating } from '@tanstack/react-query'
 import Markdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Bot, Send, Check, X, Search, ListTree, Pencil, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
+import type { AxiosError } from 'axios'
 import {
-  useProject, useUpdateProject,
+  useProject, useUpdateProject, useSegments,
   useChatMessages, useSendChatMessage,
   usePendingEdits, useApproveEdit, useRejectEdit,
 } from '@/hooks/useApi'
-import type { ChatEditMode, ChatMessage } from '@/types'
+import { useEditorStore } from '@/store/editorStore'
+import type { ChatEditMode, ChatLineRef, ChatMessage } from '@/types'
 import { PanelHeader, PanelEmptyState } from './PanelShell'
-import { cn } from '@/lib/utils'
+import { cn, formatTime } from '@/lib/utils'
 
 interface AssistantPanelProps {
   projectId?: string
+  /** The open episode, whose lines can be "this line" */
+  jobId?: string
 }
 
 const TOOL_ICONS: Record<string, typeof Search> = {
@@ -49,10 +55,19 @@ const MARKDOWN_COMPONENTS: Components = {
   a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
 }
 
+function lineLabel(line: ChatLineRef): string {
+  return [line.episode ? `Ep ${line.episode}` : '', formatTime(line.time)].filter(Boolean).join(' · ')
+}
+
 function ChatBubble({ message }: { message: ChatMessage }) {
   if (message.role === 'user') {
     return (
-      <div className="flex justify-end">
+      <div className="flex flex-col items-end gap-0.5">
+        {message.line_ref && (
+          <span className="text-[9.5px] text-ink-500 truncate max-w-[85%]" title={message.line_ref.source_text}>
+            {lineLabel(message.line_ref)} · <span lang="zh-Hans">{message.line_ref.source_text}</span>
+          </span>
+        )}
         <div className="max-w-[85%] rounded-lg px-2.5 py-1.5 text-[11px] leading-relaxed whitespace-pre-wrap break-words bg-brand-500/15 text-ink-100">
           {message.text}
         </div>
@@ -73,7 +88,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
   )
 }
 
-export function AssistantPanel({ projectId }: AssistantPanelProps) {
+export function AssistantPanel({ projectId, jobId }: AssistantPanelProps) {
   const { data: project } = useProject(projectId ?? null)
   const updateProject = useUpdateProject()
   const { data: messages = [], isLoading: loadingMessages } = useChatMessages(projectId ?? null)
@@ -87,6 +102,12 @@ export function AssistantPanel({ projectId }: AssistantPanelProps) {
     mutationKey: ['chat-send'],
     predicate: (m) => (m.state.variables as { projectId?: string } | undefined)?.projectId === projectId,
   }) > 0
+
+  // "This line": only while it's a line of the open episode
+  const lineId = useEditorStore((s) => s.assistantLineId)
+  const setLineId = useEditorStore((s) => s.setAssistantLineId)
+  const { data: lines = [] } = useSegments(jobId ?? null)
+  const lineSeg = lineId ? lines.find((s) => s.id === lineId) : undefined
 
   const [draft, setDraft] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -118,12 +139,18 @@ export function AssistantPanel({ projectId }: AssistantPanelProps) {
     const text = draft.trim()
     if (!text || thinking) return
     setDraft('')
+    // The server fills in the episode number; the stand-in shows the time
+    const line: ChatLineRef | undefined = lineSeg && {
+      segment_id: lineSeg.id, episode: 0, time: lineSeg.start_time, speaker: '', speaker_tag: '',
+      source_text: lineSeg.source_text ?? '', khmer_text: lineSeg.khmer_text ?? '',
+    }
     sendMessage.mutate(
-      { projectId, text },
+      { projectId, text, line },
       {
         onError: (err: Error) => {
           toast.error(err.message || 'Assistant request failed')
           setDraft((d) => d || text)   // back in the box, to send again
+          if (line && (err as AxiosError).response?.status === 404) setLineId(null)   // the line is gone
         },
       }
     )
@@ -218,7 +245,25 @@ export function AssistantPanel({ projectId }: AssistantPanelProps) {
         )}
       </div>
 
-      <div className="p-2 border-t border-ink-800/50 flex items-end gap-1.5 shrink-0">
+      {lineSeg && (
+        <div className="px-2 pt-1.5 border-t border-ink-800/50 shrink-0">
+          <span className="inline-flex max-w-full items-center gap-1.5 rounded-md bg-brand-500/15 px-1.5 py-0.5 text-[10px] text-brand-300">
+            <span className="font-semibold shrink-0">This line</span>
+            <span className="shrink-0 tabular-nums">{formatTime(lineSeg.start_time)}</span>
+            <span lang="zh-Hans" className="truncate text-ink-400">{lineSeg.source_text}</span>
+            <button
+              type="button"
+              onClick={() => setLineId(null)}
+              aria-label="Not about this line"
+              title="Not about this line"
+              className="shrink-0 text-ink-500 hover:text-white transition-colors"
+            >
+              <X size={10} />
+            </button>
+          </span>
+        </div>
+      )}
+      <div className={cn('p-2 flex items-end gap-1.5 shrink-0', !lineSeg && 'border-t border-ink-800/50')}>
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}

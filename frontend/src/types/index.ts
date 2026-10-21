@@ -429,6 +429,17 @@ export interface ChatFunctionResponse {
   response: Record<string, unknown>
 }
 
+/** The line a message is about — where the text cursor was when it was sent (a snapshot). */
+export interface ChatLineRef {
+  segment_id: string
+  episode: number
+  time: number
+  speaker: string
+  speaker_tag: string
+  source_text: string
+  khmer_text: string
+}
+
 export interface ChatMessage {
   id: string
   project_id: string
@@ -436,6 +447,7 @@ export interface ChatMessage {
   text: string
   function_call?: ChatFunctionCall | null
   function_response?: ChatFunctionResponse | null
+  line_ref?: ChatLineRef | null
   created_at: string
 }
 

@@ -43,6 +43,7 @@ export function TranscriptPanel({
   const setInspectorMode        = useEditorStore((s) => s.setInspectorMode)
   const setFocusedTimelineItemId = useEditorStore((s) => s.setFocusedTimelineItemId)
   const setActiveSegment        = useEditorStore((s) => s.setActiveSegment)
+  const setAssistantLineId      = useEditorStore((s) => s.setAssistantLineId)
   const updateSegmentText       = useEditorStore((s) => s.updateSegmentText)
   const clearSegmentTextOverride = useEditorStore((s) => s.clearSegmentTextOverride)
  
@@ -858,6 +859,7 @@ export function TranscriptPanel({
                         onChange={(e) => updateSegmentText(seg.id, e.target.value)}
                         onFocus={(e) => {
                           originalTextRef.current = e.target.value
+                          setAssistantLineId(seg.id)   // "this line" for the Assistant
                         }}
                         onBlur={(e) => handleTextBlur(seg.id, e.target.value, originalTextRef.current)}
                         onClick={(e) => {

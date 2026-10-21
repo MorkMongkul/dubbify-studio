@@ -38,6 +38,9 @@ interface EditorStore {
   activeSegmentId: string | null
   selectedOverlayId: string | null
   editingSegmentId: string | null
+  // The line whose text the cursor was last in: "this line" for the Assistant.
+  // Follows the text cursor, not the mouse (activeSegmentId follows hover).
+  assistantLineId: string | null
   selectedSpeakerId: string | null
   selectedSegmentIds: string[]
   // Segment ids queued in a running batch voice generation, plus the job
@@ -124,6 +127,7 @@ interface EditorStore {
   setActiveSegment: (id: string | null) => void
   setSelectedOverlay: (id: string | null) => void
   setEditingSegment: (id: string | null) => void
+  setAssistantLineId: (id: string | null) => void
   setSelectedSpeaker: (id: string | null) => void
   toggleSelectSegment: (id: string) => void
   toggleSelectAllSegments: (ids: string[]) => void
@@ -159,6 +163,7 @@ const DEFAULT_STATE = {
   activeSegmentId: null,
   selectedOverlayId: null,
   editingSegmentId: null,
+  assistantLineId: null as string | null,
   selectedSpeakerId: null,
   leftPanelCollapsed: false,
   rightPanelCollapsed: false,
@@ -237,6 +242,7 @@ export const useEditorStore = create<EditorStore>()(
     },
     setSelectedOverlay: (id) => set({ selectedOverlayId: id }),
     setEditingSegment: (id) => set({ editingSegmentId: id }),
+    setAssistantLineId: (id) => set({ assistantLineId: id }),
     setSelectedSpeaker: (id) => set({ selectedSpeakerId: id }),
     toggleSelectSegment: (id) => set((s) => ({
       selectedSegmentIds: s.selectedSegmentIds.includes(id)

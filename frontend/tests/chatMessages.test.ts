@@ -33,3 +33,12 @@ test('a failed send takes the stand-in away', () => {
   const sent = standInMessage('p1', 'Fix line 3', new Date())
   assert.deepEqual(withTurn([saved('a', 'user', 'hi'), sent], sent.id, []).map((m) => m.id), ['a'])
 })
+
+test('a message about a line keeps the line on its stand-in', () => {
+  const line = {
+    segment_id: 's1', episode: 2, time: 41.2, speaker: 'Dr. Wang', speaker_tag: 'SPEAKER_03',
+    source_text: '那我把这第一阵诊的位置让给你坐坐', khmer_text: 'ឱ្យខ្ញុំអង្គុយ',
+  }
+  assert.deepEqual(standInMessage('p1', 'make it less formal', new Date(), line).line_ref, line)
+  assert.equal(standInMessage('p1', 'hello', new Date()).line_ref ?? null, null)
+})

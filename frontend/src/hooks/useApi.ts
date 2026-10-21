@@ -8,7 +8,7 @@ import { useEditorStore } from '@/store/editorStore'
 import { standInMessage, withTurn } from '@/lib/chatMessages'
 import type {
   Segment, ProjectCreate, ProjectUpdate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice, OverlayUpdate, AppSettingsUpdate, GeminiModelSetting,
-  ChatMessage, StoryEdit,
+  ChatLineRef, ChatMessage, StoryEdit,
 } from '@/types'
 
 // ── Health ────────────────────────────────────────────────────
@@ -607,13 +607,14 @@ export function useSendChatMessage() {
   const qc = useQueryClient()
   return useMutation({
     mutationKey: ['chat-send'],
-    mutationFn: ({ projectId, text }: { projectId: string; text: string }) =>
-      chat.sendMessage(projectId, text),
+    // `line`: the line being edited, which "this line" means (ChatLineRef snapshot)
+    mutationFn: ({ projectId, text, line }: { projectId: string; text: string; line?: ChatLineRef }) =>
+      chat.sendMessage(projectId, text, line?.segment_id),
     // What you sent shows at once; the saved turn (your message and the reply)
     // takes its place when the Assistant answers, which can take a minute.
-    onMutate: async ({ projectId, text }) => {
+    onMutate: async ({ projectId, text, line }) => {
       await qc.cancelQueries({ queryKey: ['chat-messages', projectId] })
-      const sent = standInMessage(projectId, text, new Date())
+      const sent = standInMessage(projectId, text, new Date(), line)
       qc.setQueryData<ChatMessage[]>(['chat-messages', projectId], (list = []) => [...list, sent])
       return { standInId: sent.id }
     },

@@ -409,8 +409,9 @@ export const chat = {
 
   // A turn can involve several tool-call round trips to Gemini — give it
   // real headroom instead of the 30s default.
-  sendMessage: (projectId: string, text: string) =>
-    api.post<ChatSendResponse>(`/chat/${projectId}/messages`, { text }, { timeout: 120_000 }).then((r) => r.data),
+  /** `lineId`: the line the text cursor is in, which "this line" means */
+  sendMessage: (projectId: string, text: string, lineId?: string) =>
+    api.post<ChatSendResponse>(`/chat/${projectId}/messages`, { text, line_id: lineId }, { timeout: 120_000 }).then((r) => r.data),
 
   listPendingEdits: (projectId: string, status: 'pending' | 'all' = 'pending') =>
     api.get<ChatProposedEdit[]>(`/chat/${projectId}/pending-edits`, { params: { status } }).then((r) => r.data),
