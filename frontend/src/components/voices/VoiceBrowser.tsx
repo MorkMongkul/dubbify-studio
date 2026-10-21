@@ -20,7 +20,7 @@ interface VoiceBrowserProps {
   /** {voice id: names of the other speakers using it} (lib/voiceTags voiceUsers). */
   usedBy: Record<string, string[]>
   /** The choice that leaves it to the app, e.g. "Choose for me" or the speaker's voice. */
-  auto: { label: string; hint: string }
+  auto: { label: string; hint?: string }
   onChoose: (voiceId: string | null) => void
   /** Esc: back without choosing. */
   onClose: () => void
@@ -154,7 +154,7 @@ export function VoiceBrowser({ voices, currentVoiceId, usedBy, auto, onChoose, o
             <Sparkles size={13} className="text-brand-300 mt-0.5 shrink-0" />
             <span className="min-w-0 flex-1">
               <span className="block text-[12px] font-semibold text-white">{auto.label}</span>
-              <span className="block text-[10px] text-ink-500 leading-snug mt-0.5">{auto.hint}</span>
+              {auto.hint && <span className="block text-[10px] text-ink-500 leading-snug mt-0.5">{auto.hint}</span>}
             </span>
             {autoCurrent && <Check size={13} className="text-brand-300 shrink-0 mt-0.5" />}
           </button>

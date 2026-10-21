@@ -18,21 +18,15 @@ try {
 interface ThemeStore {
   theme: Theme
   setTheme: (t: Theme) => void
-  toggleTheme: () => void
 }
 
 export const useThemeStore = create<ThemeStore>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       theme: 'dark',
       setTheme: (theme) => {
         set({ theme })
         applyTheme(theme)
-      },
-      toggleTheme: () => {
-        const next = get().theme === 'dark' ? 'light' : 'dark'
-        set({ theme: next })
-        applyTheme(next)
       },
     }),
     { name: THEME_KEY }

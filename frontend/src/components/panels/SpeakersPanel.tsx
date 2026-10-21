@@ -84,7 +84,7 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
       onSuccess: () => {
         // The new segments get new ids — older undo steps would point at nothing.
         useHistoryStore.getState().clear()
-        toast.success('Re-analyzing — the new segments replace the current ones when ready')
+        toast.success('Analyzing again — the new lines replace these when ready')
       },
       onError: (e) => toast.error((e as Error).message || 'Could not start re-analysis'),
     })
@@ -96,8 +96,7 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
         <PanelHeader icon={Users} title="Speakers" />
         <PanelEmptyState
           icon={Users}
-          title="No session open"
-          hint="Speakers appear here once a session's video has been analyzed."
+          title="No episode open"
         />
       </div>
     )
@@ -110,35 +109,28 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
         {showActions && (
           <div className="p-2 rounded bg-ink-800/30 border border-ink-800/40 space-y-1.5">
             {!busy && sessionSpeakers.length === 1 && segs.length >= 4 && (
-              <p className="text-[9px] text-amber-300/80">
-                Only one voice is assigned. If more people speak in this video, detect speakers again.
-              </p>
+              <p className="text-[9px] text-amber-300/80">Only one speaker found</p>
             )}
             <button
               onClick={runDetectSpeakers}
               disabled={busy || detectSpeakers.isPending}
-              title={busy ? UNAVAILABLE : undefined}
+              title={busy ? UNAVAILABLE : 'Re-listens to the audio and reassigns who speaks each line. Text, translations and voices stay as they are.'}
               className="w-full flex items-center justify-center gap-1.5 py-1 rounded bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:hover:bg-brand-600 disabled:cursor-not-allowed text-white text-[10px] font-semibold transition-colors"
             >
               <AudioLines size={11} />
               Detect speakers
             </button>
-            <p className="text-[9px] text-ink-500 leading-snug">
-              Re-listens to the audio and reassigns who speaks each line. Text, translations and
-              generated voices stay as they are.
-            </p>
             {confirmReanalyze && !busy ? (
               <div className="space-y-1.5 pt-1 border-t border-ink-800/60">
                 <p className="text-[9px] text-amber-300/90 leading-snug">
-                  Replace every segment with a fresh transcription, speakers and translation?
-                  Your text edits and generated voices in this session will be discarded.
+                  Start over? Your edits and voices in this episode will be lost.
                 </p>
                 <div className="flex gap-1.5">
                   <button
                     onClick={runReanalyze}
                     className="flex-1 py-1 rounded bg-red-600/80 hover:bg-red-500 text-white text-[10px] font-semibold transition-colors"
                   >
-                    Replace segments
+                    Start over
                   </button>
                   <button
                     onClick={() => setConfirmReanalyze(false)}
@@ -153,7 +145,7 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
                 onClick={() => setConfirmReanalyze(true)}
                 disabled={busy || analyze.isPending}
                 className="w-full flex items-center justify-center gap-1.5 py-1 rounded bg-ink-800 hover:bg-ink-700 disabled:opacity-40 disabled:hover:bg-ink-800 disabled:cursor-not-allowed text-ink-300 text-[10px] transition-colors"
-                title={busy ? UNAVAILABLE : 'Transcribe, detect speakers and translate this session again from scratch'}
+                title={busy ? UNAVAILABLE : 'Transcribe, detect speakers and translate this episode again from scratch'}
               >
                 <RefreshCw size={10} />
                 Re-analyze…
@@ -165,7 +157,6 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
           <div className="flex flex-col items-center justify-center py-6 text-center">
             <Users size={18} className="text-ink-700 mb-2" />
             <p className="text-[10px] text-ink-600">No speakers yet</p>
-            <p className="text-[9px] text-ink-700 mt-0.5">They appear here when the episode has been analyzed</p>
           </div>
         ) : (
           sessionSpeakers.map(({ sp: speaker, projectIndex }) => {
@@ -216,12 +207,8 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
                   playerId={`card:${speaker.id}`}
                   onOpen={() => setBrowsingId(speaker.id)}
                   title="Choose the voice for all of this speaker's lines"
+                  auto={!!speaker.voice_auto && !!speaker.voice_id}
                 />
-                {speaker.voice_auto && speaker.voice_id && (
-                  <p className="text-[9.5px] text-ink-500 leading-snug">
-                    Picked for you to fit the actor — change it if it doesn't suit.
-                  </p>
-                )}
               </div>
             )
           })
@@ -245,7 +232,7 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
               usedBy={voiceUsers(sessionSpeakers.map(({ sp }) => sp), browsing.sp.id)}
               auto={{
                 label: 'Choose for me',
-                hint: "A built-in voice that fits the actor is picked the first time this speaker is voiced, and kept.",
+                hint: "Fits the actor's voice",
               }}
               onChoose={(voiceId) => chooseVoice(browsing.sp, voiceId)}
               onClose={() => setBrowsingId(null)}

@@ -259,14 +259,10 @@ export function OverlaysPanel({
                     onMouseUp={(e) => updateOverlay.mutate({ id: selected.id, jobId, data: { font_size: Number(e.currentTarget.value) } })}
                     onTouchEnd={(e) => updateOverlay.mutate({ id: selected.id, jobId, data: { font_size: Number(e.currentTarget.value) } })}
                     className="flex-1 min-w-0"
-                    title="Font size, in real video pixels — identical on every segment"
+                    title="Font size in video pixels, the same for every line"
                   />
                 </div>
-                <p className="text-[9px] text-ink-500 leading-relaxed">
-                  Height is automatic: longer lines wrap and grow upward from the box's
-                  bottom edge at this same size. On the video, drag the side handles to
-                  set how wide the text column is.
-                </p>
+                <p className="text-[9px] text-ink-500 leading-relaxed">Drag the sides on the video to set the width</p>
               </>
             )}
 
@@ -284,6 +280,7 @@ export function OverlaysPanel({
                   </button>
                   <button
                     onClick={() => updateOverlay.mutate({ id: selected.id, jobId, data: { blur: true } })}
+                    title="Blurs what's underneath, like the original burned-in subtitles"
                     className={cn(
                       'py-1 rounded text-[10px] font-medium transition-all border',
                       selected.blur ? 'bg-brand-500/20 border-brand-500/50 text-brand-300' : 'border-ink-700 text-ink-400 hover:border-ink-500'
@@ -293,11 +290,7 @@ export function OverlaysPanel({
                   </button>
                 </div>
 
-                {selected.blur ? (
-                  <p className="text-[9px] text-ink-500 leading-relaxed">
-                    Blurs whatever's in the video underneath this box — handy for hiding a burned-in original subtitle without a flat color block.
-                  </p>
-                ) : (
+                {!selected.blur && (
                   <>
                     <ColorSwatches
                       label="Fill"

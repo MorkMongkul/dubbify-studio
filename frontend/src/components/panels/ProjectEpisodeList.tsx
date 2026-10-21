@@ -43,11 +43,11 @@ export function ProjectEpisodeList({ projectId, activeJobId, onImportFile }: Pro
     setConfirmDeleteId(null)
     deleteJob({ jobId: jId, projectId }, {
       onSuccess: () => {
-        toast.success('Session deleted')
+        toast.success('Episode deleted')
         // Don't leave the editor sitting on a session that no longer exists.
         if (jId === activeJobId) navigate(`/projects/${projectId}`, { replace: true })
       },
-      onError: () => toast.error('Failed to delete session'),
+      onError: () => toast.error('Failed to delete the episode'),
     })
   }
 
@@ -162,8 +162,8 @@ export function ProjectEpisodeList({ projectId, activeJobId, onImportFile }: Pro
                 onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(j.id) }}
                 disabled={deletingJob}
                 className={`shrink-0 p-1 rounded transition-all ${isActive ? 'opacity-60 hover:opacity-100 hover:bg-red-500/20 hover:text-red-400 text-ink-400' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-red-500/20 hover:text-red-400 text-ink-500'}`}
-                title="Delete session"
-                aria-label="Delete session"
+                title="Delete episode"
+                aria-label="Delete episode"
               >
                 <Trash2 size={10} />
               </button>

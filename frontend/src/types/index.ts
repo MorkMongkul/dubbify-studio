@@ -98,6 +98,8 @@ export interface ProjectCreate {
   name: string
   source_lang: string
   target_lang: string
+  /** Optional "About this drama"; it starts the project's story notes. */
+  story_intro?: string
 }
 
 export interface Job {
@@ -120,8 +122,12 @@ export interface Job {
   stems_separated?: boolean | null
   // changes when the tracks are made again — appended to their URLs
   stems_version?: number
+  // how long the running step has been going (null when unknown), for the progress ring's estimate
+  step_elapsed_secs?: number | null
   created_at: string
   completed_at?: string | null
+  /** Marked finished by the user (its translation is right); the story notes learn from it. */
+  finished_at?: string | null
 }
 
 export interface SubtitleTrack {
@@ -423,6 +429,17 @@ export interface ChatFunctionResponse {
   response: Record<string, unknown>
 }
 
+/** The line a message is about — where the text cursor was when it was sent (a snapshot). */
+export interface ChatLineRef {
+  segment_id: string
+  episode: number
+  time: number
+  speaker: string
+  speaker_tag: string
+  source_text: string
+  khmer_text: string
+}
+
 export interface ChatMessage {
   id: string
   project_id: string
@@ -430,14 +447,36 @@ export interface ChatMessage {
   text: string
   function_call?: ChatFunctionCall | null
   function_response?: ChatFunctionResponse | null
+  line_ref?: ChatLineRef | null
+  thread_id?: string | null
   created_at: string
 }
 
 export interface ChatSendResponse {
+  /** The chat the turn went into — a new one when none was given */
+  thread_id: string
   messages: ChatMessage[]
 }
 
+/** One of a project's Assistant chats, named after its first message */
+export interface ChatThread {
+  id: string
+  project_id: string
+  title: string
+  created_at: string
+  updated_at: string
+  message_count: number
+}
+
 export type ChatEditStatus = 'pending' | 'approved' | 'rejected'
+
+/** Where a suggested edit's line is (null when the line was deleted since) */
+export interface ChatEditLine {
+  job_id: string
+  episode: number
+  time: number
+  source_text: string
+}
 
 export interface ChatProposedEdit {
   id: string
@@ -450,4 +489,63 @@ export interface ChatProposedEdit {
   status: ChatEditStatus
   created_at: string
   resolved_at?: string | null
+  line?: ChatEditLine | null
+}
+
+// ── Story notes ────────────────────────────────────────────────
+/** Who wrote a note: the user, or the AI from finished episodes. Learning never changes the user's. */
+export type StoryBy = 'you' | 'ai'
+
+export interface StoryCharacter {
+  id: string
+  zh: string
+  km: string
+  about: string
+  speaker: string
+  by: StoryBy
+}
+
+export interface StoryWord {
+  id: string
+  zh: string
+  km: string
+  note: string
+  by: StoryBy
+}
+
+export interface StoryEpisode {
+  job_id: string
+  number: number
+  title: string
+  finished: boolean
+  learned: boolean
+  summary: string
+  summary_by: StoryBy
+}
+
+export interface StoryLearning {
+  state: 'idle' | 'running' | 'failed'
+  message: string
+}
+
+export interface StoryView {
+  intro: string
+  tone: { text: string; by: StoryBy }
+  characters: StoryCharacter[]
+  words: StoryWord[]
+  episodes: StoryEpisode[]
+  learning: StoryLearning
+  /** A Gemini key is set */
+  can_learn: boolean
+}
+
+/** What the user changed, one row at a time: a row with an id changes it, without one adds it. */
+export interface StoryEdit {
+  intro?: string
+  tone?: string
+  character?: { id?: string; zh: string; km: string; about: string }
+  remove_character?: string
+  word?: { id?: string; zh: string; km: string; note: string }
+  remove_word?: string
+  summaries?: Record<string, string>
 }

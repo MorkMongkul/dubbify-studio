@@ -14,7 +14,7 @@ import {
   ChevronLeft, ChevronRight, Download,
   Loader2, AlertCircle,
   UploadCloud, Film, FileText, X,
-  Activity, AlignLeft, ImagePlus, Edit2,
+  AlignLeft, ImagePlus, Edit2,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useQueryClient } from '@tanstack/react-query'
@@ -38,21 +38,23 @@ import { SpeakersPanel } from '@/components/panels/SpeakersPanel'
 import { ProjectsPanel } from '@/components/panels/ProjectsPanel'
 import { VoicesPanel } from '@/components/panels/VoicesPanel'
 import { AssistantPanel } from '@/components/panels/AssistantPanel'
-import { SettingsPanel } from '@/components/panels/SettingsPanel'
+import { StoryPanel } from '@/components/panels/StoryPanel'
 import { PanelHeader, PanelEmptyState } from '@/components/panels/PanelShell'
 import { Button } from '@/components/ui/Button'
 import { Modal, InputField } from '@/components/ui/Modal'
 import { MoveloStudioLogo } from '@/components/brand/Movelo'
-import { ProgressSteps } from '@/components/ui/ProgressSteps'
+import { ProgressRing } from '@/components/ui/ProgressRing'
+import { JobProgressRing } from '@/components/progress/JobProgressRing'
+import { useDoneFlash } from '@/hooks/useDoneFlash'
 import { LANGUAGE_OPTIONS } from '@/types'
-import type { Job } from '@/types'
 import { isJobRunning, cn } from '@/lib/utils'
-import { jobProgress } from '@/lib/jobProgress'
+import { UPLOADING_TITLE, jobProgress, uploadPercent } from '@/lib/jobProgress'
 import { chooseVideoSavePath, isDesktop } from '@/lib/desktop'
 import { useHistoryStore } from '@/store/historyStore'
 
 // ── Transcript placeholder (no job or stage 1 running) ───────────────────────
-function TranscriptPlaceholder({ onCollapse }: { onCollapse?: () => void }) {
+// `processing`: a new video is being uploaded or prepared, so its lines are still to come
+function TranscriptPlaceholder({ onCollapse, processing = false }: { onCollapse?: () => void; processing?: boolean }) {
   return (
     <div className="h-full flex flex-col bg-transparent select-none">
       <div className="flex items-center justify-between gap-2 px-3 h-9 border-b border-ink-800/50 shrink-0 bg-ink-900">
@@ -70,9 +72,11 @@ function TranscriptPlaceholder({ onCollapse }: { onCollapse?: () => void }) {
         <div className="h-10 w-10 rounded-xl bg-neutral-bg3 border border-border flex items-center justify-center text-white/30 mb-3">
           <FileText size={16} />
         </div>
-        <p className="text-xs font-semibold text-white/80 mb-1">No Script Transcript</p>
+        <p className="text-xs font-semibold text-white/80 mb-1">{processing ? 'No lines yet' : 'No Script Transcript'}</p>
         <p className="text-[10px] text-text-muted max-w-[190px] leading-normal">
-          Import a video and run the pipeline to generate dialogue and translations.
+          {processing
+            ? 'They appear here when the episode has been analyzed.'
+            : 'Import a video and run the pipeline to generate dialogue and translations.'}
         </p>
       </div>
     </div>
@@ -201,7 +205,7 @@ export default function EditorPage() {
   }, [timelineHeight, setTimelineHeight])
 
   // ── Server state ──────────────────────────────────────────────────────────
-  const { data: job,        isLoading: loadingJob  } = useJob(jobId ?? null)
+  const { data: job,        isLoading: loadingJob, isFetchedAfterMount: jobFresh } = useJob(jobId ?? null)
   const { data: segs = [],  isLoading: loadingSegs } = useSegments(jobId ?? null)
   const { data: spks = []  } = useSpeakers(projectId ?? null)
   const { data: projectJobs = [], isLoading: loadingJobs, refetch: refetchJobs } = useProjectJobs(projectId ?? null)
@@ -293,6 +297,11 @@ export default function EditorPage() {
   // the video's place). The top bar repeats it only while that panel is hidden.
   const jobAction    = useEditorStore((s) => (jobId ? s.jobActions[jobId] : undefined))
   const hiddenProgress = rightPanelCollapsed && !isStage1 ? jobProgress(job?.status, segs.length > 0, jobAction) : null
+  // When a new video's audio is ready its ring says Done for a moment, before the video takes its place:
+  // only once this page has seen it running for itself (not an episode that finished while you were
+  // elsewhere), and only when it ended without a problem (e.g. separation failing leaves a message)
+  const stage1Done = useDoneFlash(!!jobId && isStage1 && jobFresh,
+    !!job && job.status !== 'failed' && !isJobRunning(job.status) && !job.error_msg)
   // Mixing runs in the background — the editor stays fully usable during it
   const isMixing     = job?.status === 'mixing'
 
@@ -309,6 +318,8 @@ export default function EditorPage() {
 
   const isUploading    = uploadingVideo || uploadingWithSub
   const isSetupLoading = creatingProject || isUploading
+  // A new video is being uploaded or prepared: the empty panels say what's coming
+  const processingNew = isSetupLoading || (!!jobId && (isStage1 || stage1Done))
 
   const onDropVideo = useCallback((files: File[]) => {
     const file = files[0]
@@ -360,13 +371,11 @@ export default function EditorPage() {
         const project = await createProject({ name, source_lang: sourceLang, target_lang: targetLang })
         currentProjectId = project.id
       }
-      const interval = setInterval(() => setUploadProgress(p => { if (p >= 92) { clearInterval(interval); return p } return p + Math.random() * 8 }), 300)
+      const onProgress = (fraction: number) => setUploadProgress(fraction * 100)
       const res = subtitleFile
-        ? await uploadWithSub({ projectId: currentProjectId!, video: videoFile, subtitle: subtitleFile })
-        : await uploadVideo({ projectId: currentProjectId!, file: videoFile })
-      clearInterval(interval)
+        ? await uploadWithSub({ projectId: currentProjectId!, video: videoFile, subtitle: subtitleFile, onProgress })
+        : await uploadVideo({ projectId: currentProjectId!, file: videoFile, onProgress })
       setUploadProgress(100)
-      toast.success('Upload complete! Splitting audio…')
       setVideoFile(null); setSubtitleFile(null); setSessionName('')
       refetchJobs()
       navigate(`/projects/${currentProjectId}/jobs/${res.job_id}`)
@@ -489,11 +498,11 @@ export default function EditorPage() {
     const prev = prevQualityStatusRef.current
     prevQualityStatusRef.current = job?.status
     if (prev === undefined || !job?.error_msg) return
-    const stemsReadyFromStage1 = job.status === 'stems_ready'
-      && (prev === 'pending' || prev === 'extracting' || prev === 'separating')
+    // Only after Analyze: a new video's one warning (music and voices weren't
+    // separated) already stays on the transcript as a banner with Try again
     const completedFromStage2 = job.status === 'completed'
       && (prev === 'diarizing' || prev === 'transcribing' || prev === 'translating')
-    if (stemsReadyFromStage1 || completedFromStage2) {
+    if (completedFromStage2) {
       toast.error(job.error_msg, { duration: 12000 })
     }
   }, [job?.status, job?.error_msg])
@@ -545,6 +554,9 @@ export default function EditorPage() {
 
   // ── Center content renderers ───────────────────────────────────────────────
   const renderUploadArea = () => {
+    if (videoFile && isSetupLoading) {
+      return <ProgressRing percent={uploadPercent(uploadProgress / 100)} title={UPLOADING_TITLE} />
+    }
     if (videoFile) {
       return (
         <div className="glass-card max-w-lg w-full shadow-glow-sm overflow-hidden flex flex-col bg-neutral-bg2/90 border border-white/5 shrink-0">
@@ -582,7 +594,7 @@ export default function EditorPage() {
               {/* Session name + language (always shown since we have a project) */}
               <div className="space-y-2">
                 <div>
-                  <label className="block text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-1">Session Name</label>
+                  <label className="block text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-1">Episode name</label>
                   <input className="w-full h-8 px-2.5 rounded-lg border outline-none bg-neutral-bg3 text-xs text-text-primary border-border focus:border-brand" value={sessionName} onChange={e => setSessionName(e.target.value)} disabled={isSetupLoading} />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
@@ -635,29 +647,14 @@ export default function EditorPage() {
     )
   }
 
-  // Before an episode has lines, its first steps show here, in the video's
-  // place (the transcript panel isn't open yet).
-  const renderPipelineView = (activeJob: Job) => {
-    const progress = jobProgress(activeJob.status, false)
-    return (
-      <div className="flex flex-col h-full w-full justify-center p-6 text-center">
-        <div className="max-w-md mx-auto w-full space-y-4">
-          <div className="space-y-1">
-            <div className="h-9 w-9 rounded-full bg-brand/10 border border-brand/20 flex items-center justify-center mx-auto text-brand-300 mb-1">
-              <Activity size={16} className="animate-pulse" />
-            </div>
-            <h3 className="text-sm font-bold text-white">{progress?.title ?? 'Working…'}</h3>
-            {progress?.detail && <p className="text-[10px] text-text-secondary leading-normal">{progress.detail}</p>}
-          </div>
-          {progress && progress.steps.length > 0 && (
-            <div className="text-left bg-neutral-bg3 rounded-lg border border-border p-3">
-              <ProgressSteps steps={progress.steps} />
-            </div>
-          )}
-        </div>
-      </div>
-    )
-  }
+  // Before a new video's audio is ready its steps show here, in the video's
+  // place (the transcript panel isn't open yet): a ring with an estimated
+  // percentage, continuing from the upload's.
+  const renderPipelineView = (activeJobId: string) => (
+    <div className="flex h-full w-full items-center justify-center p-6">
+      <JobProgressRing jobId={activeJobId} done={stage1Done} />
+    </div>
+  )
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -787,17 +784,16 @@ export default function EditorPage() {
                     <PanelHeader icon={ImagePlus} title="Elements" />
                     <PanelEmptyState
                       icon={ImagePlus}
-                      title="No session open"
-                      hint="Overlays — logos, subtitles, cover boxes — attach to a session's video."
+                      title="No episode open"
                     />
                   </div>
                 )
               ) : railTab === 'voices' ? (
                 <VoicesPanel />
-              ) : railTab === 'assistant' ? (
-                <AssistantPanel projectId={projectId} />
+              ) : railTab === 'story' ? (
+                <StoryPanel projectId={projectId} jobId={jobId} />
               ) : (
-                <SettingsPanel />
+                <AssistantPanel projectId={projectId} jobId={jobId} />
               )}
             </div>
 
@@ -819,7 +815,7 @@ export default function EditorPage() {
                 ) : loadingJob && jobId ? (
                   <div className="flex flex-col items-center gap-3 text-text-muted">
                     <Loader2 size={22} className="animate-spin text-brand" />
-                    <span className="text-xs">Loading session…</span>
+                    <span className="text-xs">Loading episode…</span>
                   </div>
                 ) : jobId && job?.status === 'failed' ? (
                   <div className="flex flex-col items-center gap-3 text-center max-w-sm">
@@ -829,10 +825,10 @@ export default function EditorPage() {
                     <h4 className="text-xs font-bold text-white">Pipeline Failed</h4>
                     <p className="text-[10px] text-text-muted leading-normal">{job.error_msg || 'Unknown error'}</p>
                   </div>
-                ) : jobId && job && isStage1 ? (
-                  // Stage 1 running — show pipeline progress view
+                ) : jobId && job && (isStage1 || stage1Done) ? (
+                  // Stage 1 running (or just done) — its progress ring
                   <div className="w-full h-full max-w-[800px] shrink-0 bg-ink-900 relative flex items-center justify-center overflow-y-auto">
-                    {renderPipelineView(job)}
+                    {renderPipelineView(job.id)}
                   </div>
                 ) : jobId && job && !isStage1 && videoUrl ? (
                   // Stems ready, Stage 2, completed, exporting, or separating
@@ -887,7 +883,7 @@ export default function EditorPage() {
                       job={job}
                     />
                   ) : (
-                    <TranscriptPlaceholder onCollapse={() => setRightPanelCollapsed(true)} />
+                    <TranscriptPlaceholder onCollapse={() => setRightPanelCollapsed(true)} processing={processingNew} />
                   )}
                 </motion.div>
               )}
@@ -918,7 +914,9 @@ export default function EditorPage() {
                 <Film size={13} />
               </div>
               <span className="text-[11px] font-semibold text-white/50">Timeline Editor</span>
-              <span className="text-[10px] text-text-disabled mt-1">Import a video to initialize the timeline</span>
+              <span className="text-[10px] text-text-disabled mt-1">
+                {processingNew ? 'It appears when the audio is ready' : 'Import a video to initialize the timeline'}
+              </span>
             </div>
           )}
         </div>

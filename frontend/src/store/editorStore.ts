@@ -5,8 +5,9 @@ import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import type { JobAction } from '@/lib/jobProgress'
 
-// Which panel the left icon rail has open in the dynamic dock.
-export type RailTab = 'projects' | 'speakers' | 'elements' | 'voices' | 'assistant' | 'settings'
+// Which panel the left icon rail has open in the dynamic dock. Settings is a
+// window of its own (settingsOpen), not a panel.
+export type RailTab = 'projects' | 'speakers' | 'elements' | 'voices' | 'story' | 'assistant'
 
 export interface VoicePreset {
   id: string
@@ -37,6 +38,9 @@ interface EditorStore {
   activeSegmentId: string | null
   selectedOverlayId: string | null
   editingSegmentId: string | null
+  // The line whose text the cursor was last in: "this line" for the Assistant.
+  // Follows the text cursor, not the mouse (activeSegmentId follows hover).
+  assistantLineId: string | null
   selectedSpeakerId: string | null
   selectedSegmentIds: string[]
   // Segment ids queued in a running batch voice generation, plus the job
@@ -53,6 +57,11 @@ interface EditorStore {
   // DEFAULT_STATE too: the step keeps running across session switches.
   jobActions: Record<string, JobAction>
   setJobAction: (jobId: string, action: JobAction) => void
+  // The Assistant chat open in each project (by project id): a chat's id,
+  // null for a new chat, absent for "the one used last". Outside
+  // DEFAULT_STATE: switching episodes keeps the chat.
+  assistantThreads: Record<string, string | null>
+  setAssistantThread: (projectId: string, threadId: string | null | undefined) => void
   availableVoices: VoicePreset[]
   inspectorMode: 'global_synthesis' | 'audio_clip_settings' | 'subtitle_settings'
   focusedTimelineItemId: string | null
@@ -91,6 +100,9 @@ interface EditorStore {
   // on real context changes instead.
   railTab: RailTab
   setRailTab: (t: RailTab) => void
+  // The Settings window (the rail's gear, or ⌘,). Outside DEFAULT_STATE too.
+  settingsOpen: boolean
+  setSettingsOpen: (open: boolean) => void
 
   // Panel visibility
   leftPanelCollapsed: boolean
@@ -120,6 +132,7 @@ interface EditorStore {
   setActiveSegment: (id: string | null) => void
   setSelectedOverlay: (id: string | null) => void
   setEditingSegment: (id: string | null) => void
+  setAssistantLineId: (id: string | null) => void
   setSelectedSpeaker: (id: string | null) => void
   toggleSelectSegment: (id: string) => void
   toggleSelectAllSegments: (ids: string[]) => void
@@ -155,6 +168,7 @@ const DEFAULT_STATE = {
   activeSegmentId: null,
   selectedOverlayId: null,
   editingSegmentId: null,
+  assistantLineId: null as string | null,
   selectedSpeakerId: null,
   leftPanelCollapsed: false,
   rightPanelCollapsed: false,
@@ -180,6 +194,8 @@ export const useEditorStore = create<EditorStore>()(
     setRailTab: (t) => {
       if (get().railTab !== t) set({ railTab: t })
     },
+    settingsOpen: false,
+    setSettingsOpen: (open) => set({ settingsOpen: open }),
 
     // ── Batch voice generation (not part of DEFAULT_STATE) ─────
     // The backend batch keeps running no matter where the user navigates;
@@ -193,6 +209,13 @@ export const useEditorStore = create<EditorStore>()(
     // ── Started actions (not part of DEFAULT_STATE — see interface note) ──
     jobActions: {} as Record<string, JobAction>,
     setJobAction: (jobId, action) => set((s) => ({ jobActions: { ...s.jobActions, [jobId]: action } })),
+    assistantThreads: {} as Record<string, string | null>,
+    setAssistantThread: (projectId, threadId) => set((s) => {
+      const next = { ...s.assistantThreads }
+      if (threadId === undefined) delete next[projectId]
+      else next[projectId] = threadId
+      return { assistantThreads: next }
+    }),
 
     // ── Playback ──────────────────────────────────────────────
     setCurrentTime: (t) => {
@@ -231,6 +254,7 @@ export const useEditorStore = create<EditorStore>()(
     },
     setSelectedOverlay: (id) => set({ selectedOverlayId: id }),
     setEditingSegment: (id) => set({ editingSegmentId: id }),
+    setAssistantLineId: (id) => set({ assistantLineId: id }),
     setSelectedSpeaker: (id) => set({ selectedSpeakerId: id }),
     toggleSelectSegment: (id) => set((s) => ({
       selectedSegmentIds: s.selectedSegmentIds.includes(id)

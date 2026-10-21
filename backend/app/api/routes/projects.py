@@ -13,8 +13,9 @@ from typing import List
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.models.models import Project, Job, Segment, Speaker, Overlay, ChatMessage, ChatProposedEdit
+from app.models.models import Project, Job, Segment, Speaker, Overlay, ChatMessage, ChatProposedEdit, ChatThread
 from app.schemas.schemas import ProjectCreate, ProjectUpdate, ProjectResponse
+from app.services import story_notes
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
@@ -24,7 +25,9 @@ _LOGO_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 @router.post("/", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
 async def create_project(payload: ProjectCreate, db: AsyncSession = Depends(get_db, scope="function")):
     """Create a new dubbing project."""
-    project = Project(**payload.model_dump())
+    data = payload.model_dump()
+    intro = data.pop("story_intro").strip()   # "About this drama" starts the story notes
+    project = Project(**data, story_notes=story_notes.with_intro(None, intro) if intro else None)
     db.add(project)
     await db.flush()
     await db.refresh(project)
@@ -132,6 +135,7 @@ async def delete_project(project_id: str, db: AsyncSession = Depends(get_db, sco
     # chat messages, so they must go before both.
     await db.execute(delete(ChatProposedEdit).where(ChatProposedEdit.project_id == project_id))
     await db.execute(delete(ChatMessage).where(ChatMessage.project_id == project_id))
+    await db.execute(delete(ChatThread).where(ChatThread.project_id == project_id))
     job_ids = (await db.execute(select(Job.id).where(Job.project_id == project_id))).scalars().all()
     if job_ids:
         await db.execute(delete(Segment).where(Segment.job_id.in_(job_ids)))

@@ -132,6 +132,11 @@ class Project(Base):
     #   revert path even when nothing waited for a human click.
     chat_edit_mode = Column(String(10), default="manual")
 
+    # Story notes (app/services/story_notes.py): the user's intro plus what the
+    # AI learned from finished episodes, used by translation and the Assistant.
+    # NULL = empty notes.
+    story_notes = Column(JSON, nullable=True)
+
     jobs     = relationship("Job", back_populates="project", cascade="all, delete")
     speakers = relationship("Speaker", back_populates="project", cascade="all, delete")
 
@@ -163,6 +168,9 @@ class Job(Base):
     # Timing
     created_at    = Column(DateTime, server_default=func.now())
     completed_at  = Column(DateTime, nullable=True)
+    # When the user marked the episode finished (its translation is right), so
+    # its story notes can be learned from it; NULL = not finished
+    finished_at   = Column(DateTime, nullable=True)
     duration_secs = Column(Float, default=0.0)        # video duration
 
     # BGM/SFX stem gain — baked into the no_vocals stem on disk (see
@@ -312,6 +320,23 @@ class Overlay(Base):
 
 
 # ── Assistant chat (project-scoped translation memory chatbot) ────────────
+class ChatThread(Base):
+    """
+    One Assistant chat of a project. A project has several; each sends only
+    its own messages to Gemini as history. Named after its first message
+    (chat_agent.thread_title). Messages saved before chats had threads become
+    one chat the first time the project's chats are listed
+    (chat_agent.adopt_unthreaded).
+    """
+    __tablename__ = "chat_threads"
+
+    id         = Column(String, primary_key=True, default=generate_uuid)
+    project_id = Column(String, ForeignKey("projects.id"), nullable=False)
+    title      = Column(String(120), default="")
+    created_at = Column(DateTime, default=message_time)
+    updated_at = Column(DateTime, default=message_time)   # the last message's time; the History list's order
+
+
 class ChatMessage(Base):
     """
     One turn of a project's single ongoing Assistant conversation. Stored
@@ -331,11 +356,16 @@ class ChatMessage(Base):
 
     id         = Column(String, primary_key=True, default=generate_uuid)
     project_id = Column(String, ForeignKey("projects.id"), nullable=False)
+    thread_id  = Column(String, ForeignKey("chat_threads.id"), nullable=True)   # NULL: from before threads
     role       = Column(String(10), nullable=False)   # "user" | "model"
     text       = Column(Text, default="")               # empty for pure function-call/response turns
 
     function_call     = Column(JSON, nullable=True)   # {"name": ..., "args": {...}}
     function_response = Column(JSON, nullable=True)   # {"name": ..., "response": {...}}
+    # The line the user's text cursor was in when they sent this message
+    # ({segment_id, episode, time, speaker, speaker_tag, source_text,
+    # khmer_text}, a snapshot), so "this line" means the same on every replay.
+    line_ref = Column(JSON, nullable=True)
 
     created_at = Column(DateTime, default=message_time, server_default=func.now())
 

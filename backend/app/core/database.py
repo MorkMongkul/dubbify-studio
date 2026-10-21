@@ -116,11 +116,15 @@ async def init_db(bind: AsyncEngine | None = None):
 
     # Columns added to existing tables since their first release
     float_type = "DOUBLE PRECISION" if bind.dialect.name == "postgresql" else "FLOAT"
+    datetime_type = "TIMESTAMP" if bind.dialect.name == "postgresql" else "DATETIME"
     async with bind.begin() as conn:
         for table, columns in (
             ("segments", [("volume_db", float_type), ("voice_filter", "VARCHAR(50)"), ("voice_speed", float_type)]),
             ("voices", VOICE_TAG_COLUMNS),
             ("speakers", [("voice_auto", "BOOLEAN")]),           # 0.2.4
+            ("projects", [("story_notes", "JSON")]),             # 0.2.6
+            ("jobs", [("finished_at", datetime_type)]),          # 0.2.6
+            ("chat_messages", [("line_ref", "JSON"), ("thread_id", "VARCHAR")]),   # 0.2.6
         ):
             for name in await add_missing_columns(conn, table, columns):
                 logger.info(f"Added column {name} to the {table} table.")

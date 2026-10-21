@@ -573,16 +573,11 @@ export function VoicesPanel() {
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                     placeholder={mode === 'design'
-                      ? 'A young woman, gentle and sweet, speaks slowly'
+                      ? 'e.g. a young woman, gentle and sweet, speaks slowly'
                       : 'e.g. cheerful tone, slightly faster pace'}
                     rows={2}
                     className="w-full rounded-lg bg-ink-950/60 border border-white/10 px-2.5 py-2 text-xs text-white placeholder-white/25 focus:outline-none focus:border-brand-400 resize-none transition-all"
                   />
-                  {mode === 'design' && !description.trim() && (
-                    <p className="text-[9.5px] text-white/30 mt-1 leading-relaxed">
-                      Leave blank for a random voice identity — or describe age, gender, tone and pace.
-                    </p>
-                  )}
                 </div>
 
                 {/* Tags — sort the voice into its section */}
@@ -612,21 +607,19 @@ export function VoicesPanel() {
                         <div className="px-2.5 pb-3 pt-1 space-y-3">
                           <div>
                             <div className="flex items-center justify-between text-[10px] mb-1">
-                              <span className="text-white/50">Guidance (CFG)</span>
+                              <span className="text-white/50" title="Higher follows your description more strictly">Guidance (CFG)</span>
                               <span className="text-white font-mono">{cfg.toFixed(1)}</span>
                             </div>
                             <input type="range" min={0.5} max={5} step={0.1} value={cfg}
                               onChange={(e) => setCfg(+e.target.value)} className="w-full accent-brand-400 cursor-pointer" />
-                            <p className="text-[9px] text-white/25 mt-0.5">Higher follows your description more strictly.</p>
                           </div>
                           <div>
                             <div className="flex items-center justify-between text-[10px] mb-1">
-                              <span className="text-white/50">Quality steps</span>
+                              <span className="text-white/50" title="More steps: slower, slightly cleaner audio">Quality steps</span>
                               <span className="text-white font-mono">{steps}</span>
                             </div>
                             <input type="range" min={5} max={50} step={1} value={steps}
                               onChange={(e) => setSteps(+e.target.value)} className="w-full accent-brand-400 cursor-pointer" />
-                            <p className="text-[9px] text-white/25 mt-0.5">More steps = slower but slightly cleaner audio.</p>
                           </div>
                         </div>
                       </motion.div>
@@ -678,7 +671,6 @@ export function VoicesPanel() {
             placeholder="Type a line to hear…"
             className="w-full rounded-lg bg-ink-950/60 border border-white/10 px-2.5 h-8 text-xs text-white placeholder-white/25 focus:outline-none focus:border-brand-400 transition-all"
           />
-          <p className="text-[9.5px] text-white/30 mt-1">Voices without a sample can make one saying this line (✦). Once a voice has a sample, ▶ plays it straight away.</p>
         </div>
 
         {/* ── Search + filter ─────────────────────────────────── */}
@@ -730,9 +722,6 @@ export function VoicesPanel() {
           <div className="rounded-xl border border-dashed border-white/10 py-8 text-center">
             <Mic size={16} className="text-white/25 mx-auto mb-2" />
             <p className="text-[11px] font-semibold text-white/70">No voices yet</p>
-            <p className="text-[10px] text-white/35 mt-0.5 max-w-[200px] mx-auto leading-relaxed">
-              Create your first one with the New button above.
-            </p>
           </div>
         ) : visibleVoices.length === 0 ? (
           <div className="rounded-xl border border-dashed border-white/10 py-6 text-center">

@@ -1,9 +1,9 @@
 // src/api/client.ts
 // Centralised API client — all backend calls go through here
 
-import axios from 'axios'
+import axios, { type AxiosProgressEvent } from 'axios'
 import type {
-  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, Segment, SegmentUpdate, SegmentCreate, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult,
+  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, Segment, SegmentUpdate, SegmentCreate, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView,
 } from '@/types'
 
 const api = axios.create({
@@ -100,25 +100,29 @@ export const projects = {
 }
 
 // ── Jobs ──────────────────────────────────────────────────────
+const uploadProgress = (onProgress?: (fraction: number) => void) =>
+  onProgress ? (e: AxiosProgressEvent) => onProgress(e.total ? e.loaded / e.total : 0) : undefined
+
 export const jobs = {
-  upload: (projectId: string, file: File) => {
+  /** `onProgress` gets the fraction of the file sent so far (0–1). */
+  upload: (projectId: string, file: File, onProgress?: (fraction: number) => void) => {
     const form = new FormData()
     form.append('file', file)
     return api.post<PipelineStartResponse>(
       `/jobs/upload/${projectId}`,
       form,
-      { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 600_000 }
+      { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 600_000, onUploadProgress: uploadProgress(onProgress) }
     ).then((r) => r.data)
   },
 
-  uploadWithSubtitle: (projectId: string, video: File, subtitle: File) => {
+  uploadWithSubtitle: (projectId: string, video: File, subtitle: File, onProgress?: (fraction: number) => void) => {
     const form = new FormData()
     form.append('video', video)
     form.append('subtitle', subtitle)
     return api.post<PipelineStartResponse>(
       `/jobs/upload-subtitle/${projectId}`,
       form,
-      { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 600_000 }
+      { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 600_000, onUploadProgress: uploadProgress(onProgress) }
     ).then((r) => r.data)
   },
 
@@ -156,6 +160,9 @@ export const jobs = {
 
   setTitle: (jobId: string, title: string) =>
     api.patch<Job>(`/jobs/${jobId}/title`, { title }).then((r) => r.data),
+
+  setFinished: (jobId: string, finished: boolean) =>
+    api.patch<Job>(`/jobs/${jobId}/finished`, { finished }).then((r) => r.data),
 }
 
 // ── Speakers ──────────────────────────────────────────────────
@@ -382,15 +389,37 @@ export const voices = {
     }).then((r) => r.data as Blob),
 }
 
+// ── Story notes ────────────────────────────────────────────────
+export const story = {
+  get: (projectId: string) =>
+    api.get<StoryView>(`/projects/${projectId}/story`).then((r) => r.data),
+
+  update: (projectId: string, edit: StoryEdit) =>
+    api.patch<StoryView>(`/projects/${projectId}/story`, edit).then((r) => r.data),
+
+  /** Learn from the finished episodes not read yet (also "Try again") */
+  learn: (projectId: string) =>
+    api.post<StoryView>(`/projects/${projectId}/story/learn`).then((r) => r.data),
+}
+
 // ── Assistant chat ────────────────────────────────────────────
 export const chat = {
-  listMessages: (projectId: string) =>
-    api.get<ChatMessage[]>(`/chat/${projectId}/messages`).then((r) => r.data),
+  /** The project's chats, the one used last first */
+  listThreads: (projectId: string) =>
+    api.get<ChatThread[]>(`/chat/${projectId}/threads`).then((r) => r.data),
+
+  listMessages: (threadId: string) =>
+    api.get<ChatMessage[]>(`/chat/threads/${threadId}/messages`).then((r) => r.data),
+
+  deleteThread: (threadId: string) =>
+    api.delete(`/chat/threads/${threadId}`),
 
   // A turn can involve several tool-call round trips to Gemini — give it
   // real headroom instead of the 30s default.
-  sendMessage: (projectId: string, text: string) =>
-    api.post<ChatSendResponse>(`/chat/${projectId}/messages`, { text }, { timeout: 120_000 }).then((r) => r.data),
+  /** `threadId`: the chat to continue (null starts one); `lineId`: the line the text cursor is in ("this line") */
+  sendMessage: (projectId: string, { text, threadId, lineId }: { text: string; threadId: string | null; lineId?: string }) =>
+    api.post<ChatSendResponse>(`/chat/${projectId}/messages`, { text, thread_id: threadId, line_id: lineId }, { timeout: 120_000 })
+      .then((r) => r.data),
 
   listPendingEdits: (projectId: string, status: 'pending' | 'all' = 'pending') =>
     api.get<ChatProposedEdit[]>(`/chat/${projectId}/pending-edits`, { params: { status } }).then((r) => r.data),

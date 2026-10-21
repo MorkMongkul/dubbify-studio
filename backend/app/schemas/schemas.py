@@ -21,6 +21,7 @@ from app.services.voice_tags import AGE_GROUPS, GENDERS, normalize_tags, voice_s
 from pathlib import Path
 from app.core.config import settings
 from app.services.source_separator import UNAVAILABLE_MARKER
+from app.services import job_clock
 from app.core.config import settings
 
 
@@ -30,6 +31,8 @@ class ProjectCreate(BaseModel):
     description: str = ""
     source_lang: str = "zh"
     target_lang: str = "km"
+    # Optional "About this drama" text; it starts the project's story notes
+    story_intro: str = Field("", max_length=4000)
 
 
 class ProjectUpdate(BaseModel):
@@ -77,6 +80,7 @@ class JobResponse(BaseModel):
     bgm_volume_db: float
     created_at: datetime
     completed_at: Optional[datetime]
+    finished_at: Optional[datetime] = None
 
     @computed_field
     def video_url(self) -> Optional[str]:
@@ -99,6 +103,12 @@ class JobResponse(BaseModel):
         if not (job_dir / "no_vocals.wav").exists():
             return None
         return not (job_dir / UNAVAILABLE_MARKER).exists()
+
+    @computed_field
+    def step_elapsed_secs(self) -> Optional[float]:
+        """How long the running step has been going (None if unknown), for the editor's progress estimate."""
+        seconds = job_clock.elapsed(self.id, self.status)
+        return round(seconds, 1) if seconds is not None else None
 
     @computed_field
     def stems_version(self) -> int:
@@ -137,6 +147,11 @@ class BgmVolumeUpdate(BaseModel):
 
 class JobTitleUpdate(BaseModel):
     title: str = Field(..., max_length=255)
+
+
+class JobFinishedUpdate(BaseModel):
+    """An episode whose translation the user has checked; the story notes learn from it."""
+    finished: bool
 
 
 # ── Speaker schemas ───────────────────────────────────────────
@@ -471,6 +486,8 @@ class ChatMessageResponse(BaseModel):
     text: str
     function_call: Optional[dict] = None
     function_response: Optional[dict] = None
+    line_ref: Optional[dict] = None
+    thread_id: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -478,10 +495,32 @@ class ChatMessageResponse(BaseModel):
 
 class ChatSendRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=4000)
+    # The line the user's text cursor is in ("this line"); it must be in this project
+    line_id: Optional[str] = Field(None, max_length=64)
+    # The chat to continue; none starts a new one, named after this message
+    thread_id: Optional[str] = Field(None, max_length=64)
+
+
+class ChatThreadResponse(BaseModel):
+    id: str
+    project_id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    message_count: int        # the user's messages and the Assistant's replies, not tool steps
 
 
 class ChatSendResponse(BaseModel):
+    thread_id: str
     messages: List[ChatMessageResponse]   # every new row this turn produced (user msg + any tool steps + final reply)
+
+
+class ChatEditLine(BaseModel):
+    """Where a suggested edit's line is, so the panel can say so and go there."""
+    job_id: str
+    episode: int
+    time: float
+    source_text: str
 
 
 class ChatProposedEditResponse(BaseModel):
@@ -495,5 +534,91 @@ class ChatProposedEditResponse(BaseModel):
     status: str
     created_at: datetime
     resolved_at: Optional[datetime]
+    line: Optional[ChatEditLine] = None     # None when the line has been deleted since
 
     model_config = {"from_attributes": True}
+
+
+# ── Story notes (app/services/story_notes.py) ─────────────────
+# Who wrote an item: the user ("you") or what the AI learned ("ai").
+StoryBy = Literal["you", "ai"]
+
+
+class StoryText(BaseModel):
+    text: str
+    by: StoryBy
+
+
+class StoryCharacter(BaseModel):
+    id: str
+    zh: str
+    km: str
+    about: str
+    speaker: str
+    by: StoryBy
+
+
+class StoryWord(BaseModel):
+    id: str
+    zh: str
+    km: str
+    note: str
+    by: StoryBy
+
+
+class StoryEpisode(BaseModel):
+    job_id: str
+    number: int
+    title: str
+    finished: bool
+    learned: bool
+    summary: str
+    summary_by: StoryBy
+
+
+class StoryLearning(BaseModel):
+    state: Literal["idle", "running", "failed"]
+    message: str
+
+
+class StoryView(BaseModel):
+    intro: str
+    tone: StoryText
+    characters: List[StoryCharacter]
+    words: List[StoryWord]
+    episodes: List[StoryEpisode]
+    learning: StoryLearning
+    can_learn: bool          # a Gemini key is set
+
+
+class StoryCharacterIn(BaseModel):
+    id: Optional[str] = Field(None, max_length=40)
+    zh: str = Field(..., max_length=60)
+    km: str = Field("", max_length=120)
+    about: str = Field("", max_length=300)
+    speaker: Optional[str] = Field(None, max_length=50)
+
+
+class StoryWordIn(BaseModel):
+    id: Optional[str] = Field(None, max_length=40)
+    zh: str = Field(..., max_length=60)
+    km: str = Field("", max_length=120)
+    note: str = Field("", max_length=200)
+
+
+class StoryEdit(BaseModel):
+    """What the user changed, one row at a time (a row the panel hasn't seen is never touched)."""
+    intro: Optional[str] = Field(None, max_length=4000)
+    tone: Optional[str] = Field(None, max_length=600)
+    character: Optional[StoryCharacterIn] = None        # with an id: change that row; without: add one
+    remove_character: Optional[str] = Field(None, max_length=40)
+    word: Optional[StoryWordIn] = None
+    remove_word: Optional[str] = Field(None, max_length=40)
+    summaries: Optional[dict[str, str]] = None
+
+    @field_validator("summaries")
+    @classmethod
+    def _summary_length(cls, value):
+        if value and any(len(text) > 400 for text in value.values()):
+            raise ValueError("A summary can be at most 400 characters")
+        return value

@@ -13,8 +13,9 @@ import { toast } from 'sonner'
 import { cn, formatTime, getSpeakerColor } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import { segments as segmentsApi, tts as ttsApi, type BatchSynthesisStatus } from '@/api/client'
-import { useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker, useTranslateMissing, useRetrySeparation } from '@/hooks/useApi'
-import { ProgressSteps } from '@/components/ui/ProgressSteps'
+import { useAnalyzeJob, useJob, useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker, useTranslateMissing, useRetrySeparation } from '@/hooks/useApi'
+import { JobProgressRing } from '@/components/progress/JobProgressRing'
+import { useDoneFlash } from '@/hooks/useDoneFlash'
 import { jobProgress } from '@/lib/jobProgress'
 import { recordSegmentChange, recordSegmentsChange, recordSegmentCreate } from '@/lib/historyHelpers'
 import { voiceUsers } from '@/lib/voiceTags'
@@ -42,6 +43,7 @@ export function TranscriptPanel({
   const setInspectorMode        = useEditorStore((s) => s.setInspectorMode)
   const setFocusedTimelineItemId = useEditorStore((s) => s.setFocusedTimelineItemId)
   const setActiveSegment        = useEditorStore((s) => s.setActiveSegment)
+  const setAssistantLineId      = useEditorStore((s) => s.setAssistantLineId)
   const updateSegmentText       = useEditorStore((s) => s.updateSegmentText)
   const clearSegmentTextOverride = useEditorStore((s) => s.clearSegmentTextOverride)
  
@@ -54,6 +56,8 @@ export function TranscriptPanel({
   // Lines with words but no translation — e.g. after a translation outage.
   // They stay flagged (not just a toast) until translated, with a one-click retry.
   const translateMissing = useTranslateMissing()
+  // "Audio ready" offers Analyze right there (the Vocals track has it too)
+  const analyze = useAnalyzeJob()
   const missingTranslations = useMemo(
     () => segments.filter((s) => s.source_text?.trim() && !s.khmer_text?.trim()).length,
     [segments],
@@ -64,6 +68,14 @@ export function TranscriptPanel({
   // takes over only while this panel is hidden).
   const jobAction = useEditorStore((s) => s.jobActions[jobId])
   const progress = jobProgress(job?.status, segments.length > 0, jobAction)
+  // Before the episode has lines the progress is a ring, which says Done for a
+  // moment when the analysis finishes, before the lines take its place
+  // (only once this panel has seen the job running for itself, so coming back
+  // to an episode that finished meanwhile doesn't flash Done). A finished
+  // analysis is Done even with a warning: the lines are there, and the
+  // transcript's banners explain any gaps.
+  const { isFetchedAfterMount: jobFresh } = useJob(jobId)
+  const analysisDone = useDoneFlash(!!progress && segments.length === 0 && jobFresh, job?.status === 'completed')
 
   // Music/voices separation fell back to the original audio: say so for as
   // long as it's true, and offer to try again (lines and voices are kept).
@@ -199,9 +211,9 @@ export function TranscriptPanel({
       setActiveSegment(created.id)
       setFocusedTimelineItemId(created.id)
       setCurrentTime(created.start_time)
-      recordSegmentCreate(qc, jobId, created, 'Add segment')
+      recordSegmentCreate(qc, jobId, created, 'Add line')
     } catch (err) {
-      toast.error('Failed to add segment')
+      toast.error('Failed to add a line')
       console.error(err)
     }
   }
@@ -582,10 +594,10 @@ export function TranscriptPanel({
               onClick={handleAddSegment}
               disabled={createSegment.isPending || !jobId}
               className="flex items-center gap-1 text-[10px] font-semibold text-brand-400 hover:text-brand-300 hover:bg-brand-500/10 px-1.5 py-0.5 rounded transition-colors disabled:opacity-50"
-              title="Add a new subtitle segment"
+              title="Add a line"
             >
               <Plus size={12} />
-              <span>Add Segment</span>
+              <span>Add line</span>
             </button>
           )}
 
@@ -604,12 +616,9 @@ export function TranscriptPanel({
       {/* A step running on an episode whose lines stay on screen meanwhile:
           speaker detection, re-analysis, missing translations, separation */}
       {progress && segments.length > 0 && (
-        <div className="px-3 py-1.5 border-b border-ink-800/50 shrink-0 bg-brand-950/20 flex items-start gap-2">
-          <Loader2 size={11} className="animate-spin text-brand-400 shrink-0 mt-0.5" />
-          <div className="min-w-0 leading-snug">
-            <p className="text-[10px] font-semibold text-brand-300">{progress.title}</p>
-            {progress.detail && <p className="text-[10px] text-white/40">{progress.detail}</p>}
-          </div>
+        <div className="px-3 py-1.5 border-b border-ink-800/50 shrink-0 bg-brand-950/20 flex items-center gap-2">
+          <Loader2 size={11} className="animate-spin text-brand-400 shrink-0" />
+          <p className="min-w-0 text-[10px] font-semibold text-brand-300 truncate">{progress.title}</p>
         </div>
       )}
 
@@ -634,7 +643,7 @@ export function TranscriptPanel({
         <div className="px-3 py-1.5 border-b border-ink-800/50 shrink-0 bg-amber-950/20 flex items-center gap-2">
           <AudioLines size={11} className="text-amber-300 shrink-0" />
           <span className="flex-1 text-[10px] text-amber-200 leading-snug">
-            Music and voices couldn't be separated, so the music track still has the original voices.
+            Music and voices weren't separated
           </span>
           <button
             onClick={handleRetrySeparation}
@@ -683,9 +692,9 @@ export function TranscriptPanel({
                 title={anyBatchRunning && !batchSynthesizing
                   ? 'Another episode is still generating voices — wait for it to finish'
                   : pendingSelectedCount === 0
-                  ? 'Every selected segment already has audio — this redoes all of them'
+                  ? 'Every selected line already has a voice — this makes them again'
                   : pendingSelectedCount !== selectedSegmentIds.length
-                  ? 'Only segments without generated audio yet are synthesized — already-done ones are left as-is'
+                  ? 'Only lines without a voice yet are voiced — the others stay as they are'
                   : undefined}
                 className="text-[10px] bg-brand-600 hover:bg-brand-500 text-white px-2.5 py-1 rounded font-semibold transition-all flex items-center gap-1 disabled:opacity-50 cursor-pointer"
               >
@@ -711,37 +720,41 @@ export function TranscriptPanel({
  
       {/* Main content viewport */}
       <div ref={scrollRef} className="flex-1 overflow-auto bg-transparent">
-        {isLoading ? (
+        {analysisDone ? (
+          <div className="flex items-center justify-center h-full p-8">
+            <JobProgressRing jobId={jobId} done />
+          </div>
+        ) : isLoading ? (
           <div className="p-3 space-y-2">
             {[...Array(7)].map((_, i) => <SegmentCardSkeleton key={i} />)}
           </div>
         ) : segments.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-8 gap-3">
             {progress ? (
-              <>
-                <Loader2 size={24} className="text-brand-400 animate-spin mb-1" />
-                <p className="text-[12px] font-semibold text-brand-300">{progress.title}</p>
-                {progress.detail && (
-                  <p className="text-[11px] text-white/40 max-w-[220px] leading-normal">{progress.detail}</p>
-                )}
-                <ProgressSteps steps={progress.steps} className="w-48 mt-1" />
-              </>
+              <JobProgressRing jobId={jobId} />
             ) : job?.status === 'stems_ready' ? (
               /* Stage 1 done — waiting for user to click Analyze */
               <>
                 <div className="h-10 w-10 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mb-1">
                   <RefreshCw size={18} className="text-emerald-400" />
                 </div>
-                <p className="text-[12px] font-semibold text-emerald-400">Audio split complete</p>
-                <p className="text-[11px] text-white/40 max-w-[200px] leading-normal">
-                  Click the <span className="text-emerald-400 font-semibold">Analyze</span> button on the Vocals track to detect speakers and transcribe.
-                </p>
+                <p className="text-[12px] font-semibold text-emerald-400">Audio ready</p>
+                <button
+                  onClick={() => analyze.mutate({ jobId }, {
+                    onError: (e) => toast.error((e as Error).message || 'Could not start the analysis'),
+                  })}
+                  disabled={analyze.isPending}
+                  title="Transcribe, find the speakers and translate"
+                  className="mt-1 inline-flex items-center gap-1.5 h-8 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-[11.5px] font-semibold transition-colors"
+                >
+                  <AudioLines size={13} />
+                  Analyze
+                </button>
               </>
             ) : (
               <>
                 <AlignLeft size={22} className="text-white/15 mb-1" />
-                <p className="text-[12px] text-white/35 font-medium">No segments yet</p>
-                <p className="text-[11px] text-white/20 mt-0.5">Upload a video to get started</p>
+                <p className="text-[12px] text-white/35 font-medium">No lines yet</p>
               </>
             )}
           </div>
@@ -846,6 +859,7 @@ export function TranscriptPanel({
                         onChange={(e) => updateSegmentText(seg.id, e.target.value)}
                         onFocus={(e) => {
                           originalTextRef.current = e.target.value
+                          setAssistantLineId(seg.id)   // "this line" for the Assistant
                         }}
                         onBlur={(e) => handleTextBlur(seg.id, e.target.value, originalTextRef.current)}
                         onClick={(e) => {
@@ -1028,9 +1042,6 @@ export function TranscriptPanel({
                         Reset
                       </button>
                     </div>
-                    <div className="text-[10px] text-ink-500 leading-normal bg-ink-900/50 p-2.5 rounded border border-ink-900">
-                      Adjust the volume of the synthetic audio clip. 0 dB represents original generated volume.
-                    </div>
                   </motion.div>
                 )}
 
@@ -1171,7 +1182,7 @@ export function TranscriptPanel({
             </div>
 
             <div className="text-[10px] text-ink-500 leading-normal bg-ink-900/50 p-2.5 rounded border border-ink-900 mt-2">
-              Adjusting subtitle styles applies layout parameters globally across all translation clips.
+              Applies to all subtitles
             </div>
           </div>
         )}
@@ -1181,7 +1192,6 @@ export function TranscriptPanel({
         open={!!newSpeakerModal}
         onClose={() => { setNewSpeakerModal(null); setPickingNewSpeakerVoice(false) }}
         title={pickingNewSpeakerVoice ? undefined : 'New Speaker'}
-        description={pickingNewSpeakerVoice ? undefined : 'Create a reusable speaker profile and assign it to this segment.'}
         size={pickingNewSpeakerVoice ? 'xl' : 'sm'}
         className={pickingNewSpeakerVoice ? 'p-0 overflow-hidden' : undefined}
       >
@@ -1193,7 +1203,7 @@ export function TranscriptPanel({
             usedBy={voiceUsers(jobSpeakers)}
             auto={{
               label: 'Choose for me',
-              hint: "A built-in voice that fits the actor is picked the first time this speaker is voiced, and kept.",
+              hint: "Fits the actor's voice",
             }}
             onChoose={(voiceId) => { setNewSpeakerVoice(voiceId ?? ''); setPickingNewSpeakerVoice(false) }}
             onClose={() => setPickingNewSpeakerVoice(false)}
@@ -1231,9 +1241,6 @@ export function TranscriptPanel({
                 onOpen={() => setPickingNewSpeakerVoice(true)}
                 title="Choose this speaker's voice"
               />
-              <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-                You can change it later in Speakers.
-              </p>
             </Field>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={() => setNewSpeakerModal(null)}>Cancel</Button>
@@ -1260,8 +1267,7 @@ export function TranscriptPanel({
                 auto={{
                   label: !speaker ? 'Choose for me'
                     : speakerVoice ? `The speaker's voice (${speakerVoice.name})` : "The speaker's voice",
-                  hint: !speaker ? "A fitting built-in voice is picked by this line's own pitch the first time it's voiced."
-                    : 'This line sounds like the rest of its speaker\'s lines.',
+                  hint: !speaker ? "Fits the actor's voice" : undefined,
                 }}
                 onChoose={(voiceId) => {
                   setLineVoiceFor(null)

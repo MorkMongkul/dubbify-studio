@@ -1,15 +1,15 @@
 // src/components/layout/EditorRail.tsx
 // CapCut-style icon rail — the far-left strip of the single-window editor.
-// Each icon opens its panel in the dynamic dock next to it; nothing here
-// navigates (rail tabs must never change the URL, or the auto-navigate-to-
-// latest-job effect would fight the user while they browse).
+// Each icon opens its panel in the dynamic dock next to it, and the gear the
+// Settings window; nothing here navigates (rail tabs must never change the
+// URL, or the auto-navigate-to-latest-job effect would fight the user while
+// they browse).
 import { useNavigate } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
 import {
-  FolderOpen, Users, ImagePlus, Mic, Bot, Settings2, Sun, Moon,
+  FolderOpen, Users, ImagePlus, Mic, BookOpen, Bot, Settings,
 } from 'lucide-react'
 import { useEditorStore, type RailTab } from '@/store/editorStore'
-import { useThemeStore } from '@/store/themeStore'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { MoveloStudioIcon } from '@/components/brand/Movelo'
 import { cn } from '@/lib/utils'
@@ -19,6 +19,7 @@ const RAIL_ITEMS: { tab: RailTab; icon: LucideIcon; label: string }[] = [
   { tab: 'speakers',  icon: Users,      label: 'Speakers' },
   { tab: 'elements',  icon: ImagePlus,  label: 'Elements' },
   { tab: 'voices',    icon: Mic,        label: 'Voices' },
+  { tab: 'story',     icon: BookOpen,   label: 'Story' },
   { tab: 'assistant', icon: Bot,        label: 'Assistant' },
 ]
 
@@ -48,8 +49,8 @@ export function EditorRail() {
   const navigate = useNavigate()
   const railTab = useEditorStore((s) => s.railTab)
   const setRailTab = useEditorStore((s) => s.setRailTab)
-  const theme = useThemeStore((s) => s.theme)
-  const toggleTheme = useThemeStore((s) => s.toggleTheme)
+  const settingsOpen = useEditorStore((s) => s.settingsOpen)
+  const setSettingsOpen = useEditorStore((s) => s.setSettingsOpen)
 
   return (
     <aside
@@ -80,20 +81,11 @@ export function EditorRail() {
 
       <div className="flex-1" />
 
-      <Tooltip content={theme === 'dark' ? 'Light mode' : 'Dark mode'} side="right">
-        <button
-          onClick={toggleTheme}
-          aria-label="Toggle theme"
-          className="h-9 w-9 rounded-lg flex items-center justify-center text-white/40 hover:text-white hover:bg-white/6 transition-colors"
-        >
-          {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
-        </button>
-      </Tooltip>
       <RailButton
-        active={railTab === 'settings'}
-        label="Settings"
-        icon={Settings2}
-        onClick={() => setRailTab('settings')}
+        active={settingsOpen}
+        label="Settings (⌘,)"
+        icon={Settings}
+        onClick={() => setSettingsOpen(true)}
       />
     </aside>
   )

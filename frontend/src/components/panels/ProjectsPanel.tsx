@@ -110,10 +110,8 @@ export function ProjectsPanel({ activeProjectId, activeJobId, onImportFile }: Pr
           // used to render as an empty library, which reads as data loss.
           <div className="flex flex-col items-center justify-center py-8 text-center">
             <AlertCircle size={18} className="text-amber-400 mb-2" />
-            <p className="text-[10.5px] font-semibold text-ink-300">Can't reach the backend</p>
-            <p className="text-[9px] text-ink-600 mt-0.5 max-w-[200px] leading-normal">
-              Your projects are safe on the server — this is a connection problem, not missing data.
-            </p>
+            <p className="text-[10.5px] font-semibold text-ink-300">Can't connect</p>
+            <p className="text-[9px] text-ink-600 mt-0.5">Your projects are safe</p>
             <button
               onClick={() => refetch()}
               disabled={isFetching}
@@ -141,7 +139,6 @@ export function ProjectsPanel({ activeProjectId, activeJobId, onImportFile }: Pr
             <PanelEmptyState
               icon={Clapperboard}
               title="No projects yet"
-              hint="A project groups a film's sessions, speakers, and logo."
               actionLabel="Create your first project"
               onAction={() => setCreateOpen(true)}
             />

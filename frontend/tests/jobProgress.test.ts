@@ -1,54 +1,31 @@
 // Run with `npm test` (Node's own test runner; Node strips the TypeScript types).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { jobProgress } from '../src/lib/jobProgress.ts'
-
-const states = (status: string, hasLines = false) =>
-  jobProgress(status, hasLines)!.steps.map((s) => `${s.label}: ${s.state}`)
+import { holdPercent, jobProgress, stagePercent, uploadPercent } from '../src/lib/jobProgress.ts'
 
 test('a first analysis says what the long step really does, in plain words', () => {
-  const p = jobProgress('diarizing', false)!
-  assert.equal(p.title, 'Transcribing and finding speakers…')
-  assert.equal(p.detail, 'Writing down each line and who says it')
+  assert.equal(jobProgress('diarizing', false)!.title, 'Transcribing and finding speakers…')
   assert.equal(jobProgress('transcribing', false)!.title, 'Transcribing and finding speakers…')
   assert.equal(jobProgress('translating', false)!.title, 'Translating to Khmer…')
   for (const status of ['diarizing', 'transcribing', 'translating']) {
-    const p = jobProgress(status, false)!
-    assert.doesNotMatch(`${p.title} ${p.detail} ${p.steps.map((s) => s.label)}`, /diariz/i)
+    assert.doesNotMatch(jobProgress(status, false)!.title, /diariz/i)
   }
 })
 
-test('the dots show only the steps that run: analysis never claims voices or mixing', () => {
-  assert.deepEqual(states('diarizing'), ['Transcribe and find speakers: active', 'Translate: pending'])
-  assert.deepEqual(states('transcribing'), ['Transcribe and find speakers: active', 'Translate: pending'])
-  assert.deepEqual(states('translating'), ['Transcribe and find speakers: done', 'Translate: active'])
-  assert.deepEqual(states('pending'), ['Extract the audio: pending', 'Separate music and voices: pending'])
-  assert.deepEqual(states('extracting'), ['Extract the audio: active', 'Separate music and voices: pending'])
-  assert.deepEqual(states('separating'), ['Extract the audio: done', 'Separate music and voices: active'])
-})
-
 test('with lines on screen, the bar names the action that was started', () => {
-  const detect = jobProgress('diarizing', true, 'detect-speakers')!
-  assert.equal(detect.title, 'Detecting speakers…')
-  assert.equal(detect.detail, 'Text, translations and voices stay as they are')
-  assert.deepEqual(detect.steps, [])
+  assert.equal(jobProgress('diarizing', true, 'detect-speakers')!.title, 'Detecting speakers…')
 
   assert.equal(jobProgress('diarizing', true, 'analyze')!.title, 'Analyzing again: transcribing and finding speakers…')
   assert.equal(jobProgress('translating', true, 'analyze')!.title, 'Analyzing again: translating…')
-  assert.equal(jobProgress('translating', true, 'analyze')!.detail, "These lines are replaced when it's done")
 
   assert.equal(jobProgress('translating', true, 'translate-missing')!.title, 'Translating missing lines…')
 
-  const separating = jobProgress('separating', true)!
-  assert.equal(separating.title, 'Separating music and voices…')
-  assert.equal(separating.detail, 'Lines, translations and voices are kept')
-  assert.deepEqual(separating.steps, [])
+  assert.equal(jobProgress('separating', true)!.title, 'Separating music and voices…')
 })
 
 test("without a known action, or one that can't be running now, the bar claims nothing it doesn't know", () => {
   // After a reload the started action is unknown
   assert.equal(jobProgress('diarizing', true)!.title, 'Detecting speakers…')
-  assert.equal(jobProgress('diarizing', true)!.detail, undefined)
   assert.equal(jobProgress('translating', true)!.title, 'Translating…')
   // Speaker detection never translates: an older action doesn't describe this run
   assert.equal(jobProgress('translating', true, 'detect-speakers')!.title, 'Translating…')
@@ -59,7 +36,74 @@ test('nothing to show when no step is running that this progress covers', () => 
   for (const status of ['stems_ready', 'completed', 'failed', 'synthesizing', 'mixing', '']) {
     assert.equal(jobProgress(status, false), null, status)
     assert.equal(jobProgress(status, true, 'analyze'), null, status)
+    assert.equal(stagePercent(status, 30, 180), null, status)
   }
   assert.equal(jobProgress(undefined, false), null)
   assert.equal(jobProgress(null, true), null)
+  assert.equal(stagePercent(undefined, 30, 180), null)
+  assert.equal(stagePercent(null, 30, 180), null)
 })
+
+// ── The ring's percentage ───────────────────────────────────────────────────
+
+const NEW_VIDEO = ['pending', 'extracting', 'separating']
+const ANALYZE = ['diarizing', 'transcribing', 'translating']
+
+test("the ring only moves forward within a step, and a step never finishes by itself", () => {
+  for (const status of [...NEW_VIDEO, ...ANALYZE]) {
+    let last = -1
+    for (let t = 0; t <= 7200; t += 3) {
+      const p = stagePercent(status, t, 180)!
+      assert.ok(p >= last, `${status} went back at ${t}s`)
+      assert.ok(p <= 99, `${status} said ${p}% while still working`)
+      last = p
+    }
+  }
+})
+
+test('each step starts where the one before it stopped, so the ring never jumps back', () => {
+  for (const steps of [NEW_VIDEO, ANALYZE]) {
+    for (let i = 1; i < steps.length; i++) {
+      const longest = stagePercent(steps[i - 1], 1e6, 180)!
+      assert.ok(longest <= stagePercent(steps[i], 0, 180)!, `${steps[i - 1]} → ${steps[i]}`)
+    }
+  }
+  // A new video: the upload, then the audio, then music and voices
+  assert.equal(uploadPercent(0), 0)
+  assert.equal(uploadPercent(0.5), 2)
+  assert.equal(uploadPercent(1), 5)
+  assert.ok(uploadPercent(1) <= stagePercent('pending', 0, 180)!)
+  assert.equal(stagePercent('separating', 0, 180), 12)
+  // Analyze starts a fresh ring
+  assert.equal(stagePercent('diarizing', 0, 180), 0)
+})
+
+test('a step that runs long waits near its end instead of claiming to be done', () => {
+  assert.equal(stagePercent('separating', 1e6, 180), 95)
+  assert.ok(stagePercent('diarizing', 1e6, 180)! < stagePercent('transcribing', 0, 180)!)
+})
+
+test('it moves at the pace the step usually takes for a video that long', () => {
+  // About halfway through transcription (0–80%) at half its usual time
+  const usual = 15 + 0.3 * 180
+  assert.equal(stagePercent('diarizing', usual / 2, 180), 40)
+  // The same wait on a longer episode has got less far
+  assert.ok(stagePercent('separating', 60, 45 * 60)! < stagePercent('separating', 60, 180)!)
+  // An unknown length counts as a short episode
+  assert.equal(stagePercent('diarizing', 30, 0), stagePercent('diarizing', 30, 180))
+})
+
+test('what the ring shows never goes down within a step, and holds while the estimate is missing', () => {
+  let shown = holdPercent(null, 'diarizing', 40, 0)
+  assert.deepEqual(shown, { status: 'diarizing', percent: 40 })
+  shown = holdPercent(shown, 'diarizing', 38, 0)        // an answer that took a little longer to arrive
+  assert.equal(shown.percent, 40)
+  shown = holdPercent(shown, 'diarizing', null, 0)      // unknown for a moment
+  assert.equal(shown.percent, 40)
+  shown = holdPercent(shown, 'diarizing', 45, 0)
+  assert.equal(shown.percent, 45)
+  // The next step, before its time is known: where that step starts
+  shown = holdPercent(shown, 'translating', null, 85)
+  assert.deepEqual(shown, { status: 'translating', percent: 85 })
+})
+
