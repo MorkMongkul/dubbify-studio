@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.services import gemini_models, story_notes
 from app.services.pipeline_common import episode_ids
-from app.models.models import ChatMessage, ChatProposedEdit, Job, Project, Segment, Speaker
+from app.models.models import ChatMessage, ChatProposedEdit, ChatThread, Job, Project, Segment, Speaker, message_time
 
 logger = logging.getLogger(__name__)
 
@@ -291,6 +291,36 @@ class LineNotFound(LookupError):
     """The line a message is about isn't in this project (deleted, or someone else's)."""
 
 
+class ThreadNotFound(LookupError):
+    """The chat to continue isn't one of this project's."""
+
+
+def thread_title(text: str) -> str:
+    """A chat's name: its first message on one line, at most 60 characters."""
+    title = " ".join((text or "").split())
+    if len(title) > 60:
+        title = title[:59].rstrip() + "…"
+    return title or "New chat"
+
+
+async def adopt_unthreaded(db: AsyncSession, project_id: str) -> None:
+    """The messages a project had before chats had threads become one chat, named after its first question."""
+    rows = (await db.execute(
+        select(ChatMessage).where(ChatMessage.project_id == project_id, ChatMessage.thread_id.is_(None))
+        .order_by(*message_order())
+    )).scalars().all()
+    if not rows:
+        return
+    question = next((m.text for m in rows if m.role == "user" and m.text), "")
+    thread = ChatThread(project_id=project_id, title=thread_title(question) if question else "Earlier chat",
+                        created_at=rows[0].created_at, updated_at=rows[-1].created_at)
+    db.add(thread)
+    await db.flush()
+    for m in rows:
+        m.thread_id = thread.id
+    await db.commit()
+
+
 def _clock(seconds: float) -> str:
     return f"{int(seconds // 60):02d}:{seconds % 60:04.1f}"
 
@@ -362,12 +392,16 @@ def message_order(newest_first: bool = False) -> list:
 
 
 async def run_chat_turn(
-    db: AsyncSession, project: Project, user_text: str, *, line_id: str | None = None,
-) -> list[ChatMessage]:
+    db: AsyncSession, project: Project, user_text: str, *,
+    thread_id: str | None = None, line_id: str | None = None,
+) -> tuple[str, list[ChatMessage]]:
     """Run one full turn: persist the user's message, loop Gemini calls +
     tool execution until it gives a plain text reply (or the round cap is
     hit), and return every ChatMessage row this turn created — in order —
-    so the caller can hand them straight to the frontend without a re-query.
+    so the caller can hand them straight to the frontend without a re-query,
+    with the chat's id: `thread_id` continues that chat (ThreadNotFound when it
+    isn't this project's), none starts one named after this message. Only the
+    chat's own messages go to Gemini as history.
 
     Commits right before every Gemini call (never holds the connection
     across one) — SQLite's pool_size=1 means a multi-round tool-calling turn
@@ -376,6 +410,16 @@ async def run_chat_turn(
     """
     # Before anything is saved: a message about a line that's gone is refused (LineNotFound)
     line_ref = await _line_ref(db, project, line_id) if line_id else None
+    if thread_id:
+        thread = (await db.execute(
+            select(ChatThread).where(ChatThread.id == thread_id, ChatThread.project_id == project.id)
+        )).scalar_one_or_none()
+        if thread is None:
+            raise ThreadNotFound("That chat no longer exists")
+    else:
+        thread = ChatThread(project_id=project.id, title=thread_title(user_text))
+        db.add(thread)
+        await db.flush()
 
     # The project's story notes ride along in the system instruction
     notes = story_notes.for_assistant(project.story_notes, await episode_ids(db, project.id))
@@ -383,14 +427,15 @@ async def run_chat_turn(
 
     history_result = await db.execute(
         select(ChatMessage)
-        .where(ChatMessage.project_id == project.id)
+        .where(ChatMessage.thread_id == thread.id)
         .order_by(*message_order(newest_first=True))
         .limit(settings.CHAT_HISTORY_LIMIT)
     )
     history = list(reversed(history_result.scalars().all()))
 
-    user_msg = ChatMessage(project_id=project.id, role="user", text=user_text, line_ref=line_ref)
+    user_msg = ChatMessage(project_id=project.id, thread_id=thread.id, role="user", text=user_text, line_ref=line_ref)
     db.add(user_msg)
+    thread.updated_at = message_time()
     await db.commit()
 
     new_messages: list[ChatMessage] = [user_msg]
@@ -403,11 +448,11 @@ async def run_chat_turn(
         text = "".join(p.get("text", "") for p in parts if "text" in p)
 
         if not function_call_part:
-            model_msg = ChatMessage(project_id=project.id, role="model", text=text or "(no response)")
+            model_msg = ChatMessage(project_id=project.id, thread_id=thread.id, role="model", text=text or "(no response)")
             db.add(model_msg)
             await db.commit()
             new_messages.append(model_msg)
-            return new_messages
+            return thread.id, new_messages
 
         function_call = function_call_part["functionCall"]
         # Store Gemini's raw response parts (raw_parts), not just a hand-picked
@@ -423,7 +468,7 @@ async def run_chat_turn(
             "args": function_call.get("args", {}) or {},
             "raw_parts": parts,
         }
-        model_msg = ChatMessage(project_id=project.id, role="model", text=text, function_call=stored_function_call)
+        model_msg = ChatMessage(project_id=project.id, thread_id=thread.id, role="model", text=text, function_call=stored_function_call)
         db.add(model_msg)
         await db.flush()   # need model_msg.id for propose_edit's message_id below
         new_messages.append(model_msg)
@@ -439,7 +484,7 @@ async def run_chat_turn(
             tool_result = {"error": f"Unknown tool '{tool_name}'"}
 
         function_response = {"name": tool_name, "response": tool_result}
-        response_msg = ChatMessage(project_id=project.id, role="user", function_response=function_response)
+        response_msg = ChatMessage(project_id=project.id, thread_id=thread.id, role="user", function_response=function_response)
         db.add(response_msg)
         await db.commit()   # release the connection before the next Gemini call
         new_messages.append(response_msg)
@@ -447,10 +492,10 @@ async def run_chat_turn(
 
     # Round cap hit — surface it rather than silently dropping the turn.
     timeout_msg = ChatMessage(
-        project_id=project.id, role="model",
+        project_id=project.id, thread_id=thread.id, role="model",
         text="I made several tool calls but didn't reach a final answer in time — try rephrasing or asking a narrower question.",
     )
     db.add(timeout_msg)
     await db.commit()
     new_messages.append(timeout_msg)
-    return new_messages
+    return thread.id, new_messages

@@ -487,6 +487,7 @@ class ChatMessageResponse(BaseModel):
     function_call: Optional[dict] = None
     function_response: Optional[dict] = None
     line_ref: Optional[dict] = None
+    thread_id: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -496,9 +497,21 @@ class ChatSendRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=4000)
     # The line the user's text cursor is in ("this line"); it must be in this project
     line_id: Optional[str] = Field(None, max_length=64)
+    # The chat to continue; none starts a new one, named after this message
+    thread_id: Optional[str] = Field(None, max_length=64)
+
+
+class ChatThreadResponse(BaseModel):
+    id: str
+    project_id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    message_count: int        # the user's messages and the Assistant's replies, not tool steps
 
 
 class ChatSendResponse(BaseModel):
+    thread_id: str
     messages: List[ChatMessageResponse]   # every new row this turn produced (user msg + any tool steps + final reply)
 
 

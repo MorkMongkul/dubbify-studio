@@ -275,12 +275,14 @@ async def test_the_turn_after_a_tool_call_replays_history_in_order(client, db_se
         return _text_response("Done.")
 
     monkeypatch.setattr(chat_agent, "_call_gemini", fake_call_gemini)
-    await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "Find 回来"})
-    await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "Thanks, and the next one?"})
+    first = await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "Find 回来"})
+    thread_id = first.json()["thread_id"]
+    await client.post(f"/api/v1/chat/{project_id}/messages",
+                      json={"text": "Thanks, and the next one?", "thread_id": thread_id})
 
     assert _shape(calls[-1]) == ["user:text", "model:call", "user:result", "model:text", "user:text"]
     # The conversation shown in the panel is in the same order.
-    history = (await client.get(f"/api/v1/chat/{project_id}/messages")).json()
+    history = (await client.get(f"/api/v1/chat/threads/{thread_id}/messages")).json()
     shown = ["call" if m.get("function_call") else "result" if m.get("function_response") else m["role"] for m in history]
     assert shown == ["user", "call", "result", "model", "user", "model"]
 
@@ -336,7 +338,8 @@ async def test_a_message_about_a_line_carries_it(client, db_sessionmaker, monkey
     assert sent.endswith("]\nmake this less formal")
 
     # The next turn replays it the same way, so the chat still knows which line was meant
-    await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "and shorter"})
+    await client.post(f"/api/v1/chat/{project_id}/messages",
+                      json={"text": "and shorter", "thread_id": resp.json()["thread_id"]})
     assert seen[1][0]["parts"][0]["text"].startswith("[This line — episode 1")
 
 
@@ -351,7 +354,7 @@ async def test_a_line_from_another_project_is_refused(client, db_sessionmaker, m
     monkeypatch.setattr(chat_agent, "_call_gemini", must_not_run)
     resp = await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "fix this", "line_id": other_line})
     assert resp.status_code == 404
-    assert (await client.get(f"/api/v1/chat/{project_id}/messages")).json() == []
+    assert (await client.get(f"/api/v1/chat/{project_id}/threads")).json() == []
 
 
 @pytest.mark.asyncio

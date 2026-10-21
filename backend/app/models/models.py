@@ -320,6 +320,23 @@ class Overlay(Base):
 
 
 # ── Assistant chat (project-scoped translation memory chatbot) ────────────
+class ChatThread(Base):
+    """
+    One Assistant chat of a project. A project has several; each sends only
+    its own messages to Gemini as history. Named after its first message
+    (chat_agent.thread_title). Messages saved before chats had threads become
+    one chat the first time the project's chats are listed
+    (chat_agent.adopt_unthreaded).
+    """
+    __tablename__ = "chat_threads"
+
+    id         = Column(String, primary_key=True, default=generate_uuid)
+    project_id = Column(String, ForeignKey("projects.id"), nullable=False)
+    title      = Column(String(120), default="")
+    created_at = Column(DateTime, default=message_time)
+    updated_at = Column(DateTime, default=message_time)   # the last message's time; the History list's order
+
+
 class ChatMessage(Base):
     """
     One turn of a project's single ongoing Assistant conversation. Stored
@@ -339,6 +356,7 @@ class ChatMessage(Base):
 
     id         = Column(String, primary_key=True, default=generate_uuid)
     project_id = Column(String, ForeignKey("projects.id"), nullable=False)
+    thread_id  = Column(String, ForeignKey("chat_threads.id"), nullable=True)   # NULL: from before threads
     role       = Column(String(10), nullable=False)   # "user" | "model"
     text       = Column(Text, default="")               # empty for pure function-call/response turns
 
