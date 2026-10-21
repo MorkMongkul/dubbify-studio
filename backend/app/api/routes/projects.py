@@ -15,6 +15,7 @@ from app.core.database import get_db
 from app.core.config import settings
 from app.models.models import Project, Job, Segment, Speaker, Overlay, ChatMessage, ChatProposedEdit
 from app.schemas.schemas import ProjectCreate, ProjectUpdate, ProjectResponse
+from app.services import story_notes
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
@@ -25,8 +26,8 @@ _LOGO_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 async def create_project(payload: ProjectCreate, db: AsyncSession = Depends(get_db, scope="function")):
     """Create a new dubbing project."""
     data = payload.model_dump()
-    data.pop("story_intro")   # becomes the story notes' intro (Task 2)
-    project = Project(**data)
+    intro = data.pop("story_intro").strip()   # "About this drama" starts the story notes
+    project = Project(**data, story_notes=story_notes.with_intro(None, intro) if intro else None)
     db.add(project)
     await db.flush()
     await db.refresh(project)

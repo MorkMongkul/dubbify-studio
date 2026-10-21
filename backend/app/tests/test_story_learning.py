@@ -7,6 +7,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 import app.core.database as core_db
+from app.models.models import Project
 
 
 @pytest.mark.asyncio
@@ -33,3 +34,16 @@ async def test_startup_adds_story_columns(tmp_path):
         assert "finished_at" in jobs
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_new_project_keeps_its_intro(client, db_sessionmaker):
+    resp = await client.post("/api/v1/projects/", json={"name": "Hospital Hearts", "story_intro": "  A hospital drama.  "})
+    assert resp.status_code == 201
+    async with db_sessionmaker() as db:
+        project = await db.get(Project, resp.json()["id"])
+        assert project.story_notes["intro"] == "A hospital drama."
+
+    resp = await client.post("/api/v1/projects/", json={"name": "No intro"})
+    async with db_sessionmaker() as db:
+        assert (await db.get(Project, resp.json()["id"])).story_notes is None
