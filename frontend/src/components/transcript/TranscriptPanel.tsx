@@ -13,8 +13,9 @@ import { toast } from 'sonner'
 import { cn, formatTime, getSpeakerColor } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import { segments as segmentsApi, tts as ttsApi, type BatchSynthesisStatus } from '@/api/client'
-import { useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker, useTranslateMissing, useRetrySeparation } from '@/hooks/useApi'
-import { ProgressSteps } from '@/components/ui/ProgressSteps'
+import { useJob, useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker, useTranslateMissing, useRetrySeparation } from '@/hooks/useApi'
+import { JobProgressRing } from '@/components/progress/JobProgressRing'
+import { useDoneFlash } from '@/hooks/useDoneFlash'
 import { jobProgress } from '@/lib/jobProgress'
 import { recordSegmentChange, recordSegmentsChange, recordSegmentCreate } from '@/lib/historyHelpers'
 import { voiceUsers } from '@/lib/voiceTags'
@@ -64,6 +65,14 @@ export function TranscriptPanel({
   // takes over only while this panel is hidden).
   const jobAction = useEditorStore((s) => s.jobActions[jobId])
   const progress = jobProgress(job?.status, segments.length > 0, jobAction)
+  // Before the episode has lines the progress is a ring, which says Done for a
+  // moment when the analysis finishes, before the lines take its place
+  // (only once this panel has seen the job running for itself, so coming back
+  // to an episode that finished meanwhile doesn't flash Done). A finished
+  // analysis is Done even with a warning: the lines are there, and the
+  // transcript's banners explain any gaps.
+  const { isFetchedAfterMount: jobFresh } = useJob(jobId)
+  const analysisDone = useDoneFlash(!!progress && segments.length === 0 && jobFresh, job?.status === 'completed')
 
   // Music/voices separation fell back to the original audio: say so for as
   // long as it's true, and offer to try again (lines and voices are kept).
@@ -711,21 +720,18 @@ export function TranscriptPanel({
  
       {/* Main content viewport */}
       <div ref={scrollRef} className="flex-1 overflow-auto bg-transparent">
-        {isLoading ? (
+        {analysisDone ? (
+          <div className="flex items-center justify-center h-full p-8">
+            <JobProgressRing jobId={jobId} done />
+          </div>
+        ) : isLoading ? (
           <div className="p-3 space-y-2">
             {[...Array(7)].map((_, i) => <SegmentCardSkeleton key={i} />)}
           </div>
         ) : segments.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-8 gap-3">
             {progress ? (
-              <>
-                <Loader2 size={24} className="text-brand-400 animate-spin mb-1" />
-                <p className="text-[12px] font-semibold text-brand-300">{progress.title}</p>
-                {progress.detail && (
-                  <p className="text-[11px] text-white/40 max-w-[220px] leading-normal">{progress.detail}</p>
-                )}
-                <ProgressSteps steps={progress.steps} className="w-48 mt-1" />
-              </>
+              <JobProgressRing jobId={jobId} />
             ) : job?.status === 'stems_ready' ? (
               /* Stage 1 done — waiting for user to click Analyze */
               <>

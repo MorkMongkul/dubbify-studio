@@ -529,3 +529,33 @@ body {
 video::-webkit-media-controls { display: none !important; }
 video::-webkit-media-controls-enclosure { display: none !important; }
 video::-webkit-media-controls-panel { display: none !important; }
+
+/* ══════════════════════════════════════════════════════
+   WORKING TITLE — a light sweeps across the words while a step runs
+   (the progress ring's title, components/ui/ProgressRing.tsx)
+   ══════════════════════════════════════════════════════ */
+:root {
+  --shimmer-base:  rgba(244, 114, 141, 0.6);   /* brand-400, softened */
+  --shimmer-light: #FFFFFF;
+}
+[data-theme="light"] {
+  --shimmer-base:  rgba(184, 40, 79, 0.55);    /* brand-700, softened */
+  --shimmer-light: #7A1E36;                    /* brand-900 */
+}
+.shimmer-text {
+  background: linear-gradient(90deg,
+    var(--shimmer-base) 0%, var(--shimmer-base) 35%, var(--shimmer-light) 50%,
+    var(--shimmer-base) 65%, var(--shimmer-base) 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmerSweep 1.8s linear infinite;
+}
+@keyframes shimmerSweep {
+  from { background-position: 100% 0; }
+  to   { background-position: -66.667% 0; }   /* one tile (250% wide): a seamless loop */
+}
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-text { animation: none; background: none; color: var(--shimmer-light); }
+}

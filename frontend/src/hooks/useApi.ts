@@ -124,8 +124,8 @@ export function useJob(jobId: string | null) {
 export function useUploadVideo() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ projectId, file }: { projectId: string; file: File }) =>
-      jobs.upload(projectId, file),
+    mutationFn: ({ projectId, file, onProgress }: { projectId: string; file: File; onProgress?: (fraction: number) => void }) =>
+      jobs.upload(projectId, file, onProgress),
     onSuccess: (_, { projectId }) => {
       qc.invalidateQueries({ queryKey: ['jobs', projectId] })
     },
@@ -136,9 +136,9 @@ export function useUploadWithSubtitle() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({
-      projectId, video, subtitle,
-    }: { projectId: string; video: File; subtitle: File }) =>
-      jobs.uploadWithSubtitle(projectId, video, subtitle),
+      projectId, video, subtitle, onProgress,
+    }: { projectId: string; video: File; subtitle: File; onProgress?: (fraction: number) => void }) =>
+      jobs.uploadWithSubtitle(projectId, video, subtitle, onProgress),
     onSuccess: (_, { projectId }) => {
       qc.invalidateQueries({ queryKey: ['jobs', projectId] })
     },

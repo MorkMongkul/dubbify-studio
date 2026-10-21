@@ -120,6 +120,8 @@ export interface Job {
   stems_separated?: boolean | null
   // changes when the tracks are made again — appended to their URLs
   stems_version?: number
+  // how long the running step has been going (null when unknown), for the progress ring's estimate
+  step_elapsed_secs?: number | null
   created_at: string
   completed_at?: string | null
 }

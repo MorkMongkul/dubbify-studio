@@ -21,6 +21,7 @@ from app.services.voice_tags import AGE_GROUPS, GENDERS, normalize_tags, voice_s
 from pathlib import Path
 from app.core.config import settings
 from app.services.source_separator import UNAVAILABLE_MARKER
+from app.services import job_clock
 from app.core.config import settings
 
 
@@ -99,6 +100,12 @@ class JobResponse(BaseModel):
         if not (job_dir / "no_vocals.wav").exists():
             return None
         return not (job_dir / UNAVAILABLE_MARKER).exists()
+
+    @computed_field
+    def step_elapsed_secs(self) -> Optional[float]:
+        """How long the running step has been going (None if unknown), for the editor's progress estimate."""
+        seconds = job_clock.elapsed(self.id, self.status)
+        return round(seconds, 1) if seconds is not None else None
 
     @computed_field
     def stems_version(self) -> int:
