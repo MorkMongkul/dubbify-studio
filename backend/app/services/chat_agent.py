@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.services import gemini_models
+from app.services.pipeline_common import episode_ids
 from app.models.models import ChatMessage, ChatProposedEdit, Job, Project, Segment, Speaker
 
 logger = logging.getLogger(__name__)
@@ -124,21 +125,13 @@ _TOOL_DECLARATIONS = [
 
 # ── Tool implementations ────────────────────────────────────────
 
-async def _episode_order(db: AsyncSession, project_id: str) -> list[str]:
-    """Job ids for this project in upload order — index+1 is the episode number."""
-    result = await db.execute(
-        select(Job.id).where(Job.project_id == project_id).order_by(Job.created_at)
-    )
-    return [row[0] for row in result.all()]
-
-
 async def _tool_search_segments(db: AsyncSession, project_id: str, args: dict) -> dict:
     query = (args.get("query") or "").strip()
     speaker_label = (args.get("speaker_label") or "").strip()
     episode_number = args.get("episode_number")
     limit = min(100, max(1, int(args.get("limit") or 30)))
 
-    job_ids = await _episode_order(db, project_id)
+    job_ids = await episode_ids(db, project_id)
     job_id_filter = None
     if episode_number:
         if not (1 <= episode_number <= len(job_ids)):

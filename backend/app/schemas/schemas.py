@@ -149,6 +149,11 @@ class JobTitleUpdate(BaseModel):
     title: str = Field(..., max_length=255)
 
 
+class JobFinishedUpdate(BaseModel):
+    """An episode whose translation the user has checked; the story notes learn from it."""
+    finished: bool
+
+
 # ── Speaker schemas ───────────────────────────────────────────
 class SpeakerCreate(BaseModel):
     label: Optional[str] = None   # auto-generated server-side when absent (manual creation)
@@ -507,3 +512,86 @@ class ChatProposedEditResponse(BaseModel):
     resolved_at: Optional[datetime]
 
     model_config = {"from_attributes": True}
+
+
+# ── Story notes (app/services/story_notes.py) ─────────────────
+# Who wrote an item: the user ("you") or what the AI learned ("ai").
+StoryBy = Literal["you", "ai"]
+
+
+class StoryText(BaseModel):
+    text: str
+    by: StoryBy
+
+
+class StoryCharacter(BaseModel):
+    id: str
+    zh: str
+    km: str
+    about: str
+    speaker: str
+    by: StoryBy
+
+
+class StoryWord(BaseModel):
+    id: str
+    zh: str
+    km: str
+    note: str
+    by: StoryBy
+
+
+class StoryEpisode(BaseModel):
+    job_id: str
+    number: int
+    title: str
+    finished: bool
+    learned: bool
+    summary: str
+    summary_by: StoryBy
+
+
+class StoryLearning(BaseModel):
+    state: Literal["idle", "running", "failed"]
+    message: str
+
+
+class StoryView(BaseModel):
+    intro: str
+    tone: StoryText
+    characters: List[StoryCharacter]
+    words: List[StoryWord]
+    episodes: List[StoryEpisode]
+    learning: StoryLearning
+    can_learn: bool          # a Gemini key is set
+
+
+class StoryCharacterIn(BaseModel):
+    id: Optional[str] = Field(None, max_length=40)
+    zh: str = Field(..., max_length=60)
+    km: str = Field("", max_length=120)
+    about: str = Field("", max_length=300)
+    speaker: Optional[str] = Field(None, max_length=50)
+
+
+class StoryWordIn(BaseModel):
+    id: Optional[str] = Field(None, max_length=40)
+    zh: str = Field(..., max_length=60)
+    km: str = Field("", max_length=120)
+    note: str = Field("", max_length=200)
+
+
+class StoryEdit(BaseModel):
+    """What the user changed; lists are the whole list as they left it."""
+    intro: Optional[str] = Field(None, max_length=4000)
+    tone: Optional[str] = Field(None, max_length=600)
+    characters: Optional[List[StoryCharacterIn]] = Field(None, max_length=60)
+    words: Optional[List[StoryWordIn]] = Field(None, max_length=150)
+    summaries: Optional[dict[str, str]] = None
+
+    @field_validator("summaries")
+    @classmethod
+    def _summary_length(cls, value):
+        if value and any(len(text) > 400 for text in value.values()):
+            raise ValueError("A summary can be at most 400 characters")
+        return value

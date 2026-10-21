@@ -16,7 +16,7 @@ from app.core.data_folder import follow_moved_data_folder
 from app.core.database import init_db
 from app.services.pipeline_common import recover_orphaned_jobs
 from app.services.builtin_voices import seed_builtin_voices
-from app.api.routes import health, projects, jobs, segments, tts, voices, overlays, chat
+from app.api.routes import health, projects, jobs, segments, tts, voices, overlays, chat, story
 from app.api.routes import settings as settings_routes
 
 # ── Logging setup ─────────────────────────────────────────────
@@ -104,6 +104,7 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
 # ── Routers ───────────────────────────────────────────────────
 app.include_router(health.router)
 app.include_router(projects.router,  prefix="/api/v1")
+app.include_router(story.router,     prefix="/api/v1")
 app.include_router(jobs.router,      prefix="/api/v1")
 app.include_router(segments.router,  prefix="/api/v1")
 app.include_router(tts.router,       prefix="/api/v1")

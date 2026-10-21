@@ -6,6 +6,7 @@ import os
 import shutil
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -17,7 +18,8 @@ from typing import List
 from app.core.database import get_db
 from app.core.config import settings
 from app.models.models import Job, Project, JobStatus, Segment
-from app.schemas.schemas import JobResponse, PipelineStartResponse, BgmVolumeUpdate, JobTitleUpdate
+from app.schemas.schemas import JobResponse, PipelineStartResponse, BgmVolumeUpdate, JobTitleUpdate, JobFinishedUpdate
+from app.services import story_learning
 from app.services.pipeline import (
     needs_translation, run_analysis_pipeline, run_pipeline, run_separation_retry, run_speaker_detection,
     run_translation,
@@ -441,6 +443,32 @@ async def update_job_title(
     job.title = payload.title.strip()
     await db.commit()
     await db.refresh(job)
+    return job
+
+
+@router.patch("/{job_id}/finished", response_model=JobResponse)
+async def set_job_finished(
+    job_id: str,
+    payload: JobFinishedUpdate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """Mark an episode finished (its translation is right) or not. Finishing
+    starts learning the project's story notes from it, when a Gemini key is
+    set; a run already going picks it up. Un-finishing unlearns nothing."""
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if not payload.finished:
+        job.finished_at = None
+    elif job.finished_at is None:
+        job.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    await db.commit()
+    await db.refresh(job)
+    if payload.finished and settings.GEMINI_API_KEY and story_learning.claim(job.project_id):
+        background_tasks.add_task(story_learning.learn_from_finished, job.project_id)
     return job
 
 

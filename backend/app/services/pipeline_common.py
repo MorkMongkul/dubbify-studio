@@ -34,6 +34,17 @@ async def update_job_status(
     logger.info(f"Job {job.id[:8]} | {status.value} | {progress}%")
 
 
+async def episodes(db: AsyncSession, project_id: str) -> List[Job]:
+    """The project's episodes (jobs) in upload order — index+1 is the episode number."""
+    result = await db.execute(select(Job).where(Job.project_id == project_id).order_by(Job.created_at))
+    return list(result.scalars().all())
+
+
+async def episode_ids(db: AsyncSession, project_id: str) -> List[str]:
+    result = await db.execute(select(Job.id).where(Job.project_id == project_id).order_by(Job.created_at))
+    return [row[0] for row in result.all()]
+
+
 def vocals_path_for(job: Job) -> Optional[str]:
     """The job's separated vocals stem, else its extracted audio — whichever exists on disk."""
     stem = Path(settings.UPLOAD_DIR) / job.project_id / job.id / "vocals.wav"
