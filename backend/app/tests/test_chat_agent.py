@@ -3,6 +3,7 @@ Assistant chat: the tool-calling loop, and the auto vs. manual edit-approval
 split (Project.chat_edit_mode). Gemini itself is mocked at _call_gemini —
 everything downstream (tool execution, DB writes, history replay) is real.
 """
+import httpx
 import pytest
 from sqlalchemy import select
 
@@ -362,3 +363,22 @@ async def test_a_deleted_line_is_refused(client, db_sessionmaker, monkeypatch):
     resp = await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "fix this", "line_id": seg_id})
     assert resp.status_code == 404
     assert resp.json()["detail"] == "That line no longer exists"
+
+
+@pytest.mark.asyncio
+async def test_an_answer_cut_off_by_the_output_limit_is_an_error_not_an_empty_reply(client, db_sessionmaker, monkeypatch):
+    project_id, _ = await _make_project_with_segment(db_sessionmaker)
+    monkeypatch.setattr(chat_agent.settings, "GEMINI_API_KEY", "test-key")
+    payloads: list = []
+
+    async def fake_generate(purpose, payload, *, timeout):
+        payloads.append(payload)
+        # What Gemini sends when its thinking used up the output limit
+        return httpx.Response(200, json={"candidates": [{"finishReason": "MAX_TOKENS", "content": {}}]})
+
+    monkeypatch.setattr(chat_agent.gemini_models, "generate_content", fake_generate)
+    resp = await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "Fix line 3"})
+    assert resp.status_code == 502
+    assert "cut off" in resp.json()["detail"]
+    # Thinking counts toward the output limit, so the limit leaves it room
+    assert payloads[0]["generationConfig"]["maxOutputTokens"] >= 8192

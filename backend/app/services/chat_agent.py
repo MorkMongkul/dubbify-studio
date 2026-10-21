@@ -266,7 +266,10 @@ async def _call_gemini(contents: list[dict], system: str = _SYSTEM_INSTRUCTION) 
         "contents": contents,
         "systemInstruction": {"parts": [{"text": system}]},
         "tools": [{"functionDeclarations": _TOOL_DECLARATIONS}],
-        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1024},
+        # Thinking counts toward the output limit (gemini-3.x thinks ~400–700
+        # tokens on a turn); at 1024 a longer think left no room for the answer,
+        # which came back empty. Only the tokens used are billed.
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 8192},
     }
     # A retired chat model is replaced automatically (gemini_models).
     resp = await gemini_models.generate_content("chat", payload, timeout=httpx.Timeout(60.0, connect=10.0))
@@ -275,9 +278,13 @@ async def _call_gemini(contents: list[dict], system: str = _SYSTEM_INSTRUCTION) 
 
     data = resp.json()
     try:
-        return data["candidates"][0]["content"]
+        candidate = data["candidates"][0]
     except (KeyError, IndexError):
         raise RuntimeError(f"Unexpected Gemini response: {data}")
+    if candidate.get("finishReason") == "MAX_TOKENS":
+        # Empty or half an answer — never store that as the reply
+        raise RuntimeError("The Assistant's answer was cut off. Please ask again.")
+    return candidate.get("content") or {}
 
 
 class LineNotFound(LookupError):
