@@ -98,6 +98,8 @@ export interface ProjectCreate {
   name: string
   source_lang: string
   target_lang: string
+  /** Optional "About this drama"; it starts the project's story notes. */
+  story_intro?: string
 }
 
 export interface Job {
@@ -124,6 +126,8 @@ export interface Job {
   step_elapsed_secs?: number | null
   created_at: string
   completed_at?: string | null
+  /** Marked finished by the user (its translation is right); the story notes learn from it. */
+  finished_at?: string | null
 }
 
 export interface SubtitleTrack {
@@ -452,4 +456,60 @@ export interface ChatProposedEdit {
   status: ChatEditStatus
   created_at: string
   resolved_at?: string | null
+}
+
+// ── Story notes ────────────────────────────────────────────────
+/** Who wrote a note: the user, or the AI from finished episodes. Learning never changes the user's. */
+export type StoryBy = 'you' | 'ai'
+
+export interface StoryCharacter {
+  id: string
+  zh: string
+  km: string
+  about: string
+  speaker: string
+  by: StoryBy
+}
+
+export interface StoryWord {
+  id: string
+  zh: string
+  km: string
+  note: string
+  by: StoryBy
+}
+
+export interface StoryEpisode {
+  job_id: string
+  number: number
+  title: string
+  finished: boolean
+  learned: boolean
+  summary: string
+  summary_by: StoryBy
+}
+
+export interface StoryLearning {
+  state: 'idle' | 'running' | 'failed'
+  message: string
+}
+
+export interface StoryView {
+  intro: string
+  tone: { text: string; by: StoryBy }
+  characters: StoryCharacter[]
+  words: StoryWord[]
+  episodes: StoryEpisode[]
+  learning: StoryLearning
+  /** A Gemini key is set */
+  can_learn: boolean
+}
+
+/** What the user changed; a list is the whole list as they left it, rows keeping their id. */
+export interface StoryEdit {
+  intro?: string
+  tone?: string
+  characters?: { id?: string; zh: string; km: string; about: string }[]
+  words?: { id?: string; zh: string; km: string; note: string }[]
+  summaries?: Record<string, string>
 }

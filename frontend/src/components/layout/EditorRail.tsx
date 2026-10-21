@@ -7,7 +7,7 @@
 import { useNavigate } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
 import {
-  FolderOpen, Users, ImagePlus, Mic, Bot, Settings,
+  FolderOpen, Users, ImagePlus, Mic, BookOpen, Bot, Settings,
 } from 'lucide-react'
 import { useEditorStore, type RailTab } from '@/store/editorStore'
 import { Tooltip } from '@/components/ui/Tooltip'
@@ -19,6 +19,7 @@ const RAIL_ITEMS: { tab: RailTab; icon: LucideIcon; label: string }[] = [
   { tab: 'speakers',  icon: Users,      label: 'Speakers' },
   { tab: 'elements',  icon: ImagePlus,  label: 'Elements' },
   { tab: 'voices',    icon: Mic,        label: 'Voices' },
+  { tab: 'story',     icon: BookOpen,   label: 'Story' },
   { tab: 'assistant', icon: Bot,        label: 'Assistant' },
 ]
 

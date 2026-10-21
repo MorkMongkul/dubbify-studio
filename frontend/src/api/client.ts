@@ -3,7 +3,7 @@
 
 import axios, { type AxiosProgressEvent } from 'axios'
 import type {
-  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, Segment, SegmentUpdate, SegmentCreate, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult,
+  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, Segment, SegmentUpdate, SegmentCreate, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView,
 } from '@/types'
 
 const api = axios.create({
@@ -160,6 +160,9 @@ export const jobs = {
 
   setTitle: (jobId: string, title: string) =>
     api.patch<Job>(`/jobs/${jobId}/title`, { title }).then((r) => r.data),
+
+  setFinished: (jobId: string, finished: boolean) =>
+    api.patch<Job>(`/jobs/${jobId}/finished`, { finished }).then((r) => r.data),
 }
 
 // ── Speakers ──────────────────────────────────────────────────
@@ -384,6 +387,19 @@ export const voices = {
       responseType: 'blob',
       timeout: 300_000,   // cold-start tolerant
     }).then((r) => r.data as Blob),
+}
+
+// ── Story notes ────────────────────────────────────────────────
+export const story = {
+  get: (projectId: string) =>
+    api.get<StoryView>(`/projects/${projectId}/story`).then((r) => r.data),
+
+  update: (projectId: string, edit: StoryEdit) =>
+    api.patch<StoryView>(`/projects/${projectId}/story`, edit).then((r) => r.data),
+
+  /** Learn from the finished episodes not read yet (also "Try again") */
+  learn: (projectId: string) =>
+    api.post<StoryView>(`/projects/${projectId}/story/learn`).then((r) => r.data),
 }
 
 // ── Assistant chat ────────────────────────────────────────────

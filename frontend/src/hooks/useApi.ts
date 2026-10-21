@@ -2,13 +2,13 @@
 // React Query hooks — data fetching, caching, polling
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions, chat, appSettings } from '@/api/client'
+import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions, chat, appSettings, story } from '@/api/client'
 import type { VoiceCreateInput } from '@/api/client'
 import { useEditorStore } from '@/store/editorStore'
 import { standInMessage, withTurn } from '@/lib/chatMessages'
 import type {
   Segment, ProjectCreate, ProjectUpdate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice, OverlayUpdate, AppSettingsUpdate, GeminiModelSetting,
-  ChatMessage,
+  ChatMessage, StoryEdit,
 } from '@/types'
 
 // ── Health ────────────────────────────────────────────────────
@@ -286,6 +286,46 @@ export function useSetJobTitle() {
     onSuccess: (updated) => {
       qc.setQueryData(['job', updated.id], updated)
       qc.invalidateQueries({ queryKey: ['jobs', updated.project_id] })
+    },
+  })
+}
+
+// ── Story notes ───────────────────────────────────────────────
+export function useStory(projectId: string | null) {
+  return useQuery({
+    queryKey: ['story', projectId],
+    queryFn: () => story.get(projectId!),
+    enabled: !!projectId,
+    // While it learns from episodes, poll for its progress and what it learned
+    refetchInterval: (query) => (query.state.data?.learning.state === 'running' ? 2000 : false),
+  })
+}
+
+export function useUpdateStory() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ projectId, edit }: { projectId: string; edit: StoryEdit }) => story.update(projectId, edit),
+    onSuccess: (view, { projectId }) => qc.setQueryData(['story', projectId], view),
+  })
+}
+
+export function useLearnStory() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (projectId: string) => story.learn(projectId),
+    onSuccess: (view, projectId) => qc.setQueryData(['story', projectId], view),
+  })
+}
+
+/** Finishing an episode starts learning from it (the story notes poll while that runs). */
+export function useSetEpisodeFinished() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ jobId, finished }: { jobId: string; finished: boolean }) => jobs.setFinished(jobId, finished),
+    onSuccess: (updated) => {
+      qc.setQueryData(['job', updated.id], updated)
+      qc.invalidateQueries({ queryKey: ['jobs', updated.project_id] })
+      qc.invalidateQueries({ queryKey: ['story', updated.project_id] })
     },
   })
 }

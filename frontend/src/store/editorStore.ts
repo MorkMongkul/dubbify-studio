@@ -7,7 +7,7 @@ import type { JobAction } from '@/lib/jobProgress'
 
 // Which panel the left icon rail has open in the dynamic dock. Settings is a
 // window of its own (settingsOpen), not a panel.
-export type RailTab = 'projects' | 'speakers' | 'elements' | 'voices' | 'assistant'
+export type RailTab = 'projects' | 'speakers' | 'elements' | 'voices' | 'story' | 'assistant'
 
 export interface VoicePreset {
   id: string

@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { PlusCircle } from 'lucide-react'
-import { Modal, InputField, SelectField } from '@/components/ui/Modal'
+import { Modal, Field, InputField, SelectField } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
 import { LANGUAGE_OPTIONS } from '@/types'
 import { useCreateProject } from '@/hooks/useApi'
@@ -25,6 +25,7 @@ export function CreateProjectModal({ open, onClose }: CreateProjectModalProps) {
     name: '',
     source_lang: 'zh',
     target_lang: 'km',
+    story_intro: '',
   })
   const [errors, setErrors] = useState<Record<string, string>>({})
 
@@ -46,7 +47,7 @@ export function CreateProjectModal({ open, onClose }: CreateProjectModalProps) {
       onSuccess: (project) => {
         toast.success(`Project "${project.name}" created`)
         onClose()
-        setForm({ name: '', source_lang: 'zh', target_lang: 'km' })
+        setForm({ name: '', source_lang: 'zh', target_lang: 'km', story_intro: '' })
         navigate(`/projects/${project.id}`)
       },
       onError: () => toast.error('Failed to create project'),
@@ -89,6 +90,19 @@ export function CreateProjectModal({ open, onClose }: CreateProjectModalProps) {
             onChange={(e) => setForm((f) => ({ ...f, target_lang: e.target.value }))}
           />
         </div>
+
+        {/* Starts the project's story notes (Story tab), which translation follows */}
+        <Field label="About this drama">
+          <textarea
+            className="glass-input w-full rounded-lg px-3 py-2 text-sm focus:outline-none transition-all duration-150 resize-y"
+            style={{ background: 'var(--glass-input-bg)', borderColor: 'var(--color-border)', color: 'var(--color-text-primary)', fontFamily: 'var(--font-sans)' }}
+            rows={4}
+            maxLength={4000}
+            placeholder="The story, the main characters and how they talk. Optional — you can add it later in Story."
+            value={form.story_intro}
+            onChange={(e) => setForm((f) => ({ ...f, story_intro: e.target.value }))}
+          />
+        </Field>
 
         <div className="pt-2 flex gap-3">
           <Button

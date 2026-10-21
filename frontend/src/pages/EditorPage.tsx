@@ -38,6 +38,7 @@ import { SpeakersPanel } from '@/components/panels/SpeakersPanel'
 import { ProjectsPanel } from '@/components/panels/ProjectsPanel'
 import { VoicesPanel } from '@/components/panels/VoicesPanel'
 import { AssistantPanel } from '@/components/panels/AssistantPanel'
+import { StoryPanel } from '@/components/panels/StoryPanel'
 import { PanelHeader, PanelEmptyState } from '@/components/panels/PanelShell'
 import { Button } from '@/components/ui/Button'
 import { Modal, InputField } from '@/components/ui/Modal'
@@ -789,6 +790,8 @@ export default function EditorPage() {
                 )
               ) : railTab === 'voices' ? (
                 <VoicesPanel />
+              ) : railTab === 'story' ? (
+                <StoryPanel projectId={projectId} jobId={jobId} />
               ) : (
                 <AssistantPanel projectId={projectId} />
               )}
