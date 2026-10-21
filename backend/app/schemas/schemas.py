@@ -486,6 +486,7 @@ class ChatMessageResponse(BaseModel):
     text: str
     function_call: Optional[dict] = None
     function_response: Optional[dict] = None
+    line_ref: Optional[dict] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -493,6 +494,8 @@ class ChatMessageResponse(BaseModel):
 
 class ChatSendRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=4000)
+    # The line the user's text cursor is in ("this line"); it must be in this project
+    line_id: Optional[str] = Field(None, max_length=64)
 
 
 class ChatSendResponse(BaseModel):

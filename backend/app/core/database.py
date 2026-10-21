@@ -124,6 +124,7 @@ async def init_db(bind: AsyncEngine | None = None):
             ("speakers", [("voice_auto", "BOOLEAN")]),           # 0.2.4
             ("projects", [("story_notes", "JSON")]),             # 0.2.6
             ("jobs", [("finished_at", datetime_type)]),          # 0.2.6
+            ("chat_messages", [("line_ref", "JSON")]),           # 0.2.6
         ):
             for name in await add_missing_columns(conn, table, columns):
                 logger.info(f"Added column {name} to the {table} table.")

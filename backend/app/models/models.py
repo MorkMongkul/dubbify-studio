@@ -344,6 +344,10 @@ class ChatMessage(Base):
 
     function_call     = Column(JSON, nullable=True)   # {"name": ..., "args": {...}}
     function_response = Column(JSON, nullable=True)   # {"name": ..., "response": {...}}
+    # The line the user's text cursor was in when they sent this message
+    # ({segment_id, episode, time, speaker, speaker_tag, source_text,
+    # khmer_text}, a snapshot), so "this line" means the same on every replay.
+    line_ref = Column(JSON, nullable=True)
 
     created_at = Column(DateTime, default=message_time, server_default=func.now())
 

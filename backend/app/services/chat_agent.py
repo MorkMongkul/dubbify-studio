@@ -64,6 +64,9 @@ what they replace (voice actors sync TTS timing to the original line), and \
 write them as natural spoken dialogue, not literal/formal translation — \
 this project's existing batch translator already follows that style, match it.
 
+A message that starts with [This line …] is about that line (segment): \
+"this", "it" and "this line" mean it — use its segment_id with propose_edit.
+
 Keep your own chat replies concise — a sentence or two of explanation, not \
 an essay, unless the user asks for detail."""
 
@@ -277,6 +280,50 @@ async def _call_gemini(contents: list[dict], system: str = _SYSTEM_INSTRUCTION) 
         raise RuntimeError(f"Unexpected Gemini response: {data}")
 
 
+class LineNotFound(LookupError):
+    """The line a message is about isn't in this project (deleted, or someone else's)."""
+
+
+def _clock(seconds: float) -> str:
+    return f"{int(seconds // 60):02d}:{seconds % 60:04.1f}"
+
+
+async def _line_ref(db: AsyncSession, project: Project, line_id: str) -> dict:
+    """A snapshot of the line the user's text cursor is in, for "this line"."""
+    row = (await db.execute(
+        select(Segment, Job.id, Speaker.label, Speaker.display_name)
+        .join(Job, Segment.job_id == Job.id)
+        .outerjoin(Speaker, Segment.speaker_id == Speaker.id)
+        .where(Segment.id == line_id, Job.project_id == project.id)
+    )).first()
+    if row is None:
+        raise LineNotFound("That line no longer exists")
+    seg, job_id, label, name = row
+    order = await episode_ids(db, project.id)
+    return {
+        "segment_id": seg.id,
+        "episode": order.index(job_id) + 1,
+        "time": seg.start_time,
+        "speaker": name or label or "",
+        "speaker_tag": label or "",
+        "source_text": seg.source_text or "",
+        "khmer_text": seg.khmer_text or "",
+    }
+
+
+def _with_line(text: str, ref: dict | None) -> str:
+    """A message as Gemini reads it: the line it's about, then what the user wrote."""
+    if not ref:
+        return text
+    who = ref.get("speaker") or ""
+    if ref.get("speaker_tag") and ref["speaker_tag"] != who:
+        who = f"{who} ({ref['speaker_tag']})" if who else ref["speaker_tag"]
+    return (
+        f"[This line — episode {ref.get('episode')}, {_clock(ref.get('time') or 0.0)}, {who or 'no speaker'}, "
+        f"segment_id {ref.get('segment_id')}. Chinese: {ref.get('source_text')} | Khmer now: {ref.get('khmer_text')}]\n{text}"
+    )
+
+
 def _messages_to_contents(messages: list[ChatMessage]) -> list[dict]:
     contents = []
     for m in messages:
@@ -290,7 +337,7 @@ def _messages_to_contents(messages: list[ChatMessage]) -> list[dict]:
         elif m.function_response:
             parts = [{"functionResponse": m.function_response}]
         else:
-            parts = [{"text": m.text}]
+            parts = [{"text": _with_line(m.text, m.line_ref)}]
         contents.append({"role": m.role, "parts": parts})
     return contents
 
@@ -307,7 +354,9 @@ def message_order(newest_first: bool = False) -> list:
     return [k.desc() for k in keys] if newest_first else keys
 
 
-async def run_chat_turn(db: AsyncSession, project: Project, user_text: str) -> list[ChatMessage]:
+async def run_chat_turn(
+    db: AsyncSession, project: Project, user_text: str, *, line_id: str | None = None,
+) -> list[ChatMessage]:
     """Run one full turn: persist the user's message, loop Gemini calls +
     tool execution until it gives a plain text reply (or the round cap is
     hit), and return every ChatMessage row this turn created — in order —
@@ -318,6 +367,9 @@ async def run_chat_turn(db: AsyncSession, project: Project, user_text: str) -> l
     that kept the connection open the whole time would block every other
     request (job polls, segment fetches) for however long Gemini takes.
     """
+    # Before anything is saved: a message about a line that's gone is refused (LineNotFound)
+    line_ref = await _line_ref(db, project, line_id) if line_id else None
+
     # The project's story notes ride along in the system instruction
     notes = story_notes.for_assistant(project.story_notes, await episode_ids(db, project.id))
     system = f"{_SYSTEM_INSTRUCTION}\n\n{notes}" if notes else _SYSTEM_INSTRUCTION
@@ -330,7 +382,7 @@ async def run_chat_turn(db: AsyncSession, project: Project, user_text: str) -> l
     )
     history = list(reversed(history_result.scalars().all()))
 
-    user_msg = ChatMessage(project_id=project.id, role="user", text=user_text)
+    user_msg = ChatMessage(project_id=project.id, role="user", text=user_text, line_ref=line_ref)
     db.add(user_msg)
     await db.commit()
 

@@ -15,7 +15,7 @@ from app.models.models import ChatMessage, ChatProposedEdit, Project, Segment
 from app.schemas.schemas import (
     ChatMessageResponse, ChatProposedEditResponse, ChatSendRequest, ChatSendResponse,
 )
-from app.services.chat_agent import apply_edit_to_segment, message_order, naive_utcnow, run_chat_turn
+from app.services.chat_agent import LineNotFound, apply_edit_to_segment, message_order, naive_utcnow, run_chat_turn
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,9 @@ async def list_messages(project_id: str, db: AsyncSession = Depends(get_db, scop
 async def send_message(project_id: str, payload: ChatSendRequest, db: AsyncSession = Depends(get_db, scope="function")):
     project = await _get_project(project_id, db)
     try:
-        new_messages = await run_chat_turn(db, project, payload.text.strip())
+        new_messages = await run_chat_turn(db, project, payload.text.strip(), line_id=payload.line_id)
+    except LineNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:
         logger.error(f"Assistant chat turn failed for project {project_id[:8]}: {e}")
         raise HTTPException(status_code=502, detail=str(e))

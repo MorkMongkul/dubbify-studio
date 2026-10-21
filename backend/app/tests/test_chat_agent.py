@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import select
 
 import app.services.chat_agent as chat_agent
-from app.models.models import Job, Project, Segment
+from app.models.models import Job, Project, Segment, Speaker
 from app.services import story_notes
 
 
@@ -304,3 +304,61 @@ async def test_assistant_system_text_has_the_notes(client, db_sessionmaker, monk
     await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "Hi again"})
     assert systems[-1].startswith(chat_agent._SYSTEM_INSTRUCTION)
     assert "A hospital drama in Shanghai." in systems[-1]
+
+
+# ── "This line": a message about the line being edited ────────────────────────
+
+@pytest.mark.asyncio
+async def test_a_message_about_a_line_carries_it(client, db_sessionmaker, monkeypatch):
+    project_id, seg_id = await _make_project_with_segment(db_sessionmaker)
+    async with db_sessionmaker() as s:
+        speaker = Speaker(project_id=project_id, label="SPEAKER_03", display_name="Dr. Wang")
+        s.add(speaker)
+        await s.flush()
+        (await s.get(Segment, seg_id)).speaker_id = speaker.id
+        await s.commit()
+    seen: list = []
+
+    async def fake_call_gemini(contents, system=None):
+        seen.append(contents)
+        return _text_response("Done")
+
+    monkeypatch.setattr(chat_agent, "_call_gemini", fake_call_gemini)
+    resp = await client.post(f"/api/v1/chat/{project_id}/messages",
+                             json={"text": "make this less formal", "line_id": seg_id})
+    assert resp.status_code == 200
+    ref = resp.json()["messages"][0]["line_ref"]
+    assert (ref["segment_id"], ref["episode"], ref["speaker"]) == (seg_id, 1, "Dr. Wang")
+    assert (ref["source_text"], ref["khmer_text"]) == ("我回来了", "ខ្ញុំបានត្រឡប់មកវិញ")
+    sent = seen[0][-1]["parts"][0]["text"]
+    assert sent.startswith("[This line — episode 1, 00:00.0, Dr. Wang (SPEAKER_03), segment_id ")
+    assert sent.endswith("]\nmake this less formal")
+
+    # The next turn replays it the same way, so the chat still knows which line was meant
+    await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "and shorter"})
+    assert seen[1][0]["parts"][0]["text"].startswith("[This line — episode 1")
+
+
+@pytest.mark.asyncio
+async def test_a_line_from_another_project_is_refused(client, db_sessionmaker, monkeypatch):
+    _, other_line = await _make_project_with_segment(db_sessionmaker)
+    project_id, _ = await _make_project_with_segment(db_sessionmaker)
+
+    async def must_not_run(contents, system=None):
+        raise AssertionError("Gemini was called")
+
+    monkeypatch.setattr(chat_agent, "_call_gemini", must_not_run)
+    resp = await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "fix this", "line_id": other_line})
+    assert resp.status_code == 404
+    assert (await client.get(f"/api/v1/chat/{project_id}/messages")).json() == []
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_line_is_refused(client, db_sessionmaker, monkeypatch):
+    project_id, seg_id = await _make_project_with_segment(db_sessionmaker)
+    async with db_sessionmaker() as s:
+        await s.delete(await s.get(Segment, seg_id))
+        await s.commit()
+    resp = await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "fix this", "line_id": seg_id})
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "That line no longer exists"
