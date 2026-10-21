@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import select
 
 import app.services.chat_agent as chat_agent
-from app.models.models import Job, Project, Segment, Speaker
+from app.models.models import ChatProposedEdit, Job, Project, Segment, Speaker
 from app.services import story_notes
 
 
@@ -385,3 +385,16 @@ async def test_an_answer_cut_off_by_the_output_limit_is_an_error_not_an_empty_re
     assert "cut off" in resp.json()["detail"]
     # Thinking counts toward the output limit, so the limit leaves it room
     assert payloads[0]["generationConfig"]["maxOutputTokens"] >= 8192
+
+
+@pytest.mark.asyncio
+async def test_a_suggested_edit_says_which_line_it_is_for(client, db_sessionmaker):
+    project_id, seg_id = await _make_project_with_segment(db_sessionmaker)
+    async with db_sessionmaker() as s:
+        seg = await s.get(Segment, seg_id)
+        s.add(ChatProposedEdit(project_id=project_id, segment_id=seg_id, old_khmer_text="a", new_khmer_text="b", reason="r"))
+        await s.commit()
+        job_id = seg.job_id
+
+    edit = (await client.get(f"/api/v1/chat/{project_id}/pending-edits")).json()[0]
+    assert edit["line"] == {"job_id": job_id, "episode": 1, "time": 0.0, "source_text": "我回来了"}

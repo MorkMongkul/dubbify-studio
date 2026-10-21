@@ -515,6 +515,14 @@ class ChatSendResponse(BaseModel):
     messages: List[ChatMessageResponse]   # every new row this turn produced (user msg + any tool steps + final reply)
 
 
+class ChatEditLine(BaseModel):
+    """Where a suggested edit's line is, so the panel can say so and go there."""
+    job_id: str
+    episode: int
+    time: float
+    source_text: str
+
+
 class ChatProposedEditResponse(BaseModel):
     id: str
     project_id: str
@@ -526,6 +534,7 @@ class ChatProposedEditResponse(BaseModel):
     status: str
     created_at: datetime
     resolved_at: Optional[datetime]
+    line: Optional[ChatEditLine] = None     # None when the line has been deleted since
 
     model_config = {"from_attributes": True}
 

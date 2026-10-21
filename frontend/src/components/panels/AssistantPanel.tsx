@@ -27,7 +27,7 @@ import {
 } from '@/hooks/useApi'
 import { chatDateLabel } from '@/lib/chatMessages'
 import { useEditorStore } from '@/store/editorStore'
-import type { ChatEditMode, ChatLineRef, ChatMessage, ChatThread } from '@/types'
+import type { ChatEditMode, ChatLineRef, ChatMessage, ChatProposedEdit, ChatThread } from '@/types'
 import { PanelHeader, PanelEmptyState } from './PanelShell'
 import { cn, formatTime } from '@/lib/utils'
 
@@ -197,6 +197,16 @@ export function AssistantPanel({ projectId, jobId }: AssistantPanelProps) {
     },
   }) > 0
 
+  // A suggestion's line, when it's in the open episode: select it and play from
+  // there, so the transcript shows (and scrolls to) the line that changes
+  const setActiveSegment = useEditorStore((s) => s.setActiveSegment)
+  const setCurrentTime = useEditorStore((s) => s.setCurrentTime)
+  const goToLine = (edit: ChatProposedEdit) => {
+    if (!edit.line || edit.line.job_id !== jobId) return
+    setActiveSegment(edit.segment_id)
+    setCurrentTime(edit.line.time)
+  }
+
   // "This line": only while it's a line of the open episode
   const lineId = useEditorStore((s) => s.assistantLineId)
   const setLineId = useEditorStore((s) => s.setAssistantLineId)
@@ -313,12 +323,25 @@ export function AssistantPanel({ projectId, jobId }: AssistantPanelProps) {
             <div className="px-2 pb-2 space-y-1.5">
               {pendingEdits.map((edit) => (
                 <div key={edit.id} className="p-2 rounded bg-ink-900/80 border border-ink-800/60 space-y-1">
+                  {edit.line && (
+                    // Which line it changes; in the open episode, a click goes there
+                    <button
+                      type="button"
+                      onClick={() => goToLine(edit)}
+                      disabled={edit.line.job_id !== jobId}
+                      title={edit.line.job_id === jobId ? 'Go to this line' : `In episode ${edit.line.episode}`}
+                      className="flex w-full min-w-0 items-center gap-1 text-left text-[9.5px] text-ink-500 enabled:hover:text-brand-300 transition-colors"
+                    >
+                      <span className="shrink-0 tabular-nums">Ep {edit.line.episode} · {formatTime(edit.line.time)} ·</span>
+                      <span lang="zh-Hans" className="truncate">{edit.line.source_text}</span>
+                    </button>
+                  )}
                   <p className="text-[10px] text-ink-500 line-through decoration-ink-700 truncate">{edit.old_khmer_text}</p>
                   <p className="text-[11px] text-ink-200 truncate">{edit.new_khmer_text}</p>
                   <p className="text-[9px] text-ink-600 leading-snug">{edit.reason}</p>
                   <div className="flex gap-1 pt-0.5">
                     <button
-                      onClick={() => approveEdit.mutate({ editId: edit.id, projectId })}
+                      onClick={() => approveEdit.mutate({ editId: edit.id, projectId }, { onSuccess: () => goToLine(edit) })}
                       disabled={approveEdit.isPending}
                       className="flex items-center gap-0.5 text-[9px] font-semibold text-emerald-400 hover:text-emerald-300 px-1.5 py-0.5 rounded hover:bg-emerald-500/10 transition-colors disabled:opacity-40"
                     >

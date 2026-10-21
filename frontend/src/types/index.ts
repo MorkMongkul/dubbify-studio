@@ -470,6 +470,14 @@ export interface ChatThread {
 
 export type ChatEditStatus = 'pending' | 'approved' | 'rejected'
 
+/** Where a suggested edit's line is (null when the line was deleted since) */
+export interface ChatEditLine {
+  job_id: string
+  episode: number
+  time: number
+  source_text: string
+}
+
 export interface ChatProposedEdit {
   id: string
   project_id: string
@@ -481,6 +489,7 @@ export interface ChatProposedEdit {
   status: ChatEditStatus
   created_at: string
   resolved_at?: string | null
+  line?: ChatEditLine | null
 }
 
 // ── Story notes ────────────────────────────────────────────────

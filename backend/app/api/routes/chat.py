@@ -14,8 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.models import ChatMessage, ChatProposedEdit, ChatThread, Project, Segment
 from app.schemas.schemas import (
-    ChatMessageResponse, ChatProposedEditResponse, ChatSendRequest, ChatSendResponse, ChatThreadResponse,
+    ChatEditLine, ChatMessageResponse, ChatProposedEditResponse, ChatSendRequest, ChatSendResponse, ChatThreadResponse,
 )
+from app.services.pipeline_common import episode_ids
 from app.services.chat_agent import (
     LineNotFound, ThreadNotFound, adopt_unthreaded, apply_edit_to_segment, message_order, naive_utcnow, run_chat_turn,
 )
@@ -103,8 +104,19 @@ async def list_pending_edits(project_id: str, status: str = "pending", db: Async
     if status != "all":
         stmt = stmt.where(ChatProposedEdit.status == status)
     stmt = stmt.order_by(ChatProposedEdit.created_at.desc())
-    result = await db.execute(stmt)
-    return result.scalars().all()
+    edits = (await db.execute(stmt)).scalars().all()
+    # Which line each one is about (episode, time, Chinese), for the panel
+    order = {job_id: n for n, job_id in enumerate(await episode_ids(db, project_id), start=1)}
+    lines = {seg.id: seg for seg in (await db.execute(
+        select(Segment).where(Segment.id.in_([e.segment_id for e in edits]))
+    )).scalars()} if edits else {}
+    out = []
+    for edit in edits:
+        seg = lines.get(edit.segment_id)
+        line = ChatEditLine(job_id=seg.job_id, episode=order.get(seg.job_id, 0), time=seg.start_time,
+                            source_text=seg.source_text or "") if seg else None
+        out.append(ChatProposedEditResponse.model_validate(edit).model_copy(update={"line": line}))
+    return out
 
 
 async def _resolve_edit(edit_id: str, db: AsyncSession) -> ChatProposedEdit:
