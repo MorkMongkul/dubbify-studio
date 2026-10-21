@@ -35,6 +35,8 @@ npm test           # node --test tests/*.test.ts — Node ≥ 22.18 runs the Typ
 
 `npm test` covers pure logic kept free of runtime imports (`src/lib/voiceTags.ts`) and checks that the built-in voices' tags are in the tag editor's vocabulary; `tests/` is outside the tsconfig, so it isn't type-checked by the build.
 
+Tailwind, PostCSS and Autoprefixer are devDependencies (build tools; only the CSS they make ships), so `npm audit --omit=dev` covers what the app ships. `npm audit` still flags Tailwind 3's own file watcher (`braces`, which has no fixed version); only Tailwind 4 drops it, so never run `npm audit fix --force`: it installs Tailwind 4, a migration of its own (CSS-first config, renamed utilities, cascade layers that change how the light theme's class remaps in `src/index.css` win).
+
 Run both servers together for dev; the Vite proxy handles all backend calls (frontend uses relative `/api/v1` baseURL).
 
 ### Desktop (Tauri)
