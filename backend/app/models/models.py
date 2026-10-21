@@ -132,6 +132,11 @@ class Project(Base):
     #   revert path even when nothing waited for a human click.
     chat_edit_mode = Column(String(10), default="manual")
 
+    # Story notes (app/services/story_notes.py): the user's intro plus what the
+    # AI learned from finished episodes, used by translation and the Assistant.
+    # NULL = empty notes.
+    story_notes = Column(JSON, nullable=True)
+
     jobs     = relationship("Job", back_populates="project", cascade="all, delete")
     speakers = relationship("Speaker", back_populates="project", cascade="all, delete")
 
@@ -163,6 +168,9 @@ class Job(Base):
     # Timing
     created_at    = Column(DateTime, server_default=func.now())
     completed_at  = Column(DateTime, nullable=True)
+    # When the user marked the episode finished (its translation is right), so
+    # its story notes can be learned from it; NULL = not finished
+    finished_at   = Column(DateTime, nullable=True)
     duration_secs = Column(Float, default=0.0)        # video duration
 
     # BGM/SFX stem gain — baked into the no_vocals stem on disk (see

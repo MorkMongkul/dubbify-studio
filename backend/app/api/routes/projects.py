@@ -24,7 +24,9 @@ _LOGO_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 @router.post("/", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
 async def create_project(payload: ProjectCreate, db: AsyncSession = Depends(get_db, scope="function")):
     """Create a new dubbing project."""
-    project = Project(**payload.model_dump())
+    data = payload.model_dump()
+    data.pop("story_intro")   # becomes the story notes' intro (Task 2)
+    project = Project(**data)
     db.add(project)
     await db.flush()
     await db.refresh(project)

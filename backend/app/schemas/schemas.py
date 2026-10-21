@@ -31,6 +31,8 @@ class ProjectCreate(BaseModel):
     description: str = ""
     source_lang: str = "zh"
     target_lang: str = "km"
+    # Optional "About this drama" text; it starts the project's story notes
+    story_intro: str = Field("", max_length=4000)
 
 
 class ProjectUpdate(BaseModel):
@@ -78,6 +80,7 @@ class JobResponse(BaseModel):
     bgm_volume_db: float
     created_at: datetime
     completed_at: Optional[datetime]
+    finished_at: Optional[datetime] = None
 
     @computed_field
     def video_url(self) -> Optional[str]:
