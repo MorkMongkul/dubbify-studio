@@ -24,6 +24,12 @@ async def _get_segment(db_sessionmaker, seg_id: str) -> dict:
         }
 
 
+
+@pytest.fixture(autouse=True)
+def gemini_key(monkeypatch):
+    """The Assistant checks for a key before saving anything; these tests fake Gemini itself."""
+    monkeypatch.setattr(chat_agent.settings, "GEMINI_API_KEY", "test-key")
+
 async def _make_project_with_segment(db_sessionmaker, chat_edit_mode: str = "manual"):
     async with db_sessionmaker() as session:
         project = Project(name="Ep", chat_edit_mode=chat_edit_mode)

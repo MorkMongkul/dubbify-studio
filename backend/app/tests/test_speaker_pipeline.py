@@ -129,7 +129,7 @@ async def test_translation_uses_the_project_story(monkeypatch, uploads, backgrou
 
     async with background_db() as s:
         project = await s.get(Project, project_id)
-        project.story_notes = story_notes.apply_user_edit(None, {"characters": [{"zh": "王医生", "km": "វ៉ាង", "about": "man"}]})
+        project.story_notes = story_notes.apply_user_edit(None, {"character": {"zh": "王医生", "km": "វ៉ាង", "about": "man"}})
         await s.commit()
     _vocals(uploads, project_id, job_id)
     monkeypatch.setattr(pipeline, "transcribe_audio", _fake_transcribe([

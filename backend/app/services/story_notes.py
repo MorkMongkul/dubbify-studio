@@ -156,40 +156,46 @@ def merge_learned(notes, learned: dict, job_ids: list[str]) -> dict:
 
 # ── The user's edits ──────────────────────────────────────────────────────────
 
-def _edit_items(items: list[dict], edited, fields: tuple[str, ...], prefix: str,
-                limit: int, dismissed: list[str]) -> tuple[list[dict], list[str]]:
+def _upsert(items: list[dict], raw: dict, fields: tuple[str, ...], prefix: str,
+            limit: int, dismissed: list[str]) -> tuple[list[dict], list[str]]:
     """
-    The list as the user left it. A changed or new row becomes theirs; a row
-    they left alone keeps its author; a stored row they took out is dismissed,
-    so learning won't bring it back.
+    One row as the user saved it — only that row changes, so a panel that
+    hasn't seen what learning added since can't undo it. A changed or new row
+    becomes theirs; one saved as it was keeps its author. Adding a name that's
+    already there changes that row.
     """
-    stored = {i["id"]: i for i in items}
-    result: list[dict] = []
-    kept: set[str] = set()
-    for raw in _list(edited):
-        if not isinstance(raw, dict):
-            continue
-        old = stored.get(raw.get("id") or "")
-        sent = {field: raw[field] for field in fields if field in raw}
-        item = _item({**(old or {}), **sent, "by": YOU}, fields, prefix)
-        if not item or item["zh"] in {r["zh"] for r in result} or len(result) >= limit:
-            continue
-        if old:
-            item["id"] = old["id"]
-            kept.add(old["id"])
-            if all(item[field] == old[field] for field in fields):
-                item["by"] = old["by"]
-        result.append(item)
-    names = {r["zh"] for r in result}
-    removed = [i["zh"] for i in items if i["id"] not in kept and i["zh"] not in names]
-    return result, [z for z in dict.fromkeys([*dismissed, *removed]) if z not in names]
+    sent = {field: raw[field] for field in fields if raw.get(field) is not None}
+    old = next((i for i in items if raw.get("id") and i["id"] == raw["id"]), None)
+    item = _item({**(old or {}), **sent, "by": YOU}, fields, prefix)
+    if item is None:
+        return items, dismissed
+    target = old or next((i for i in items if i["zh"] == item["zh"]), None)
+    if target is None:
+        if len(items) >= limit:
+            return items, dismissed
+        out = [*items, item]
+    else:
+        item["id"] = target["id"]
+        if all(item[field] == target[field] for field in fields):
+            item["by"] = target["by"]
+        out = [item if i is target else i for i in items if i is target or i["zh"] != item["zh"]]
+    return out, [z for z in dismissed if z != item["zh"]]
+
+
+def _remove(items: list[dict], item_id: str, dismissed: list[str]) -> tuple[list[dict], list[str]]:
+    """Take a row out and remember its name, so learning won't bring it back."""
+    gone = next((i for i in items if i["id"] == item_id), None)
+    if gone is None:
+        return items, dismissed
+    return [i for i in items if i is not gone], list(dict.fromkeys([*dismissed, gone["zh"]]))
 
 
 def apply_user_edit(notes, edit: dict) -> dict:
     """
     Apply what the user changed. Every key is optional: `intro`, `tone`,
-    `characters` / `words` (the whole list as the user left it, rows keeping
-    their `id`), `summaries` {job id: text} (an empty text removes it).
+    `character` / `word` (one row; with its `id` it changes that row, without
+    it adds one), `remove_character` / `remove_word` (a row's id) and
+    `summaries` {job id: text} (an empty text removes it).
     """
     out = normalize(notes)
     edit = _dict(edit)
@@ -197,12 +203,13 @@ def apply_user_edit(notes, edit: dict) -> dict:
         out["intro"] = _text(edit["intro"], MAX_INTRO)
     if isinstance(edit.get("tone"), str):
         out["tone"] = {"text": _text(edit["tone"], MAX_TONE), "by": YOU}
-    if isinstance(edit.get("characters"), list):
-        out["characters"], out["dismissed"]["characters"] = _edit_items(
-            out["characters"], edit["characters"], _CHARACTER_FIELDS, "c", MAX_CHARACTERS, out["dismissed"]["characters"])
-    if isinstance(edit.get("words"), list):
-        out["words"], out["dismissed"]["words"] = _edit_items(
-            out["words"], edit["words"], _WORD_FIELDS, "w", MAX_WORDS, out["dismissed"]["words"])
+    for kind, fields, prefix, limit in (("character", _CHARACTER_FIELDS, "c", MAX_CHARACTERS),
+                                        ("word", _WORD_FIELDS, "w", MAX_WORDS)):
+        key = f"{kind}s"
+        if isinstance(edit.get(kind), dict):
+            out[key], out["dismissed"][key] = _upsert(out[key], edit[kind], fields, prefix, limit, out["dismissed"][key])
+        if isinstance(edit.get(f"remove_{kind}"), str):
+            out[key], out["dismissed"][key] = _remove(out[key], edit[f"remove_{kind}"], out["dismissed"][key])
     for job_id, summary in _dict(edit.get("summaries")).items():
         text = _text(summary, MAX_SUMMARY)
         if text:

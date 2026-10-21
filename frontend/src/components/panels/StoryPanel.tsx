@@ -99,10 +99,12 @@ function TextNote({ value, multiline, placeholder, saving, onSave }: {
 interface Row { id: string; zh: string; km: string; detail: string; by: StoryBy }
 type RowIn = { id?: string; zh: string; km: string; detail: string }
 
-/** Characters or words to keep: click a row to change it; the whole list is saved. */
-function ItemRows({ rows, detailPlaceholder, addLabel, saving, onSave }: {
+/** Characters or words to keep: click a row to change it. Only that row is saved, so rows
+ *  learning added meanwhile (not on screen yet) are never touched. */
+function ItemRows({ rows, detailPlaceholder, addLabel, saving, onSave, onRemove }: {
   rows: Row[]; detailPlaceholder: string; addLabel: string; saving: boolean
-  onSave: (rows: RowIn[], done: () => void) => void
+  onSave: (row: RowIn, done: () => void) => void
+  onRemove: (id: string, done: () => void) => void
 }) {
   const [editing, setEditing] = useState<string | null>(null)   // a row's id, or 'new'
   const [form, setForm] = useState({ zh: '', km: '', detail: '' })
@@ -111,10 +113,9 @@ function ItemRows({ rows, detailPlaceholder, addLabel, saving, onSave }: {
     setForm(row ? { zh: row.zh, km: row.km, detail: row.detail } : { zh: '', km: '', detail: '' })
   }
   const close = () => setEditing(null)
-  const plain: RowIn[] = rows.map(({ id, zh, km, detail }) => ({ id, zh, km, detail }))
   const save = () => {
     if (!form.zh.trim()) return
-    onSave(editing === 'new' ? [...plain, form] : plain.map((r) => (r.id === editing ? { ...r, ...form } : r)), close)
+    onSave(editing === 'new' || !editing ? form : { id: editing, ...form }, close)
   }
   const field = (key: keyof typeof form) => ({
     value: form[key],
@@ -138,7 +139,7 @@ function ItemRows({ rows, detailPlaceholder, addLabel, saving, onSave }: {
       <EditButtons
         onSave={save}
         onCancel={close}
-        onDelete={editing !== 'new' ? () => onSave(plain.filter((r) => r.id !== editing), close) : undefined}
+        onDelete={editing && editing !== 'new' ? () => onRemove(editing, close) : undefined}
         saving={saving}
         canSave={!!form.zh.trim()}
       />
@@ -311,7 +312,8 @@ function StoryNotes({ projectId, jobId }: { projectId: string; jobId?: string })
             detailPlaceholder="Man or woman, age, how they speak and are addressed"
             addLabel="Add character"
             saving={update.isPending}
-            onSave={(rows, done) => save({ characters: rows.map(({ id, zh, km, detail }) => ({ id, zh, km, about: detail })) }, done)}
+            onSave={({ id, zh, km, detail }, done) => save({ character: { id, zh, km, about: detail } }, done)}
+            onRemove={(id, done) => save({ remove_character: id }, done)}
           />
         </Section>
         <Section title="Words to keep" aside={<span className="text-[9.5px] text-ink-600 tabular-nums">{story.words.length || ''}</span>}>
@@ -320,7 +322,8 @@ function StoryNotes({ projectId, jobId }: { projectId: string; jobId?: string })
             detailPlaceholder="Note (optional)"
             addLabel="Add word"
             saving={update.isPending}
-            onSave={(rows, done) => save({ words: rows.map(({ id, zh, km, detail }) => ({ id, zh, km, note: detail })) }, done)}
+            onSave={({ id, zh, km, detail }, done) => save({ word: { id, zh, km, note: detail } }, done)}
+            onRemove={(id, done) => save({ remove_word: id }, done)}
           />
         </Section>
         <Section title="Story so far">

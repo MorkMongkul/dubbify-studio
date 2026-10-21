@@ -11,7 +11,9 @@ wrote or corrected.
 
 Runs as a background task, one run per project, LEARN_BATCH episodes per
 request: the first run typically reads episodes 1–5 together, later ones the
-episode just finished. The run's state lives in memory (learning_state), so
+episode just finished. An answer that doesn't fit (Gemini 3's thinking counts
+toward the output limit; long episodes make long answers) or takes too long
+is asked again in halves, down to one episode. The run's state lives in memory (learning_state), so
 the Story panel can show it; a restart ends a run, and the episodes it hadn't
 reached are read by the next one. No database session stays open during a
 Gemini call, and each answer is merged into the notes as they are by then
@@ -33,6 +35,14 @@ from app.services.translator import GeminiError, _gemini_with_retries
 logger = logging.getLogger(__name__)
 
 LEARN_BATCH = 5
+LEARN_MAX_OUTPUT_TOKENS = 32768   # thinking + the answer, which re-lists every character and word
+
+
+class AnswerCutOff(GeminiError):
+    """The answer didn't fit (MAX_TOKENS) or took too long: fewer episodes per request will."""
+
+    def __init__(self, message: str):
+        super().__init__(message, transient=False)
 
 _runs: dict[str, dict] = {}   # project id → {"state", "message"}; absent = idle
 
@@ -122,15 +132,18 @@ def _payload(notes_text: str, batch: list[dict]) -> dict:
         f"=== Episode {e['number']} ===" + (f" ({e['title']})" if e["title"] else "") + "\n" + "\n".join(e["lines"])
         for e in batch)
     text = (notes_text or "No notes yet.") + "\n\nEPISODES TO LEARN FROM:\n\n" + episodes
+    config = {
+        "temperature": 0.2,
+        "maxOutputTokens": LEARN_MAX_OUTPUT_TOKENS,
+        "responseMimeType": "application/json",
+        "responseSchema": _RESPONSE_SCHEMA,
+    }
+    if gemini_models.current_model("chat").startswith("gemini-3"):
+        config["thinkingConfig"] = {"thinkingLevel": "low"}   # as the ASR does; Gemini 3 defaults to high
     return {
         "systemInstruction": {"parts": [{"text": _INSTRUCTION}]},
         "contents": [{"role": "user", "parts": [{"text": text}]}],
-        "generationConfig": {
-            "temperature": 0.2,
-            "maxOutputTokens": 8192,
-            "responseMimeType": "application/json",
-            "responseSchema": _RESPONSE_SCHEMA,
-        },
+        "generationConfig": config,
     }
 
 
@@ -139,6 +152,8 @@ async def _ask_gemini(payload: dict) -> dict:
     async def call() -> dict:
         try:
             resp = await gemini_models.generate_content("chat", payload, timeout=httpx.Timeout(180.0, connect=10.0))
+        except httpx.TimeoutException as e:
+            raise AnswerCutOff("Gemini took too long to answer") from e
         except httpx.HTTPError as e:
             raise GeminiError(f"Gemini request failed ({type(e).__name__})", transient=True) from e
         if resp.status_code != 200:
@@ -146,7 +161,7 @@ async def _ask_gemini(payload: dict) -> dict:
                               transient=resp.status_code == 429 or resp.status_code >= 500)
         candidate = (resp.json().get("candidates") or [{}])[0]
         if candidate.get("finishReason") == "MAX_TOKENS":
-            raise GeminiError("Gemini's answer was cut off", transient=False)
+            raise AnswerCutOff("Gemini's answer was cut off")
         text = "".join(p.get("text", "") for p in candidate.get("content", {}).get("parts", []) if not p.get("thought"))
         try:
             return json.loads(text)
@@ -178,6 +193,21 @@ async def _merge(project_id: str, learned: dict, job_ids: list[str]) -> None:
         await db.commit()
 
 
+async def _learn_episodes(project_id: str, notes_text: str, episodes: list[dict]) -> None:
+    """Ask about these episodes and merge the answer; one that doesn't fit is asked again in halves."""
+    try:
+        answer = await _ask_gemini(_payload(notes_text, episodes))
+    except AnswerCutOff:
+        if len(episodes) == 1:
+            raise
+        half = len(episodes) // 2
+        await _learn_episodes(project_id, notes_text, episodes[:half])
+        await _learn_episodes(project_id, notes_text, episodes[half:])
+        return
+    await _merge(project_id, _learned(answer, {e["number"]: e["job_id"] for e in episodes}),
+                 [e["job_id"] for e in episodes])
+
+
 async def learn_from_finished(project_id: str) -> None:
     """Read every finished episode the notes haven't learned yet, a batch at a time (background task)."""
     numbers: list[int] = []
@@ -189,11 +219,11 @@ async def learn_from_finished(project_id: str) -> None:
             numbers = [e["number"] for e in batch]
             _runs[project_id] = {"state": "running", "message": f"Reading {_episodes_label(numbers)}…"}
             spoken = [e for e in batch if e["lines"]]
-            learned = {}
-            if spoken:      # an episode without lines has nothing to teach, but counts as read
-                answer = await _ask_gemini(_payload(notes_text, spoken))
-                learned = _learned(answer, {e["number"]: e["job_id"] for e in spoken})
-            await _merge(project_id, learned, [e["job_id"] for e in batch])
+            if spoken:
+                await _learn_episodes(project_id, notes_text, spoken)
+            silent = [e["job_id"] for e in batch if not e["lines"]]
+            if silent:      # an episode without lines has nothing to teach, but counts as read
+                await _merge(project_id, {}, silent)
         _runs.pop(project_id, None)
     except Exception as e:
         logger.warning(f"Story notes for project {project_id[:8]}: learning stopped — {e}")

@@ -295,6 +295,14 @@ class ThreadNotFound(LookupError):
     """The chat to continue isn't one of this project's."""
 
 
+class ChatTurnFailed(RuntimeError):
+    """Gemini failed after the message was saved: says which chat it's in, so a retry continues there."""
+
+    def __init__(self, message: str, thread_id: str):
+        super().__init__(message)
+        self.thread_id = thread_id
+
+
 def thread_title(text: str) -> str:
     """A chat's name: its first message on one line, at most 60 characters."""
     title = " ".join((text or "").split())
@@ -408,7 +416,9 @@ async def run_chat_turn(
     that kept the connection open the whole time would block every other
     request (job polls, segment fetches) for however long Gemini takes.
     """
-    # Before anything is saved: a message about a line that's gone is refused (LineNotFound)
+    # Before anything is saved: without a key, or about a line that's gone (LineNotFound), nothing is
+    if not settings.GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not set — the Assistant needs it to run.")
     line_ref = await _line_ref(db, project, line_id) if line_id else None
     if thread_id:
         thread = (await db.execute(
@@ -442,7 +452,10 @@ async def run_chat_turn(
     contents = _messages_to_contents(history) + _messages_to_contents([user_msg])
 
     for _round in range(max(1, settings.CHAT_MAX_TOOL_ROUNDS)):
-        model_content = await _call_gemini(contents, system)
+        try:
+            model_content = await _call_gemini(contents, system)
+        except RuntimeError as e:
+            raise ChatTurnFailed(str(e), thread.id) from e
         parts = model_content.get("parts", [])
         function_call_part = next((p for p in parts if "functionCall" in p), None)
         text = "".join(p.get("text", "") for p in parts if "text" in p)

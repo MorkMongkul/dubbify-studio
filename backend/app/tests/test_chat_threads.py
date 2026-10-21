@@ -9,6 +9,12 @@ from app.models.models import ChatMessage, ChatProposedEdit, ChatThread, Job, Pr
 from app.services import chat_agent
 
 
+
+@pytest.fixture(autouse=True)
+def gemini_key(monkeypatch):
+    """The Assistant checks for a key before saving anything; these tests fake Gemini itself."""
+    monkeypatch.setattr(chat_agent.settings, "GEMINI_API_KEY", "test-key")
+
 async def _project(db_sessionmaker) -> tuple[str, str]:
     """A project with one line; returns (project id, segment id)."""
     async with db_sessionmaker() as s:
@@ -145,3 +151,31 @@ async def test_deleting_a_project_deletes_its_chats(client, db_sessionmaker, mon
     assert (await client.delete(f"/api/v1/projects/{project_id}")).status_code == 204
     async with db_sessionmaker() as s:
         assert (await s.execute(select(ChatThread))).scalars().all() == []
+
+
+
+@pytest.mark.asyncio
+async def test_without_a_key_nothing_is_saved(client, db_sessionmaker, monkeypatch):
+    project_id, _ = await _project(db_sessionmaker)
+    monkeypatch.setattr(chat_agent.settings, "GEMINI_API_KEY", "")
+    assert (await _send(client, project_id, "hi")).status_code == 502
+    assert (await client.get(f"/api/v1/chat/{project_id}/threads")).json() == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_first_message_keeps_its_chat(client, db_sessionmaker, monkeypatch):
+    project_id, _ = await _project(db_sessionmaker)
+
+    async def busy(contents, system=None):
+        raise RuntimeError("Gemini 503")
+
+    monkeypatch.setattr(chat_agent, "_call_gemini", busy)
+    failed = await _send(client, project_id, "How was 老公 translated?")
+    assert failed.status_code == 502
+    thread_id = failed.json()["thread_id"]          # the chat the message was saved in
+    assert failed.json()["detail"] == "Gemini 503"
+
+    _fake(monkeypatch)
+    assert (await _send(client, project_id, "How was 老公 translated?", thread_id)).status_code == 200
+    threads = (await client.get(f"/api/v1/chat/{project_id}/threads")).json()
+    assert [(t["id"], t["message_count"]) for t in threads] == [(thread_id, 3)]

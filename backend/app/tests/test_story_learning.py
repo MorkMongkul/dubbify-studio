@@ -166,7 +166,7 @@ async def test_an_edit_made_while_learning_survives(client, background_db, gemin
         async with background_db() as s:
             project = await s.get(Project, project_id)
             project.story_notes = story_notes.apply_user_edit(
-                project.story_notes, {"intro": "Typed while it learned", "words": [{"zh": "主任", "km": "ប្រធាន"}]})
+                project.story_notes, {"intro": "Typed while it learned", "word": {"zh": "主任", "km": "ប្រធាន"}})
             await s.commit()
 
     _fake_gemini(monkeypatch, before_answering=user_edits_meanwhile)
@@ -240,7 +240,7 @@ async def test_story_edit_marks_items_as_yours(client, background_db, gemini_key
     character = (await _story(client, project_id))["characters"][0]
 
     resp = await client.patch(f"/api/v1/projects/{project_id}/story",
-                              json={"characters": [{**character, "km": "វ៉ាងថ្មី"}], "tone": "Bright"})
+                              json={"character": {**character, "km": "វ៉ាងថ្មី"}, "tone": "Bright"})
     assert resp.status_code == 200
     edited = resp.json()
     assert (edited["characters"][0]["km"], edited["characters"][0]["by"]) == ("វ៉ាងថ្មី", "you")
@@ -271,3 +271,41 @@ async def test_translation_prompt_carries_the_story(monkeypatch):
     assert with_story.index("ABOUT THIS DRAMA") < with_story.index("STEP 1")
     assert "use it instead of guessing" in with_story
     assert "ABOUT THIS DRAMA" not in without
+
+
+@pytest.mark.asyncio
+async def test_a_batch_too_big_for_one_answer_is_split(client, background_db, gemini_key, monkeypatch):
+    project_id, _ = await _seed_episodes(background_db, count=3, finished=(1, 2, 3))
+    sizes: list[int] = []
+
+    async def fake(payload):
+        n = _prompt(payload).count("=== Episode ")
+        sizes.append(n)
+        if n > 1:
+            raise story_learning.AnswerCutOff("Gemini's answer was cut off")
+        return _answer(payload)
+
+    monkeypatch.setattr(story_learning, "_ask_gemini", fake)
+    await client.post(f"/api/v1/projects/{project_id}/story/learn")
+
+    story = await _story(client, project_id)
+    assert story["learning"]["state"] == "idle"
+    assert [(e["learned"], e["summary"]) for e in story["episodes"]] == [(True, "Plot 1"), (True, "Plot 2"), (True, "Plot 3")]
+    assert sizes == [3, 1, 2, 1, 1]
+
+
+@pytest.mark.asyncio
+async def test_one_episode_that_still_does_not_fit_fails_and_says_why(client, background_db, gemini_key, monkeypatch):
+    project_id, _ = await _seed_episodes(background_db, count=1, finished=(1,))
+    _fake_gemini(monkeypatch, answer=story_learning.AnswerCutOff("Gemini's answer was cut off"))
+    await client.post(f"/api/v1/projects/{project_id}/story/learn")
+    learning = (await _story(client, project_id))["learning"]
+    assert learning["state"] == "failed" and "cut off" in learning["message"]
+
+
+def test_learning_leaves_room_for_thinking():
+    episode = {"number": 1, "job_id": "j1", "title": "", "lines": ["[SPEAKER_00] 你好 → សួស្តី"]}
+    config = story_learning._payload("", [episode])["generationConfig"]
+    # Thinking counts toward the output limit, and five episodes make a long answer
+    assert config["maxOutputTokens"] >= 32768
+    assert config["thinkingConfig"] == {"thinkingLevel": "low"}

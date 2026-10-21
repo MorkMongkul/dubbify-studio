@@ -607,11 +607,13 @@ class StoryWordIn(BaseModel):
 
 
 class StoryEdit(BaseModel):
-    """What the user changed; lists are the whole list as they left it."""
+    """What the user changed, one row at a time (a row the panel hasn't seen is never touched)."""
     intro: Optional[str] = Field(None, max_length=4000)
     tone: Optional[str] = Field(None, max_length=600)
-    characters: Optional[List[StoryCharacterIn]] = Field(None, max_length=60)
-    words: Optional[List[StoryWordIn]] = Field(None, max_length=150)
+    character: Optional[StoryCharacterIn] = None        # with an id: change that row; without: add one
+    remove_character: Optional[str] = Field(None, max_length=40)
+    word: Optional[StoryWordIn] = None
+    remove_word: Optional[str] = Field(None, max_length=40)
     summaries: Optional[dict[str, str]] = None
 
     @field_validator("summaries")

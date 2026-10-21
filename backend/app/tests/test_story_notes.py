@@ -38,17 +38,14 @@ def test_learning_adds_and_updates_only_its_own_items():
 
 def test_a_removed_item_is_not_learned_again():
     notes = sn.normalize({"characters": [_char("王医生", "វ៉ាង"), _char("小美", "ម៉ី")]})
-    edited = sn.apply_user_edit(notes, {"characters": [{"id": "c_王医生", "zh": "王医生", "km": "វ៉ាង", "about": ""}]})
+    edited = sn.apply_user_edit(notes, {"remove_character": "c_小美"})
     assert [c["zh"] for c in edited["characters"]] == ["王医生"]
     assert "小美" in edited["dismissed"]["characters"]
 
     learned = sn.merge_learned(edited, {"characters": [{"zh": "小美", "km": "ម៉ី", "about": "woman"}]}, ["j1"])
     assert [c["zh"] for c in learned["characters"]] == ["王医生"]
 
-    back = sn.apply_user_edit(learned, {"characters": [
-        {"id": "c_王医生", "zh": "王医生", "km": "វ៉ាង", "about": ""},
-        {"zh": "小美", "km": "ម៉ី", "about": "woman"},
-    ]})
+    back = sn.apply_user_edit(learned, {"character": {"zh": "小美", "km": "ម៉ី", "about": "woman"}})
     assert "小美" not in back["dismissed"]["characters"]
     assert {c["zh"]: c["by"] for c in back["characters"]} == {"王医生": "ai", "小美": "you"}
 
@@ -74,17 +71,15 @@ def test_edits_mark_changed_items_as_yours():
         "characters": [_char("王医生", "វ៉ាង", speaker="SPEAKER_03"), _char("小美", "ម៉ី")],
         "words": [{"id": "w_1", "zh": "主任", "km": "ប្រធាន", "note": "", "by": "ai"}],
     })
-    edited = sn.apply_user_edit(notes, {
-        "characters": [
-            {"id": "c_王医生", "zh": "王医生", "km": "វ៉ាង", "about": ""},   # unchanged (speaker not sent)
-            {"id": "c_小美", "zh": "小美", "km": "ម៉ីម៉ី", "about": ""},     # changed
-            {"zh": "刘护士", "km": "លីវ", "about": "woman"},               # new
-        ],
-        "words": [],
-        "intro": "  A hospital drama.  ",
-        "tone": "Light and fast",
-        "summaries": {"j1": "My summary"},
-    })
+    edited = notes
+    for edit in (
+        {"character": {"id": "c_王医生", "zh": "王医生", "km": "វ៉ាង", "about": ""}},   # saved unchanged (speaker not sent)
+        {"character": {"id": "c_小美", "zh": "小美", "km": "ម៉ីម៉ី", "about": ""}},     # changed
+        {"character": {"zh": "刘护士", "km": "លីវ", "about": "woman"}},               # new
+        {"remove_word": "w_1"},
+        {"intro": "  A hospital drama.  ", "tone": "Light and fast", "summaries": {"j1": "My summary"}},
+    ):
+        edited = sn.apply_user_edit(edited, edit)
     by_zh = {c["zh"]: c for c in edited["characters"]}
     assert (by_zh["王医生"]["by"], by_zh["王医生"]["speaker"]) == ("ai", "SPEAKER_03")
     assert by_zh["小美"]["by"] == "you"
@@ -133,3 +128,17 @@ def test_translation_block_names_characters_and_words():
     assert sn.for_translation(None, "j", ["j"]) == ""
     assistant = sn.for_assistant(notes, ["j1"])
     assert assistant.startswith("STORY NOTES FOR THIS PROJECT") and "王医生" in assistant
+
+
+def test_a_row_edit_only_touches_that_row():
+    # Learning updated 王医生 and added 小美 after the panel last loaded; the
+    # panel's save of another row must leave them as they are
+    server = sn.normalize({"characters": [_char("王医生", "វ៉ាង", "updated by learning"), _char("小美", "ម៉ី")]})
+    edited = sn.apply_user_edit(server, {"character": {"zh": "刘护士", "km": "លីវ", "about": "woman"}})
+    by_zh = {c["zh"]: (c["about"], c["by"]) for c in edited["characters"]}
+    assert by_zh == {"王医生": ("updated by learning", "ai"), "小美": ("", "ai"), "刘护士": ("woman", "you")}
+    assert edited["dismissed"]["characters"] == []
+    # Adding a name that's already there changes that row instead of doubling it
+    again = sn.apply_user_edit(edited, {"character": {"zh": "小美", "km": "ម៉ី", "about": "intern"}})
+    assert [c["zh"] for c in again["characters"]].count("小美") == 1
+    assert {c["zh"]: c["about"] for c in again["characters"]}["小美"] == "intern"

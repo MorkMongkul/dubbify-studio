@@ -539,11 +539,13 @@ export interface StoryView {
   can_learn: boolean
 }
 
-/** What the user changed; a list is the whole list as they left it, rows keeping their id. */
+/** What the user changed, one row at a time: a row with an id changes it, without one adds it. */
 export interface StoryEdit {
   intro?: string
   tone?: string
-  characters?: { id?: string; zh: string; km: string; about: string }[]
-  words?: { id?: string; zh: string; km: string; note: string }[]
+  character?: { id?: string; zh: string; km: string; about: string }
+  remove_character?: string
+  word?: { id?: string; zh: string; km: string; note: string }
+  remove_word?: string
   summaries?: Record<string, string>
 }

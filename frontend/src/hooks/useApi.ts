@@ -2,6 +2,7 @@
 // React Query hooks — data fetching, caching, polling
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import type { AxiosError } from 'axios'
 import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions, chat, appSettings, story } from '@/api/client'
 import type { VoiceCreateInput } from '@/api/client'
 import { useEditorStore } from '@/store/editorStore'
@@ -661,9 +662,17 @@ export function useSendChatMessage() {
       // A tool call may have applied an auto-mode edit straight to a segment.
       qc.invalidateQueries({ queryKey: ['segments'] })
     },
-    onError: (_err, { projectId, threadId }, sending) => {
+    onError: (err, { projectId, threadId }, sending) => {
       if (sending) {
         qc.setQueryData<ChatMessage[]>(chatMessagesKey(projectId, threadId), (list = []) => withTurn(list, sending.standInId, []))
+      }
+      // A new chat's first message was saved before the AI failed: open that
+      // chat, so sending again continues it instead of starting another
+      const savedIn = (err as AxiosError<{ thread_id?: string }>).response?.data?.thread_id
+      if (!threadId && savedIn) {
+        const { assistantThreads, setAssistantThread } = useEditorStore.getState()
+        if (!assistantThreads[projectId]) setAssistantThread(projectId, savedIn)
+        qc.invalidateQueries({ queryKey: ['chat-messages', savedIn] })
       }
       qc.invalidateQueries({ queryKey: ['chat-threads', projectId] })
     },
@@ -734,6 +743,7 @@ export function useUpdateAppSettings() {
     onSuccess: (data) => {
       qc.setQueryData(['app-settings'], data)
       qc.invalidateQueries({ queryKey: ['gemini-models'] })   // a new key or choice changes the list
+      qc.invalidateQueries({ queryKey: ['story'] })           // the Story panel says whether it can learn
     },
   })
 }

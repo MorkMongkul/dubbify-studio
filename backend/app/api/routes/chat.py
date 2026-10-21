@@ -8,6 +8,7 @@ app/services/chat_agent.py for the actual Gemini tool-calling loop.
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,7 +19,8 @@ from app.schemas.schemas import (
 )
 from app.services.pipeline_common import episode_ids
 from app.services.chat_agent import (
-    LineNotFound, ThreadNotFound, adopt_unthreaded, apply_edit_to_segment, message_order, naive_utcnow, run_chat_turn,
+    ChatTurnFailed, LineNotFound, ThreadNotFound, adopt_unthreaded, apply_edit_to_segment, message_order, naive_utcnow,
+    run_chat_turn,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,6 +93,10 @@ async def send_message(project_id: str, payload: ChatSendRequest, db: AsyncSessi
             db, project, payload.text.strip(), thread_id=payload.thread_id, line_id=payload.line_id)
     except (LineNotFound, ThreadNotFound) as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ChatTurnFailed as e:
+        # The message is saved in a chat (a new one, if none was given): say which
+        logger.error(f"Assistant chat turn failed for project {project_id[:8]}: {e}")
+        return JSONResponse(status_code=502, content={"detail": str(e), "thread_id": e.thread_id})
     except RuntimeError as e:
         logger.error(f"Assistant chat turn failed for project {project_id[:8]}: {e}")
         raise HTTPException(status_code=502, detail=str(e))
