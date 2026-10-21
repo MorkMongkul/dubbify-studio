@@ -6,7 +6,7 @@
 import { useNavigate } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
 import {
-  FolderOpen, Users, ImagePlus, Mic, Bot, Settings2, Sun, Moon,
+  FolderOpen, Users, ImagePlus, Mic, Bot, Settings, Sun, Moon,
 } from 'lucide-react'
 import { useEditorStore, type RailTab } from '@/store/editorStore'
 import { useThemeStore } from '@/store/themeStore'
@@ -92,7 +92,7 @@ export function EditorRail() {
       <RailButton
         active={railTab === 'settings'}
         label="Settings"
-        icon={Settings2}
+        icon={Settings}
         onClick={() => setRailTab('settings')}
       />
     </aside>

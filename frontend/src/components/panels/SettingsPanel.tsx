@@ -3,7 +3,7 @@
 // In the desktop app keys are saved to the user's own settings file (never
 // shown back); during development they come from backend/.env (read-only here).
 import { useState } from 'react'
-import { Sun, Moon, Settings2, KeyRound, HardDrive, CheckCircle2, AlertTriangle } from 'lucide-react'
+import { Sun, Moon, Settings, KeyRound, HardDrive, CheckCircle2, AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
 import { useThemeStore } from '@/store/themeStore'
 import { useAppSettings, useGeminiModels, useTestGeminiModel, useUpdateAppSettings } from '@/hooks/useApi'
@@ -362,7 +362,7 @@ export function SettingsPanel() {
 
   return (
     <div className="h-full flex flex-col min-h-0">
-      <PanelHeader icon={Settings2} title="Settings" />
+      <PanelHeader icon={Settings} title="Settings" />
       <div className="flex-1 overflow-y-auto p-3 space-y-5">
         {appSettings && (
           <>
