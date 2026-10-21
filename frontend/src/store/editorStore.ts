@@ -5,8 +5,9 @@ import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import type { JobAction } from '@/lib/jobProgress'
 
-// Which panel the left icon rail has open in the dynamic dock.
-export type RailTab = 'projects' | 'speakers' | 'elements' | 'voices' | 'assistant' | 'settings'
+// Which panel the left icon rail has open in the dynamic dock. Settings is a
+// window of its own (settingsOpen), not a panel.
+export type RailTab = 'projects' | 'speakers' | 'elements' | 'voices' | 'assistant'
 
 export interface VoicePreset {
   id: string
@@ -91,6 +92,9 @@ interface EditorStore {
   // on real context changes instead.
   railTab: RailTab
   setRailTab: (t: RailTab) => void
+  // The Settings window (the rail's gear, or ⌘,). Outside DEFAULT_STATE too.
+  settingsOpen: boolean
+  setSettingsOpen: (open: boolean) => void
 
   // Panel visibility
   leftPanelCollapsed: boolean
@@ -180,6 +184,8 @@ export const useEditorStore = create<EditorStore>()(
     setRailTab: (t) => {
       if (get().railTab !== t) set({ railTab: t })
     },
+    settingsOpen: false,
+    setSettingsOpen: (open) => set({ settingsOpen: open }),
 
     // ── Batch voice generation (not part of DEFAULT_STATE) ─────
     // The backend batch keeps running no matter where the user navigates;
