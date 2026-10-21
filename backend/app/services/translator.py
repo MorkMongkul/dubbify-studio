@@ -280,6 +280,7 @@ async def _translate_batch_with_gemini(
     source_lang: str,
     target_lang: str,
     segments_context: list = None,
+    story: str = "",
 ) -> list[str]:
     """
     Translate ALL lines in a single Gemini API call.
@@ -312,9 +313,18 @@ async def _translate_batch_with_gemini(
         if text.strip()
     )
 
+    # The project's story notes (story_notes.for_translation): names, genders and
+    # forms of address from the user and from finished episodes, so they stay
+    # the same from one episode to the next instead of being guessed afresh.
+    story_block = f"{story}\n\n" if story else ""
+    story_rule = (
+        "\n- If ABOUT THIS DRAMA gives a character's gender or how they address\n"
+        "  someone, use it instead of guessing." if story else ""
+    )
+
     prompt = f"""You are a professional {tgt_name} dubbing scriptwriter with expertise in {src_name} drama/film.
 
-STEP 1 — ANALYZE THE SCENE (do this internally, don't write it out):
+{story_block}STEP 1 — ANALYZE THE SCENE (do this internally, don't write it out):
 Read all the lines below, in order. Each line is tagged with [SPEAKER_XX] —
 use these tags to follow the conversation:
 - Consecutive lines with the SAME speaker tag are one character continuing a
@@ -329,7 +339,7 @@ use these tags to follow the conversation:
   "老公"/"husband"). Once you decide a speaker's gender, use it CONSISTENTLY
   for every line from that same tag — never switch mid-conversation. If a
   speaker's gender truly cannot be determined from anything in the lines,
-  prefer using their name (if one is known) over guessing a gendered term.
+  prefer using their name (if one is known) over guessing a gendered term.{story_rule}
 From the full set of lines, determine:
 - Era: Is this ancient/wuxia/xianxia (immortals, cultivation, dynasty) or modern/contemporary?
 - Tone: Formal/royal, family drama, action, comedy, romantic?
@@ -467,10 +477,11 @@ async def _finish_lines(
 
 async def _translate_chunk(
     chunk: list[str], source_lang: str, target_lang: str, ctx: list | None, report: TranslationReport,
+    story: str = "",
 ) -> list[str]:
     """Gemini for one chunk: retried call, then one more request for any lines its answer left out."""
     try:
-        results = await _gemini_with_retries(_translate_batch_with_gemini, chunk, source_lang, target_lang, ctx)
+        results = await _gemini_with_retries(_translate_batch_with_gemini, chunk, source_lang, target_lang, ctx, story)
     except Exception as e:
         report.gemini_error = report.gemini_error or str(e)[:300]
         logger.error(f"Gemini translation failed: {e} — these lines go to the fallback")
@@ -485,6 +496,7 @@ async def _translate_chunk(
                 _translate_batch_with_gemini,
                 [chunk[i] for i in missing], source_lang, target_lang,
                 [ctx[i] for i in missing] if ctx else None,
+                story,
             )
             for i, res in zip(missing, again):
                 if not _needs_translation(chunk[i], res, source_lang):
@@ -500,11 +512,13 @@ async def translate_batch_with_report(
     source_lang: str = "zh",
     target_lang: str = "km",
     segments_context: list = None,
+    story: str = "",
 ) -> tuple[list[str], TranslationReport]:
     """
     Translate a batch (one Gemini call per chunk of CHUNK_SIZE lines) and report
     how it went. See the module docstring for the order of fallbacks; lines
-    nothing could translate are left "" — never the source text.
+    nothing could translate are left "" — never the source text. `story` is
+    the project's story notes as story_notes.for_translation gives them.
     """
     report = TranslationReport()
     if not texts:
@@ -520,7 +534,7 @@ async def translate_batch_with_report(
             logger.info(
                 f"Translating lines {start + 1}-{start + len(chunk)} of {len(texts)} → {target_lang}"
             )
-            results.extend(await _translate_chunk(chunk, source_lang, target_lang, ctx, report))
+            results.extend(await _translate_chunk(chunk, source_lang, target_lang, ctx, report, story))
         return await _finish_lines(texts, results, source_lang, target_lang, report, count_fallback=True), report
 
     # deep-translator as the configured backend (or Gemini configured without a key)

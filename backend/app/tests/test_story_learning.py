@@ -248,3 +248,26 @@ async def test_story_edit_marks_items_as_yours(client, background_db, gemini_key
 
     too_long = await client.patch(f"/api/v1/projects/{project_id}/story", json={"intro": "x" * 4001})
     assert too_long.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_translation_prompt_carries_the_story(monkeypatch):
+    from app.services import translator
+    prompts: list[str] = []
+
+    async def fake_post(payload, timeout):
+        prompts.append(payload["contents"][0]["parts"][0]["text"])
+        raise translator.GeminiError("captured", transient=False)
+
+    monkeypatch.setattr(translator, "_post_translation", fake_post)
+    ctx = [{"speaker_label": "SPEAKER_00", "source_text": "你好"}]
+    block = story_notes.for_translation(story_notes.with_intro(None, "A hospital drama."), "j1", ["j1"])
+    for story in (block, ""):
+        with pytest.raises(translator.GeminiError):
+            await translator._translate_batch_with_gemini(["你好"], "zh", "km", ctx, story)
+
+    with_story, without = prompts
+    assert "Intro: A hospital drama." in with_story
+    assert with_story.index("ABOUT THIS DRAMA") < with_story.index("STEP 1")
+    assert "use it instead of guessing" in with_story
+    assert "ABOUT THIS DRAMA" not in without

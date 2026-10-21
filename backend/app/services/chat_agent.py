@@ -30,7 +30,7 @@ from sqlalchemy import select, func, or_, literal_column
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.services import gemini_models
+from app.services import gemini_models, story_notes
 from app.services.pipeline_common import episode_ids
 from app.models.models import ChatMessage, ChatProposedEdit, Job, Project, Segment, Speaker
 
@@ -255,13 +255,13 @@ _TOOL_IMPLS = {
 
 # ── Gemini call + agent loop ────────────────────────────────────
 
-async def _call_gemini(contents: list[dict]) -> dict:
+async def _call_gemini(contents: list[dict], system: str = _SYSTEM_INSTRUCTION) -> dict:
     if not settings.GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not set — the Assistant needs it to run.")
 
     payload = {
         "contents": contents,
-        "systemInstruction": {"parts": [{"text": _SYSTEM_INSTRUCTION}]},
+        "systemInstruction": {"parts": [{"text": system}]},
         "tools": [{"functionDeclarations": _TOOL_DECLARATIONS}],
         "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1024},
     }
@@ -318,6 +318,10 @@ async def run_chat_turn(db: AsyncSession, project: Project, user_text: str) -> l
     that kept the connection open the whole time would block every other
     request (job polls, segment fetches) for however long Gemini takes.
     """
+    # The project's story notes ride along in the system instruction
+    notes = story_notes.for_assistant(project.story_notes, await episode_ids(db, project.id))
+    system = f"{_SYSTEM_INSTRUCTION}\n\n{notes}" if notes else _SYSTEM_INSTRUCTION
+
     history_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.project_id == project.id)
@@ -334,7 +338,7 @@ async def run_chat_turn(db: AsyncSession, project: Project, user_text: str) -> l
     contents = _messages_to_contents(history) + _messages_to_contents([user_msg])
 
     for _round in range(max(1, settings.CHAT_MAX_TOOL_ROUNDS)):
-        model_content = await _call_gemini(contents)
+        model_content = await _call_gemini(contents, system)
         parts = model_content.get("parts", [])
         function_call_part = next((p for p in parts if "functionCall" in p), None)
         text = "".join(p.get("text", "") for p in parts if "text" in p)

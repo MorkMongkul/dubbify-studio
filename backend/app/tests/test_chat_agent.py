@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 import app.services.chat_agent as chat_agent
 from app.models.models import Job, Project, Segment
+from app.services import story_notes
 
 
 async def _get_segment(db_sessionmaker, seg_id: str) -> dict:
@@ -53,7 +54,7 @@ def _function_call_response(name: str, args: dict) -> dict:
 async def test_simple_text_reply_needs_no_tool_call(client, db_sessionmaker, monkeypatch):
     project_id, _ = await _make_project_with_segment(db_sessionmaker)
 
-    async def fake_call_gemini(contents):
+    async def fake_call_gemini(contents, system=None):
         return _text_response("Sure, happy to help.")
 
     monkeypatch.setattr(chat_agent, "_call_gemini", fake_call_gemini)
@@ -71,7 +72,7 @@ async def test_search_segments_tool_round_trip(client, db_sessionmaker, monkeypa
 
     calls = []
 
-    async def fake_call_gemini(contents):
+    async def fake_call_gemini(contents, system=None):
         calls.append(contents)
         if len(calls) == 1:
             return _function_call_response("search_segments", {"query": "回来"})
@@ -106,7 +107,7 @@ async def test_propose_edit_manual_mode_stages_without_touching_segment(client, 
 
     calls = []
 
-    async def fake_call_gemini(contents):
+    async def fake_call_gemini(contents, system=None):
         calls.append(contents)
         if len(calls) == 1:
             return _function_call_response("propose_edit", {
@@ -135,7 +136,7 @@ async def test_propose_edit_auto_mode_applies_immediately(client, db_sessionmake
 
     calls = []
 
-    async def fake_call_gemini(contents):
+    async def fake_call_gemini(contents, system=None):
         calls.append(contents)
         if len(calls) == 1:
             return _function_call_response("propose_edit", {
@@ -163,7 +164,7 @@ async def test_propose_edit_auto_mode_applies_immediately(client, db_sessionmake
 async def test_approve_pending_edit_applies_it(client, db_sessionmaker, monkeypatch):
     project_id, seg_id = await _make_project_with_segment(db_sessionmaker, chat_edit_mode="manual")
 
-    async def fake_call_gemini(contents):
+    async def fake_call_gemini(contents, system=None):
         if len(contents) <= 1:
             return _function_call_response("propose_edit", {
                 "segment_id": seg_id, "new_khmer_text": "ខ្ញុំមកដល់ហើយ", "reason": "more natural",
@@ -192,7 +193,7 @@ async def test_approve_pending_edit_applies_it(client, db_sessionmaker, monkeypa
 async def test_reject_pending_edit_leaves_segment_untouched(client, db_sessionmaker, monkeypatch):
     project_id, seg_id = await _make_project_with_segment(db_sessionmaker, chat_edit_mode="manual")
 
-    async def fake_call_gemini(contents):
+    async def fake_call_gemini(contents, system=None):
         if len(contents) <= 1:
             return _function_call_response("propose_edit", {
                 "segment_id": seg_id, "new_khmer_text": "ខ្ញុំមកដល់ហើយ", "reason": "more natural",
@@ -218,7 +219,7 @@ async def test_propose_edit_rejects_segment_from_another_project(client, db_sess
     project_id, _ = await _make_project_with_segment(db_sessionmaker, chat_edit_mode="auto")
     _other_project_id, other_seg_id = await _make_project_with_segment(db_sessionmaker, chat_edit_mode="auto")
 
-    async def fake_call_gemini(contents):
+    async def fake_call_gemini(contents, system=None):
         if len(contents) <= 1:
             return _function_call_response("propose_edit", {
                 "segment_id": other_seg_id, "new_khmer_text": "hijacked", "reason": "x",
@@ -237,7 +238,7 @@ async def test_tool_round_cap_surfaces_instead_of_hanging(client, db_sessionmake
     project_id, seg_id = await _make_project_with_segment(db_sessionmaker)
     monkeypatch.setattr(chat_agent.settings, "CHAT_MAX_TOOL_ROUNDS", 2)
 
-    async def always_calls_tool(contents):
+    async def always_calls_tool(contents, system=None):
         return _function_call_response("list_episodes", {})
 
     monkeypatch.setattr(chat_agent, "_call_gemini", always_calls_tool)
@@ -266,7 +267,7 @@ async def test_the_turn_after_a_tool_call_replays_history_in_order(client, db_se
     project_id, _ = await _make_project_with_segment(db_sessionmaker)
     calls = []
 
-    async def fake_call_gemini(contents):
+    async def fake_call_gemini(contents, system=None):
         calls.append(contents)
         if len(calls) == 1:
             return _function_call_response("search_segments", {"query": "回来"})
@@ -281,3 +282,25 @@ async def test_the_turn_after_a_tool_call_replays_history_in_order(client, db_se
     history = (await client.get(f"/api/v1/chat/{project_id}/messages")).json()
     shown = ["call" if m.get("function_call") else "result" if m.get("function_response") else m["role"] for m in history]
     assert shown == ["user", "call", "result", "model", "user", "model"]
+
+
+@pytest.mark.asyncio
+async def test_assistant_system_text_has_the_notes(client, db_sessionmaker, monkeypatch):
+    project_id, _ = await _make_project_with_segment(db_sessionmaker)
+    systems: list = []
+
+    async def fake_call_gemini(contents, system=None):
+        systems.append(system)
+        return _text_response("OK")
+
+    monkeypatch.setattr(chat_agent, "_call_gemini", fake_call_gemini)
+    await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "Hi"})
+    assert systems[-1] == chat_agent._SYSTEM_INSTRUCTION
+
+    async with db_sessionmaker() as s:
+        project = await s.get(Project, project_id)
+        project.story_notes = story_notes.with_intro(None, "A hospital drama in Shanghai.")
+        await s.commit()
+    await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "Hi again"})
+    assert systems[-1].startswith(chat_agent._SYSTEM_INSTRUCTION)
+    assert "A hospital drama in Shanghai." in systems[-1]

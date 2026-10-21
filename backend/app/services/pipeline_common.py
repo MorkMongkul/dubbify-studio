@@ -15,9 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.paths import resolve_existing
 from app.models.models import (
-    AgeGroup, ChatProposedEdit, Gender, Job, JobStatus, Segment, Speaker,
+    AgeGroup, ChatProposedEdit, Gender, Job, JobStatus, Project, Segment, Speaker,
 )
-from app.services import asr
+from app.services import asr, story_notes
 from app.services.diarizer import build_voice_design_prompt
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,16 @@ async def episodes(db: AsyncSession, project_id: str) -> List[Job]:
 async def episode_ids(db: AsyncSession, project_id: str) -> List[str]:
     result = await db.execute(select(Job.id).where(Job.project_id == project_id).order_by(Job.created_at))
     return [row[0] for row in result.all()]
+
+
+async def translation_story(db: AsyncSession, project_id: str, job_id: str) -> str:
+    """
+    The project's story notes for translating episode `job_id` (story_notes.
+    for_translation), read fresh: they may have learned something during a
+    long transcription. Read it before releasing the connection for Gemini.
+    """
+    notes = (await db.execute(select(Project.story_notes).where(Project.id == project_id))).scalar_one_or_none()
+    return story_notes.for_translation(notes, job_id, await episode_ids(db, project_id))
 
 
 def vocals_path_for(job: Job) -> Optional[str]:

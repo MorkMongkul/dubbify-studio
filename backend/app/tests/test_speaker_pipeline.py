@@ -19,7 +19,7 @@ from sqlalchemy import select
 import app.core.database as core_db
 from app.api.routes import jobs as jobs_routes
 from app.models.models import Job, JobStatus, Project, Segment, Speaker, Voice
-from app.services import asr, pipeline
+from app.services import asr, pipeline, story_notes
 from app.services.diarizer import DiarizedSegment
 from app.services.pipeline_common import recover_orphaned_jobs
 from app.services.translator import TranslationReport
@@ -108,11 +108,36 @@ def _fake_transcribe(segments, capture=None):
     return fake
 
 
-async def _fake_translate(texts, source_lang, target_lang, segments_context=None):
+async def _fake_translate(texts, source_lang, target_lang, segments_context=None, story=""):
     return [f"km:{t}" for t in texts], TranslationReport()
 
 
 # ── Stage 2 (run_analysis_pipeline) ───────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_translation_uses_the_project_story(monkeypatch, uploads, background_db):
+    project_id, job_id = await _seed(background_db, segments=[(0.0, 2.0, "你好", "", None, "")])
+    stories: list[str] = []
+
+    async def capture(texts, source_lang, target_lang, segments_context=None, story=""):
+        stories.append(story)
+        return [f"km:{t}" for t in texts], TranslationReport()
+
+    monkeypatch.setattr(pipeline, "translate_batch_with_report", capture)
+    await pipeline.run_translation(job_id)                   # Translate missing lines, no notes yet
+    assert stories == [""]
+
+    async with background_db() as s:
+        project = await s.get(Project, project_id)
+        project.story_notes = story_notes.apply_user_edit(None, {"characters": [{"zh": "王医生", "km": "វ៉ាង", "about": "man"}]})
+        await s.commit()
+    _vocals(uploads, project_id, job_id)
+    monkeypatch.setattr(pipeline, "transcribe_audio", _fake_transcribe([
+        DiarizedSegment("SPEAKER_00", 0.0, 1.0, "unknown", "adult", "新"),
+    ]))
+    await pipeline.run_analysis_pipeline(job_id)             # Analyze, with notes
+    assert len(stories) == 2 and "王医生 → វ៉ាង" in stories[1]
+
 
 @pytest.mark.asyncio
 async def test_reanalysis_failure_keeps_previous_segments(monkeypatch, uploads, background_db):
@@ -420,7 +445,7 @@ async def test_translate_missing_fills_only_empty_lines_and_keeps_edits(client, 
     )
     seen = {}
 
-    async def fake_translate(texts, source_lang, target_lang, segments_context=None):
+    async def fake_translate(texts, source_lang, target_lang, segments_context=None, story=""):
         seen.update(texts=list(texts), labels=[c["speaker_label"] for c in segments_context])
         return [f"km:{t}" for t in texts], TranslationReport()
 
@@ -438,7 +463,7 @@ async def test_translate_missing_fills_only_empty_lines_and_keeps_edits(client, 
 async def test_translate_missing_never_overwrites_a_line_typed_while_it_ran(client, monkeypatch, uploads, background_db):
     _project_id, job_id = await _seed(background_db, segments=[(0.0, 2.0, "你好", "", None, "")])
 
-    async def slow_translate(texts, source_lang, target_lang, segments_context=None):
+    async def slow_translate(texts, source_lang, target_lang, segments_context=None, story=""):
         async with background_db() as s:     # the user types a translation meanwhile
             seg = (await s.execute(select(Segment).where(Segment.job_id == job_id))).scalar_one()
             seg.khmer_text = "typed by the user"
@@ -456,7 +481,7 @@ async def test_translate_missing_reports_lines_that_still_failed(client, monkeyp
     _project_id, job_id = await _seed(background_db, segments=[(0.0, 2.0, "你好", "", None, ""),
                                                                 (3.0, 4.0, "再见", "", None, "")])
 
-    async def half(texts, source_lang, target_lang, segments_context=None):
+    async def half(texts, source_lang, target_lang, segments_context=None, story=""):
         return ["", "km:再见"], TranslationReport(failed=1, gemini_error="Gemini 503: overloaded")
 
     monkeypatch.setattr(pipeline, "translate_batch_with_report", half)
