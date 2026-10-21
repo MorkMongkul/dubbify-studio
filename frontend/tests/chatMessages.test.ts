@@ -1,7 +1,7 @@
 // Run with `npm test` (Node's own test runner; Node strips the TypeScript types).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { standInMessage, withTurn } from '../src/lib/chatMessages.ts'
+import { chatDateLabel, standInMessage, withTurn } from '../src/lib/chatMessages.ts'
 
 const saved = (id: string, role: 'user' | 'model', text: string) =>
   ({ id, project_id: 'p1', role, text, created_at: '2026-10-21T05:00:00Z' })
@@ -41,4 +41,15 @@ test('a message about a line keeps the line on its stand-in', () => {
   }
   assert.deepEqual(standInMessage('p1', 'make it less formal', new Date(), line).line_ref, line)
   assert.equal(standInMessage('p1', 'hello', new Date()).line_ref ?? null, null)
+})
+
+test('chat dates read Today, Yesterday, then the date', () => {
+  const now = new Date(2026, 9, 21, 15, 0)            // local time, like the History list
+  const at = (...parts: [number, number, number, number, number]) => new Date(...parts).toISOString()
+  assert.equal(chatDateLabel(at(2026, 9, 21, 0, 30), now), 'Today')
+  assert.equal(chatDateLabel(at(2026, 9, 20, 23, 30), now), 'Yesterday')
+  assert.equal(chatDateLabel(at(2026, 9, 18, 9, 0), now), 'Oct 18')
+  assert.equal(chatDateLabel(at(2025, 9, 18, 9, 0), now), 'Oct 18, 2025')
+  // The server sends UTC without a zone: read it as UTC, not as local time
+  assert.equal(chatDateLabel(at(2026, 9, 21, 0, 30).replace('Z', ''), now), 'Today')
 })

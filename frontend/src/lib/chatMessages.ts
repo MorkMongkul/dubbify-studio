@@ -21,3 +21,16 @@ export function withTurn(list: ChatMessage[], standInId: string, turn: ChatMessa
   const known = new Set(kept.map((m) => m.id))
   return [...kept, ...turn.filter((m) => !known.has(m.id))]
 }
+
+/** When a chat was last used, for the History list: Today, Yesterday, or the date. */
+export function chatDateLabel(iso: string, now: Date): string {
+  // The server sends UTC without a zone ("2026-10-21T09:35:40"); read it as UTC
+  const date = new Date(/(?:[zZ]|[+-]\d\d:?\d\d)$/.test(iso) ? iso : `${iso}Z`)
+  const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  const daysAgo = Math.round((day(now) - day(date)) / 86_400_000)
+  if (daysAgo === 0) return 'Today'
+  if (daysAgo === 1) return 'Yesterday'
+  return date.toLocaleDateString('en', {
+    month: 'short', day: 'numeric', ...(date.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }),
+  })
+}

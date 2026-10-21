@@ -3,7 +3,7 @@
 
 import axios, { type AxiosProgressEvent } from 'axios'
 import type {
-  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, Segment, SegmentUpdate, SegmentCreate, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView,
+  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, Segment, SegmentUpdate, SegmentCreate, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView,
 } from '@/types'
 
 const api = axios.create({
@@ -404,14 +404,22 @@ export const story = {
 
 // ── Assistant chat ────────────────────────────────────────────
 export const chat = {
-  listMessages: (projectId: string) =>
-    api.get<ChatMessage[]>(`/chat/${projectId}/messages`).then((r) => r.data),
+  /** The project's chats, the one used last first */
+  listThreads: (projectId: string) =>
+    api.get<ChatThread[]>(`/chat/${projectId}/threads`).then((r) => r.data),
+
+  listMessages: (threadId: string) =>
+    api.get<ChatMessage[]>(`/chat/threads/${threadId}/messages`).then((r) => r.data),
+
+  deleteThread: (threadId: string) =>
+    api.delete(`/chat/threads/${threadId}`),
 
   // A turn can involve several tool-call round trips to Gemini — give it
   // real headroom instead of the 30s default.
-  /** `lineId`: the line the text cursor is in, which "this line" means */
-  sendMessage: (projectId: string, text: string, lineId?: string) =>
-    api.post<ChatSendResponse>(`/chat/${projectId}/messages`, { text, line_id: lineId }, { timeout: 120_000 }).then((r) => r.data),
+  /** `threadId`: the chat to continue (null starts one); `lineId`: the line the text cursor is in ("this line") */
+  sendMessage: (projectId: string, { text, threadId, lineId }: { text: string; threadId: string | null; lineId?: string }) =>
+    api.post<ChatSendResponse>(`/chat/${projectId}/messages`, { text, thread_id: threadId, line_id: lineId }, { timeout: 120_000 })
+      .then((r) => r.data),
 
   listPendingEdits: (projectId: string, status: 'pending' | 'all' = 'pending') =>
     api.get<ChatProposedEdit[]>(`/chat/${projectId}/pending-edits`, { params: { status } }).then((r) => r.data),

@@ -593,11 +593,35 @@ export function usePreviewVoice() {
 }
 
 // ── Assistant chat ────────────────────────────────────────────
-export function useChatMessages(projectId: string | null) {
+export function useChatThreads(projectId: string | null) {
   return useQuery({
-    queryKey: ['chat-messages', projectId],
-    queryFn: () => chat.listMessages(projectId!),
+    queryKey: ['chat-threads', projectId],
+    queryFn: () => chat.listThreads(projectId!),
     enabled: !!projectId,
+  })
+}
+
+/** Where a chat's messages live in the cache; a new chat (no id yet) keeps its stand-in under the project. */
+export const chatMessagesKey = (projectId: string, threadId: string | null) =>
+  ['chat-messages', threadId ?? `new:${projectId}`]
+
+export function useChatMessages(projectId: string | null, threadId: string | null) {
+  return useQuery({
+    queryKey: chatMessagesKey(projectId ?? '', threadId),
+    queryFn: () => chat.listMessages(threadId!),
+    enabled: !!projectId && !!threadId,
+  })
+}
+
+export function useDeleteChatThread() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ threadId }: { threadId: string; projectId: string }) => chat.deleteThread(threadId),
+    onSuccess: (_, { threadId, projectId }) => {
+      qc.removeQueries({ queryKey: ['chat-messages', threadId] })
+      qc.invalidateQueries({ queryKey: ['chat-threads', projectId] })
+      qc.invalidateQueries({ queryKey: ['chat-pending-edits', projectId] })
+    },
   })
 }
 
@@ -607,31 +631,47 @@ export function useSendChatMessage() {
   const qc = useQueryClient()
   return useMutation({
     mutationKey: ['chat-send'],
+    // `threadId`: the chat (null starts one, named after this message);
     // `line`: the line being edited, which "this line" means (ChatLineRef snapshot)
-    mutationFn: ({ projectId, text, line }: { projectId: string; text: string; line?: ChatLineRef }) =>
-      chat.sendMessage(projectId, text, line?.segment_id),
+    mutationFn: ({ projectId, threadId, text, line }: {
+      projectId: string; threadId: string | null; text: string; line?: ChatLineRef
+    }) => chat.sendMessage(projectId, { text, threadId, lineId: line?.segment_id }),
     // What you sent shows at once; the saved turn (your message and the reply)
     // takes its place when the Assistant answers, which can take a minute.
-    onMutate: async ({ projectId, text, line }) => {
-      await qc.cancelQueries({ queryKey: ['chat-messages', projectId] })
+    onMutate: async ({ projectId, threadId, text, line }) => {
+      const key = chatMessagesKey(projectId, threadId)
+      await qc.cancelQueries({ queryKey: key })
       const sent = standInMessage(projectId, text, new Date(), line)
-      qc.setQueryData<ChatMessage[]>(['chat-messages', projectId], (list = []) => [...list, sent])
+      qc.setQueryData<ChatMessage[]>(key, (list = []) => [...list, sent])
       return { standInId: sent.id }
     },
-    onSuccess: (data, { projectId }, sending) => {
-      qc.setQueryData<ChatMessage[]>(['chat-messages', projectId], (list = []) =>
-        withTurn(list, sending?.standInId ?? '', data.messages))
+    onSuccess: (data, { projectId, threadId }, sending) => {
+      const from = chatMessagesKey(projectId, threadId)
+      const list = qc.getQueryData<ChatMessage[]>(from) ?? []
+      qc.setQueryData<ChatMessage[]>(['chat-messages', data.thread_id], withTurn(list, sending?.standInId ?? '', data.messages))
+      if (!threadId) {
+        // The new chat has its id now: its messages move there, and it stays
+        // open unless the user went to another chat meanwhile
+        qc.removeQueries({ queryKey: from })
+        const { assistantThreads, setAssistantThread } = useEditorStore.getState()
+        if (!assistantThreads[projectId]) setAssistantThread(projectId, data.thread_id)
+      }
+      qc.invalidateQueries({ queryKey: ['chat-threads', projectId] })
       qc.invalidateQueries({ queryKey: ['chat-pending-edits', projectId] })
       // A tool call may have applied an auto-mode edit straight to a segment.
       qc.invalidateQueries({ queryKey: ['segments'] })
     },
-    onError: (_err, { projectId }, sending) => {
+    onError: (_err, { projectId, threadId }, sending) => {
       if (sending) {
-        qc.setQueryData<ChatMessage[]>(['chat-messages', projectId], (list = []) => withTurn(list, sending.standInId, []))
+        qc.setQueryData<ChatMessage[]>(chatMessagesKey(projectId, threadId), (list = []) => withTurn(list, sending.standInId, []))
       }
+      qc.invalidateQueries({ queryKey: ['chat-threads', projectId] })
     },
     // The server keeps what was sent even when the Assistant fails
-    onSettled: (_data, _err, { projectId }) => qc.invalidateQueries({ queryKey: ['chat-messages', projectId] }),
+    onSettled: (data, _err, { threadId }) => {
+      const saved = data?.thread_id ?? threadId
+      if (saved) qc.invalidateQueries({ queryKey: ['chat-messages', saved] })
+    },
   })
 }
 

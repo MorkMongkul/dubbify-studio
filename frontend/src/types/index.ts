@@ -448,11 +448,24 @@ export interface ChatMessage {
   function_call?: ChatFunctionCall | null
   function_response?: ChatFunctionResponse | null
   line_ref?: ChatLineRef | null
+  thread_id?: string | null
   created_at: string
 }
 
 export interface ChatSendResponse {
+  /** The chat the turn went into — a new one when none was given */
+  thread_id: string
   messages: ChatMessage[]
+}
+
+/** One of a project's Assistant chats, named after its first message */
+export interface ChatThread {
+  id: string
+  project_id: string
+  title: string
+  created_at: string
+  updated_at: string
+  message_count: number
 }
 
 export type ChatEditStatus = 'pending' | 'approved' | 'rejected'

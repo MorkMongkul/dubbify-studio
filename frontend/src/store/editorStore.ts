@@ -57,6 +57,11 @@ interface EditorStore {
   // DEFAULT_STATE too: the step keeps running across session switches.
   jobActions: Record<string, JobAction>
   setJobAction: (jobId: string, action: JobAction) => void
+  // The Assistant chat open in each project (by project id): a chat's id,
+  // null for a new chat, absent for "the one used last". Outside
+  // DEFAULT_STATE: switching episodes keeps the chat.
+  assistantThreads: Record<string, string | null>
+  setAssistantThread: (projectId: string, threadId: string | null | undefined) => void
   availableVoices: VoicePreset[]
   inspectorMode: 'global_synthesis' | 'audio_clip_settings' | 'subtitle_settings'
   focusedTimelineItemId: string | null
@@ -204,6 +209,13 @@ export const useEditorStore = create<EditorStore>()(
     // ── Started actions (not part of DEFAULT_STATE — see interface note) ──
     jobActions: {} as Record<string, JobAction>,
     setJobAction: (jobId, action) => set((s) => ({ jobActions: { ...s.jobActions, [jobId]: action } })),
+    assistantThreads: {} as Record<string, string | null>,
+    setAssistantThread: (projectId, threadId) => set((s) => {
+      const next = { ...s.assistantThreads }
+      if (threadId === undefined) delete next[projectId]
+      else next[projectId] = threadId
+      return { assistantThreads: next }
+    }),
 
     // ── Playback ──────────────────────────────────────────────
     setCurrentTime: (t) => {
