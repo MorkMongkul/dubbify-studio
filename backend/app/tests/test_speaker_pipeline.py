@@ -108,7 +108,7 @@ def _fake_transcribe(segments, capture=None):
     return fake
 
 
-async def _fake_translate(texts, source_lang, target_lang, segments_context=None, story="", cast=""):
+async def _fake_translate(texts, source_lang, target_lang, segments_context=None, story="", cast="", memory=None):
     return [f"km:{t}" for t in texts], TranslationReport()
 
 
@@ -119,7 +119,7 @@ async def test_translation_uses_the_project_story(monkeypatch, uploads, backgrou
     project_id, job_id = await _seed(background_db, segments=[(0.0, 2.0, "你好", "", None, "")])
     stories: list[str] = []
 
-    async def capture(texts, source_lang, target_lang, segments_context=None, story="", cast=""):
+    async def capture(texts, source_lang, target_lang, segments_context=None, story="", cast="", memory=None):
         stories.append(story)
         return [f"km:{t}" for t in texts], TranslationReport()
 
@@ -445,7 +445,7 @@ async def test_translate_missing_fills_only_empty_lines_and_keeps_edits(client, 
     )
     seen = {}
 
-    async def fake_translate(texts, source_lang, target_lang, segments_context=None, story="", cast=""):
+    async def fake_translate(texts, source_lang, target_lang, segments_context=None, story="", cast="", memory=None):
         seen.update(texts=list(texts), labels=[c["speaker_label"] for c in segments_context])
         return [f"km:{t}" for t in texts], TranslationReport()
 
@@ -463,7 +463,7 @@ async def test_translate_missing_fills_only_empty_lines_and_keeps_edits(client, 
 async def test_translate_missing_never_overwrites_a_line_typed_while_it_ran(client, monkeypatch, uploads, background_db):
     _project_id, job_id = await _seed(background_db, segments=[(0.0, 2.0, "你好", "", None, "")])
 
-    async def slow_translate(texts, source_lang, target_lang, segments_context=None, story="", cast=""):
+    async def slow_translate(texts, source_lang, target_lang, segments_context=None, story="", cast="", memory=None):
         async with background_db() as s:     # the user types a translation meanwhile
             seg = (await s.execute(select(Segment).where(Segment.job_id == job_id))).scalar_one()
             seg.khmer_text = "typed by the user"
@@ -481,7 +481,7 @@ async def test_translate_missing_reports_lines_that_still_failed(client, monkeyp
     _project_id, job_id = await _seed(background_db, segments=[(0.0, 2.0, "你好", "", None, ""),
                                                                 (3.0, 4.0, "再见", "", None, "")])
 
-    async def half(texts, source_lang, target_lang, segments_context=None, story="", cast=""):
+    async def half(texts, source_lang, target_lang, segments_context=None, story="", cast="", memory=None):
         return ["", "km:再见"], TranslationReport(failed=1, gemini_error="Gemini 503: overloaded")
 
     monkeypatch.setattr(pipeline, "translate_batch_with_report", half)
@@ -590,7 +590,7 @@ async def test_translation_hears_who_each_speaker_is(monkeypatch, uploads, backg
     monkeypatch.setattr(auto_voice, "_pitch_of_spans", lambda spans: 250.0)   # an excited young man
     casts: list[str] = []
 
-    async def capture(texts, source_lang, target_lang, segments_context=None, story="", cast=""):
+    async def capture(texts, source_lang, target_lang, segments_context=None, story="", cast="", memory=None):
         casts.append(cast)
         return [f"km:{t}" for t in texts], TranslationReport()
 
@@ -613,7 +613,7 @@ async def test_analysis_tells_the_translation_who_is_speaking(monkeypatch, uploa
     ]))
     casts: list[str] = []
 
-    async def capture(texts, source_lang, target_lang, segments_context=None, story="", cast=""):
+    async def capture(texts, source_lang, target_lang, segments_context=None, story="", cast="", memory=None):
         casts.append(cast)
         return [f"km:{t}" for t in texts], TranslationReport()
 
@@ -621,3 +621,30 @@ async def test_analysis_tells_the_translation_who_is_speaking(monkeypatch, uploa
     await pipeline.run_analysis_pipeline(job_id)
     assert "SPEAKER_00: 王医生" in casts[0]
     assert "SPEAKER_01: not known" in casts[0]               # a new voice: nothing to go on yet
+
+
+@pytest.mark.asyncio
+async def test_translation_learns_from_the_other_episodes(monkeypatch, uploads, background_db):
+    """The team's Khmer in the project's other episodes goes along; this episode's own old lines don't."""
+    project_id, job_id = await _seed(background_db, segments=[(0.0, 2.0, "你好", "", None, "")])
+    async with background_db() as s:
+        other = Job(project_id=project_id, status=JobStatus.COMPLETED, progress=100, video_path="2.mp4")
+        s.add(other)
+        await s.flush()
+        s.add_all([Segment(job_id=other.id, start_time=0, end_time=1, source_text="谢三，走吧。", khmer_text="សុងសុឺអាន ទៅ!"),
+                   Segment(job_id=other.id, start_time=1, end_time=2, source_text="嗯", khmer_text="")])
+        await s.commit()
+    memories: list = []
+
+    async def capture(texts, source_lang, target_lang, segments_context=None, story="", cast="", memory=None):
+        memories.append(memory)
+        return [f"km:{t}" for t in texts], TranslationReport()
+
+    monkeypatch.setattr(pipeline, "translate_batch_with_report", capture)
+    await pipeline.run_translation(job_id)
+    _vocals(uploads, project_id, job_id)
+    monkeypatch.setattr(pipeline, "transcribe_audio", _fake_transcribe([
+        DiarizedSegment("SPEAKER_00", 0.0, 1.0, "unknown", "adult", "新"),
+    ]))
+    await pipeline.run_analysis_pipeline(job_id)
+    assert memories == [[("谢三，走吧。", "សុងសុឺអាន ទៅ!")]] * 2

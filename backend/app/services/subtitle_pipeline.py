@@ -33,6 +33,7 @@ from app.services.pipeline_common import (
     remove_unused_auto_speakers,
     restore_or_fail_job,
     translation_cast,
+    translation_memory,
     translation_story,
     vocals_path_for,
 )
@@ -194,6 +195,7 @@ async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None =
             # Translate
             story = await translation_story(db, project.id, job.id)
             cast = await translation_cast(db, job, labels)
+            memory = await translation_memory(db, project.id, job.id)
             await _update_job(db, job, JobStatus.TRANSLATING, 65)
             source_texts = [s.source_text for s in existing_segments]
             segments_context = [
@@ -204,7 +206,7 @@ async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None =
             # Translate source → target (Khmer) DIRECTLY — no English pivot.
             km_texts, translation_report = await translate_batch_with_report(
                 source_texts, project.source_lang, project.target_lang, segments_context=segments_context,
-                story=story, cast=cast,
+                story=story, cast=cast, memory=memory,
             )
 
             await _update_job(db, job, JobStatus.TRANSLATING, 85)

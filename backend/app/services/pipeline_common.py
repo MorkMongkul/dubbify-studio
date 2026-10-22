@@ -97,6 +97,27 @@ async def translation_cast(db: AsyncSession, job: Job, labels: Iterable[Optional
     return "WHO IS SPEAKING — the speaker tags in these lines:\n" + "\n".join(rows)
 
 
+MEMORY_MAX = 3000   # (source, translation) pairs read for one translation run; translator narrows them per batch
+
+
+async def translation_memory(db: AsyncSession, project_id: str, job_id: str) -> List[tuple]:
+    """
+    The team's own translations in the project's OTHER episodes, as (source,
+    Khmer) pairs, most recent episode first — the examples translator.
+    pick_examples chooses from. Every line with both texts counts: a line the
+    team corrected and one they kept as it was are both their Khmer. Read it
+    before releasing the connection for Gemini.
+    """
+    rows = (await db.execute(
+        select(Segment.source_text, Segment.khmer_text).join(Job, Job.id == Segment.job_id)
+        .where(Job.project_id == project_id, Job.id != job_id)
+        .order_by(Job.created_at.desc(), Segment.start_time)
+        .limit(MEMORY_MAX * 2)
+    )).all()
+    pairs = [((zh or "").strip(), (km or "").strip()) for zh, km in rows]
+    return [(zh, km) for zh, km in pairs if zh and km][:MEMORY_MAX]
+
+
 def vocals_path_for(job: Job) -> Optional[str]:
     """The job's separated vocals stem, else its extracted audio — whichever exists on disk."""
     stem = Path(settings.UPLOAD_DIR) / job.project_id / job.id / "vocals.wav"

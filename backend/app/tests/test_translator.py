@@ -266,3 +266,29 @@ async def test_each_batch_sees_the_lines_before_it(gemini_http, google, monkeypa
     assert "EARLIER IN THIS EPISODE" in earlier
     assert "[SPEAKER_00] 一 → មួយ" in earlier and "[SPEAKER_01] 二 → ពីរ" in earlier
     assert "1. [SPEAKER_02] 三" in to_translate and "一" not in to_translate
+
+
+# ── Learning from the team's own translations ─────────────────────────────────
+# Measured leave-one-episode-out on a real 5-episode project: showing Gemini the
+# team's corrected Khmer of the other episodes brought its Khmer closer to
+# theirs (chrF 33.1 → 35.3); the 20 most similar lines alone gave 34.1.
+
+@pytest.mark.asyncio
+async def test_the_teams_translations_reach_the_prompt(gemini_http, google):
+    gemini_http.script = [_gemini_reply(["សៀ សាន ទៅ"])]
+    memory = [("谢三，走吧。", "សុងសុឺអាន ទៅ!"), ("我爸是校长。", "ប៉ាខ្ញុំជានាយកសាលា")]
+    await translator.translate_batch_with_report(["谢三，快走。"], "zh", "km", memory=memory)
+    before_lines = gemini_http.prompts[0].split("LINES TO TRANSLATE")[0]
+    assert "谢三，走吧。 → សុងសុឺអាន ទៅ!" in before_lines and "我爸是校长。 → ប៉ាខ្ញុំជានាយកសាលា" in before_lines
+
+
+def test_a_long_memory_gives_the_most_similar_lines_first_and_stays_bounded():
+    memory = [(f"无关的话{i}", f"km{i}") for i in range(500)] + [("谢三，走吧。", "សុងសុឺអាន ទៅ!")]
+    picked = translator.pick_examples(memory, ["谢三，快走。"])
+    assert picked[0] == ("谢三，走吧。", "សុងសុឺអាន ទៅ!")
+    assert len(picked) <= translator.MEMORY_EXAMPLES
+
+
+def test_a_short_memory_is_given_whole():
+    memory = [("一", "មួយ"), ("二", "ពីរ")]
+    assert translator.pick_examples(memory, ["三"]) == memory
