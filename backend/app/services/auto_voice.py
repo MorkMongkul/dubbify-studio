@@ -127,8 +127,9 @@ def _pitch_of_spans(spans: list[tuple[str, float, float]]) -> Optional[float]:
 
 async def _speaker_kind(db: AsyncSession, speaker: Speaker) -> Optional[str]:
     # What Gemini heard comes first (stored by pipeline_common.ensure_speakers):
-    # on a real drama it named 7 of 7 speakers' genders right, the pitch 1 of 6
-    # (excited young men speak at 230–250 Hz). Pitch is only the fallback.
+    # on a real drama it named 17 of 19 speakers' genders right over three runs,
+    # the pitch 1 of 6 (excited young men speak at 230–250 Hz). Pitch is only
+    # the fallback.
     if speaker.gender in (Gender.MALE, Gender.FEMALE):
         if speaker.age_group == AgeGroup.CHILD:
             return "child"

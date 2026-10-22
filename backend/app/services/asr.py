@@ -782,8 +782,8 @@ async def transcribe_audio(
     ASR + voice-based speaker labeling entry point (see module docstring).
     Pauses are found on `audio_path` (the separated vocals: no music to mask
     them); Gemini hears clips cut from `clip_audio` (the original sound) when
-    given — the separation service's vocals lose a voice's low end, and men
-    sounded like women or children to Gemini.
+    given — measured on a real project, it then told men from women better
+    (17 of 19 speakers vs 13 of 18) and transcribed as well or better.
 
     references: known voices (e.g. the project's named speakers) Gemini may match.
     taken_labels: labels already used in the project — new voices never reuse them.

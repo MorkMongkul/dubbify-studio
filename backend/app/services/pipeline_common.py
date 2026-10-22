@@ -77,8 +77,8 @@ async def translation_cast(
     translation prompt. Per tag: the name the user gave, the
     Story notes' character linked to it, and man/woman/boy/girl with age from
     the voice the user chose — else "probably …" from what Gemini heard (`heard`,
-    this run's transcription, or what is stored on the speaker; 7 of 7 speakers
-    right from the original sound). Nothing is guessed from pitch: on a real drama
+    this run's transcription, or what is stored on the speaker; right for 17 of
+    19 speakers on a real project). Nothing is guessed from pitch: on a real drama
     the pitch of the lines called four of five men women or children (excited
     young men speak at 230–250 Hz), and a wrong gender is worse than none —
     Gemini then judges from the dialogue. Read it before releasing the
@@ -138,9 +138,9 @@ def original_sound_for(job: Job) -> Optional[str]:
     """
     The episode's original sound for Gemini to hear: the extracted audio, else
     the video itself (the extracted audio is deleted after separation; clips
-    are cut straight from the video). None when neither is on disk. Not the
-    separated vocals: the separation service drops a voice's low end, and
-    Gemini then took men for women or children (3 of 6 right vs 7 of 7).
+    are cut straight from the video). None when neither is on disk. Measured
+    against the separated vocals on a real project: Gemini's man/woman call
+    right for 17 of 19 speakers vs 13 of 18, transcription as good or better.
     """
     found = resolve_existing(job.audio_path) or resolve_existing(job.video_path)
     return str(found) if found else None

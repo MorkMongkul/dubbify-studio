@@ -717,7 +717,7 @@ async def test_gemini_hears_the_original_sound_of_the_episode_and_of_the_referen
 
 @pytest.mark.asyncio
 async def test_analysis_keeps_who_each_new_voice_sounds_like(monkeypatch, uploads, background_db):
-    """Gemini heard the right gender for 7 of 7 speakers from the original sound; pitch for 1 of 6."""
+    """Gemini heard the right gender for 17 of 19 speakers from the original sound (3 runs); pitch for 1 of 6."""
     project_id, job_id = await _seed(background_db, speakers=[("SPEAKER_00", "SPEAKER_00", False)])
     async with background_db() as s:
         (await s.execute(select(Speaker))).scalar_one().gender = Gender.MALE      # already known: kept

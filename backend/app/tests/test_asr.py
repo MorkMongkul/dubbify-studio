@@ -793,10 +793,10 @@ async def test_a_clip_whose_text_cannot_fit_its_length_is_asked_for_again(monkey
 
 
 # ── Gemini hears the original sound ───────────────────────────────────────────
-# The separation service's vocals lose everything below ~180 Hz (0.1–1.4% of the
-# energy there vs 17–33% in the original): men sound thin, and Gemini called 3
-# of 6 speakers' genders right from them, 7 of 7 from the original sound, with
-# transcription as good or better. Pauses are still found on the vocals.
+# Measured on a real project (3 runs × 5 episodes): from the original sound
+# Gemini's man/woman call was right for 17 of 19 speakers (13 of 18 from the
+# separated vocals), and transcription was as good or better. Why isn't known:
+# the voices' pitch is the same in both. Pauses are still found on the vocals.
 
 @pytest.mark.asyncio
 async def test_clips_can_be_cut_from_the_original_sound(monkeypatch, fake_audio):
