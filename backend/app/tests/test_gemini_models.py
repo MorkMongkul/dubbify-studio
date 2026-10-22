@@ -71,7 +71,7 @@ async def test_a_retired_model_is_replaced_by_googles_maintained_alias(api):
     api.retired = {"gemini-2.5-flash-lite"}
     resp = await gemini_models.generate_content("translation", {}, timeout=10)
     assert resp.status_code == 200
-    assert api.calls == ["gemini-2.5-flash-lite", "gemini-flash-lite-latest"]
+    assert api.calls == ["gemini-2.5-flash-lite", "gemini-flash-latest"]
 
 
 @pytest.mark.asyncio
@@ -80,8 +80,8 @@ async def test_the_switch_is_remembered_for_the_session(api):
     await gemini_models.generate_content("translation", {}, timeout=10)
     api.calls.clear()
     await gemini_models.generate_content("translation", {}, timeout=10)
-    assert api.calls == ["gemini-flash-lite-latest"]
-    assert gemini_models.current_model("translation") == "gemini-flash-lite-latest"
+    assert api.calls == ["gemini-flash-latest"]
+    assert gemini_models.current_model("translation") == "gemini-flash-latest"
 
 
 @pytest.mark.asyncio
@@ -89,14 +89,14 @@ async def test_when_every_known_name_is_gone_the_newest_listed_model_of_the_same
     api.retired = {"gemini-2.5-flash-lite", "gemini-flash-lite-latest", "gemini-flash-latest"}
     api.listed = [
         "gemini-2.5-flash-lite",          # retired, though still listed
-        "gemini-9.1-flash-lite",
-        "gemini-9.2-flash-lite-preview",  # previews and other kinds don't qualify
-        "gemini-9.5-flash",
-        "gemini-9.0-flash-lite",
+        "gemini-9.1-flash",
+        "gemini-9.2-flash-preview",       # previews and other kinds don't qualify
+        "gemini-9.5-flash-lite",
+        "gemini-9.0-flash",
     ]
     resp = await gemini_models.generate_content("translation", {}, timeout=10)
     assert resp.status_code == 200
-    assert api.calls[-1] == "gemini-9.1-flash-lite"
+    assert api.calls[-1] == "gemini-9.1-flash"
 
 
 @pytest.mark.asyncio
@@ -132,3 +132,9 @@ async def test_voice_models_fall_back_to_the_newest_listed_tts_model(api):
     api.listed = ["gemini-3.8-flash", "gemini-3.1-flash-tts-preview", "gemini-3.8-flash-tts"]
     await gemini_models.generate_content("tts", {}, timeout=10)
     assert api.calls[-1] == "gemini-3.8-flash-tts"
+
+
+def test_translation_is_not_left_to_the_smallest_model():
+    """Chinese drama dialogue into Khmer needed a full Flash model: Flash-Lite's lines needed fixing one by one."""
+    assert "lite" not in gemini_models.default_model("translation")
+    assert gemini_models.PURPOSES["translation"].fallbacks[0] == "gemini-flash-latest"

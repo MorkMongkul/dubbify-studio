@@ -161,7 +161,7 @@ async def test_a_retired_translation_model_is_replaced_not_sent_to_google_transl
     texts, report = await translator.translate_batch_with_report(["你好", "谢谢"], "zh", "km")
     assert texts == ["សួស្តី", "អរគុណ"]
     assert (report.fallback, report.failed) == (0, 0)
-    assert gemini_http.models == ["gemini-2.5-flash-lite", "gemini-flash-lite-latest"]
+    assert gemini_http.models == ["gemini-2.5-flash-lite", "gemini-flash-latest"]
 
 
 @pytest.mark.asyncio
@@ -218,3 +218,51 @@ def test_a_fallback_batch_that_comes_back_misaligned_is_redone_line_by_line(goog
         return "ខ្មែរ" if "\n" not in text else "ខ្មែរ ខ្មែរ"   # two lines merged into one
     google.reply = reply
     assert translator._deep_translate_many(["你好", "谢谢"], "zh", "km") == ["ខ្មែរ", "ខ្មែរ"]
+
+
+# ── What the prompt tells Gemini ──────────────────────────────────────────────
+
+CAST = "WHO IS SPEAKING —\n- SPEAKER_01: 谢三 — a man, 20s"
+
+
+@pytest.mark.asyncio
+async def test_the_prompt_says_who_each_speaker_is(gemini_http, google):
+    gemini_http.script = [_gemini_reply(["សួស្តី"])]
+    await translator.translate_batch_with_report(
+        ["你好"], "zh", "km", segments_context=[{"speaker_label": "SPEAKER_01", "source_text": "你好"}], cast=CAST)
+    assert "SPEAKER_01: 谢三 — a man, 20s" in gemini_http.prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_a_speakers_own_gender_picks_their_polite_word(gemini_http, google):
+    """A man answers បាទ, a woman ចាស: the speaker's own gender decides, not the listener's."""
+    gemini_http.script = [_gemini_reply(["បាទ"])]
+    await translator.translate_batch_with_report(["是"], "zh", "km")
+    prompt = gemini_http.prompts[0]
+    assert "បាទ" in prompt and "ចាស" in prompt
+
+
+@pytest.mark.asyncio
+async def test_the_kinship_words_are_the_right_ones(gemini_http, google):
+    """The old list said mom → មា (uncle), father → ប្រុស (male) and elder → អ្នកតា (a guardian spirit)."""
+    gemini_http.script = [_gemini_reply(["ម៉ាក់"])]
+    await translator.translate_batch_with_report(["妈"], "zh", "km")
+    prompt = gemini_http.prompts[0]
+    assert "ម៉ាក់" in prompt
+    assert '"មា"' not in prompt and "ប្រុស" not in prompt and "អ្នកតា" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_each_batch_sees_the_lines_before_it(gemini_http, google, monkeypatch):
+    """A long episode is sent in batches; a later batch must still know what was just said, and how it was put."""
+    monkeypatch.setattr(translator, "CHUNK_SIZE", 2)
+    gemini_http.script = [_gemini_reply(["មួយ", "ពីរ"]), _gemini_reply(["បី"])]
+    ctx = [{"speaker_label": f"SPEAKER_0{i}", "source_text": t} for i, t in enumerate(["一", "二", "三"])]
+    texts, _ = await translator.translate_batch_with_report(["一", "二", "三"], "zh", "km", segments_context=ctx)
+    assert texts == ["មួយ", "ពីរ", "បី"]
+    first, second = gemini_http.prompts
+    assert "EARLIER IN THIS EPISODE" not in first
+    earlier, to_translate = second.split("LINES TO TRANSLATE")
+    assert "EARLIER IN THIS EPISODE" in earlier
+    assert "[SPEAKER_00] 一 → មួយ" in earlier and "[SPEAKER_01] 二 → ពីរ" in earlier
+    assert "1. [SPEAKER_02] 三" in to_translate and "一" not in to_translate

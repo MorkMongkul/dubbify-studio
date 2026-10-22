@@ -32,6 +32,7 @@ from app.services.pipeline_common import (
     remove_unused_auto_speakers,
     replace_job_segments,
     restore_or_fail_job,
+    translation_cast,
     translation_story,
     vocals_path_for,
 )
@@ -194,6 +195,7 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
             logger.info(f"Transcription: {has_text}/{len(diarized)} segments have text")
 
             story = await translation_story(db, project.id, job.id)
+            cast = await translation_cast(db, job, [(s.speaker_label, s.start_time, s.end_time) for s in diarized])
             await _update_job(db, job, JobStatus.TRANSLATING, 65)
             source_texts = [seg.source_text for seg in diarized]
             segments_context = [
@@ -204,7 +206,7 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
             logger.info(f"Translating {len(source_texts)} segments {project.source_lang} → {project.target_lang}...")
             km_texts, translation_report = await translate_batch_with_report(
                 source_texts, project.source_lang, project.target_lang, segments_context=segments_context,
-                story=story,
+                story=story, cast=cast,
             )
 
             # Atomic swap: speakers, old-segment removal, new segments and the
@@ -276,12 +278,15 @@ async def run_translation(job_id: str) -> None:
             todo = [(seg.id, seg.source_text, label or "SPEAKER") for seg, label in rows if needs_translation(seg)]
             if todo:
                 story = await translation_story(db, project.id, job.id)
+                speaking = {label for _, _, label in todo}
+                cast = await translation_cast(
+                    db, job, [(label, seg.start_time, seg.end_time) for seg, label in rows if label in speaking])
                 await db.commit()   # release the connection before the Gemini calls
                 logger.info(f"Translating {len(todo)} missing line(s) for job {job_id[:8]}")
                 texts, report = await translate_batch_with_report(
                     [text for _, text, _ in todo], project.source_lang, project.target_lang,
                     segments_context=[{"speaker_label": label, "source_text": text} for _, text, label in todo],
-                    story=story,
+                    story=story, cast=cast,
                 )
                 # Fresh from the database (not this session's earlier copies): a
                 # translation the user typed meanwhile must win.

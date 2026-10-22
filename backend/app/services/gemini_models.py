@@ -47,10 +47,12 @@ class _Purpose:
 _VERSION = r"gemini-\d+(?:\.\d+)?"
 _TTS = re.compile(rf"^{_VERSION}-flash(?:-lite)?(?:-preview)?-tts(?:-preview)?$")
 PURPOSES: dict[str, _Purpose] = {
+    # A full Flash model: drama dialogue into Khmer came out too rough from Flash-Lite,
+    # which stays only as the last resort and a choice in Settings.
     "translation": _Purpose(
-        "GEMINI_MODEL", ("gemini-flash-lite-latest", "gemini-flash-latest"),
-        re.compile(rf"^{_VERSION}-flash-lite$"), re.compile(rf"^{_VERSION}-flash(?:-lite)?$"),
-        ("gemini-flash-lite-latest", "gemini-flash-latest")),
+        "GEMINI_MODEL", ("gemini-flash-latest", "gemini-flash-lite-latest"),
+        re.compile(rf"^{_VERSION}-flash$"), re.compile(rf"^{_VERSION}-(?:flash(?:-lite)?|pro)$"),
+        ("gemini-flash-latest", "gemini-pro-latest", "gemini-flash-lite-latest")),
     "asr": _Purpose(
         "GEMINI_ASR_MODEL", ("gemini-flash-latest",),
         re.compile(rf"^{_VERSION}-flash$"), re.compile(rf"^{_VERSION}-(?:flash|pro)$"),
