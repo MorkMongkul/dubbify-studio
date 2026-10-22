@@ -37,7 +37,7 @@ class DiarizedSegment:
     speaker_label: str      # e.g. "SPEAKER_00"
     start_time: float       # seconds (absolute, from start of full audio)
     end_time: float         # seconds
-    gender: str             # always "unknown" — MOSS doesn't return gender
+    gender: str             # who the voice sounds like (asr.VOICES: man/woman/boy/girl) or "unknown"
     age_group: str          # always "adult" — user edits in UI
     source_text: str = ""   # transcribed text
     chunk_index: int = -1   # which audio chunk this came from (chunked

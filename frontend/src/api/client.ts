@@ -3,7 +3,7 @@
 
 import axios, { type AxiosProgressEvent } from 'axios'
 import type {
-  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, Segment, SegmentUpdate, SegmentCreate, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView,
+  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, SpeakerMergeResponse, Segment, SegmentUpdate, SegmentCreate, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView,
 } from '@/types'
 
 const api = axios.create({
@@ -175,6 +175,14 @@ export const speakers = {
 
   update: (speakerId: string, data: SpeakerUpdate) =>
     api.patch<Speaker>(`/speakers/${speakerId}`, data).then((r) => r.data),
+
+  /** Move all of a speaker's lines, in every episode, to another speaker and remove it. */
+  merge: (speakerId: string, into: string) =>
+    api.post<SpeakerMergeResponse>(`/speakers/${speakerId}/merge`, { into }).then((r) => r.data),
+
+  /** Undo a merge into `speakerId` in one step: the removed speaker comes back as it was, with its lines. */
+  unmerge: (speakerId: string, merged: SpeakerMergeResponse) =>
+    api.post<Speaker>(`/speakers/${speakerId}/unmerge`, merged).then((r) => r.data),
 }
 
 // ── Segments ──────────────────────────────────────────────────

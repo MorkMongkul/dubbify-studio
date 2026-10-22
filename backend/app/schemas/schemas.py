@@ -172,6 +172,27 @@ class SpeakerUpdate(BaseModel):
     voice_id: Optional[str] = None
 
 
+class SpeakerMerge(BaseModel):
+    into: str                                   # the speaker that keeps the lines
+
+
+class SpeakerSnapshot(BaseModel):
+    """A merged-away speaker as it was (SpeakerMergeResponse.removed), to create it again."""
+    label: str
+    display_name: str = ""
+    gender: Gender = Gender.UNKNOWN
+    age_group: AgeGroup = AgeGroup.ADULT
+    voice_design_prompt: str = ""
+    voice_id: Optional[str] = None
+    voice_auto: bool = False
+
+
+class SpeakerUnmerge(BaseModel):
+    removed: SpeakerSnapshot
+    moved: List[str]                            # the lines the merge moved
+    relinked: List[str] = []                    # the Story characters it relinked
+
+
 class SpeakerResponse(BaseModel):
     id: str
     project_id: str
@@ -190,6 +211,12 @@ class SpeakerResponse(BaseModel):
         return bool(value)           # NULL on speakers from before 0.2.4
 
     model_config = {"from_attributes": True}
+
+
+class SpeakerMergeResponse(BaseModel):
+    moved: List[str]                           # the lines that changed speaker
+    removed: SpeakerResponse                   # the merged-away speaker, as it was (to undo)
+    relinked: List[str] = []                   # Story characters whose link moved
 
 
 # ── Segment schemas ───────────────────────────────────────────

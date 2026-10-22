@@ -78,11 +78,13 @@ class Settings(BaseSettings):
     # ── Google Gemini — translation ───────────────────────────
     # Free at: aistudio.google.com
     GEMINI_API_KEY: str = ""
-    # Google's maintained alias for its current flash-lite model. Pinned
-    # version names get retired ("no longer available to new users" — that's
-    # how translation broke with gemini-2.5-flash-lite); any retired model,
-    # pinned or not, is replaced at run time by app/services/gemini_models.py.
-    GEMINI_MODEL: str = "gemini-flash-lite-latest"
+    # A full Flash model, as for transcription and the Assistant: Chinese drama
+    # dialogue into Khmer needs more than the cheap Flash-Lite, whose lines the
+    # team had to fix one by one. Pinned version names get retired ("no longer
+    # available to new users" — that's how translation broke with
+    # gemini-2.5-flash-lite); any retired model is replaced at run time by
+    # app/services/gemini_models.py.
+    GEMINI_MODEL: str = "gemini-3.6-flash"
 
     # ── Translation backend ───────────────────────────────────
     # "gemini" = Gemini batch translation (recommended)
@@ -98,9 +100,8 @@ class Settings(BaseSettings):
     # API, not just docs) — Google's own error pointed at gemini-3.6-flash.
     GEMINI_CHAT_MODEL: str = "gemini-3.6-flash"
     # ── ASR (speech-to-text) ────────────────────────────────────
-    # Deliberately separate from GEMINI_MODEL: translation works fine on a
-    # cheap "lite" model since the input is already clean text, but audio
-    # transcription accuracy needs a full multimodal model.
+    # Deliberately separate from GEMINI_MODEL, so transcription (audio) and
+    # translation (text) can be tuned independently.
     GEMINI_ASR_MODEL: str = "gemini-3.6-flash"
     # Hard cap on tool-call round-trips within a single chat turn, so a model
     # stuck in a call/respond/call-again loop can't run away indefinitely.

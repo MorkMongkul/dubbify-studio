@@ -7,7 +7,8 @@
 
 import type { QueryClient } from '@tanstack/react-query'
 import { segments as segmentsApi, speakers as speakersApi } from '@/api/client'
-import type { Segment, SegmentCreate, SegmentUpdate, SpeakerUpdate } from '@/types'
+import type { Segment, SegmentCreate, SegmentUpdate, SpeakerMergeResponse, SpeakerUpdate } from '@/types'
+import { invalidateSpeakerLines } from '@/hooks/useApi'
 import { useHistoryStore } from '@/store/historyStore'
 
 export function recordSegmentChange(
@@ -221,6 +222,32 @@ export function recordSpeakerChange(
     redo: async () => {
       await speakersApi.update(speakerId, after)
       qc.invalidateQueries({ queryKey: ['speakers', projectId] })
+    },
+  })
+}
+
+/**
+ * Undo is one server step (POST /speakers/{into}/unmerge): the merged-away
+ * speaker comes back as it was, with the moved lines still on `intoId` and its
+ * Story characters. Redo merges the speaker that came back.
+ */
+export function recordSpeakerMerge(
+  qc: QueryClient,
+  projectId: string,
+  merged: SpeakerMergeResponse,
+  intoId: string,
+) {
+  const box = { merged }
+  useHistoryStore.getState().push({
+    label: 'Merge speakers',
+    undo: async () => {
+      const back = await speakersApi.unmerge(intoId, box.merged)
+      box.merged = { ...box.merged, removed: back }
+      invalidateSpeakerLines(qc, projectId)
+    },
+    redo: async () => {
+      box.merged = await speakersApi.merge(box.merged.removed.id, intoId)
+      invalidateSpeakerLines(qc, projectId)
     },
   })
 }

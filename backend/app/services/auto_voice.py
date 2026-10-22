@@ -37,7 +37,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.models import Job, Segment, Speaker, Voice
+from app.models.models import AgeGroup, Gender, Job, Segment, Speaker, Voice
 from app.services.builtin_voices import PREFIX, load_manifest
 from app.services.source_separator import UNAVAILABLE_MARKER
 from app.services.voice_tags import voice_section
@@ -126,6 +126,14 @@ def _pitch_of_spans(spans: list[tuple[str, float, float]]) -> Optional[float]:
 
 
 async def _speaker_kind(db: AsyncSession, speaker: Speaker) -> Optional[str]:
+    # What Gemini heard comes first (stored by pipeline_common.ensure_speakers):
+    # on a real drama it named 17 of 19 speakers' genders right over three runs,
+    # the pitch 1 of 6 (excited young men speak at 230–250 Hz). Pitch is only
+    # the fallback.
+    if speaker.gender in (Gender.MALE, Gender.FEMALE):
+        if speaker.age_group == AgeGroup.CHILD:
+            return "child"
+        return "man" if speaker.gender == Gender.MALE else "woman"
     rows = (await db.execute(
         select(Segment, Job).join(Job, Job.id == Segment.job_id)
         .where(Segment.speaker_id == speaker.id)

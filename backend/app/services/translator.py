@@ -41,6 +41,44 @@ logger = logging.getLogger(__name__)
 # Lines per Gemini request. Khmer output is token-heavy; smaller chunks keep
 # the answer well inside the output limit (a cut-off answer drops lines).
 CHUNK_SIZE = 60
+# Lines of the previous batches (with their translations) that a later batch
+# sees, so a long episode doesn't lose the thread at every batch boundary.
+EARLIER_LINES = 20
+# The team's own Khmer for other lines of the project (pipeline_common.
+# translation_memory), shown as examples so names, terms and tone carry over
+# from one episode to the next. Measured leave-one-episode-out on a real
+# project: all of the other episodes' lines beat none (chrF 33.1 → 35.3) and
+# the 20 most similar alone (34.1). A memory up to MEMORY_EXAMPLES pairs goes
+# whole; a longer one is narrowed to each line's most similar ones, then the
+# most recent.
+MEMORY_EXAMPLES = 120
+MEMORY_PER_LINE = 5
+
+
+def _bigrams(text: str) -> set[str]:
+    t = "".join(text.split())
+    return {t[i:i + 2] for i in range(len(t) - 1)} or {t}
+
+
+def _similarity(a: str, b: str) -> float:
+    """Dice overlap of character pairs — enough to find the lines that share names and phrases."""
+    x, y = _bigrams(a), _bigrams(b)
+    return 2 * len(x & y) / (len(x) + len(y))
+
+
+def pick_examples(memory: list, texts: list[str]) -> list:
+    """The (source, translation) pairs to show for these lines; `memory` is most recent first."""
+    if len(memory) <= MEMORY_EXAMPLES:
+        return list(memory)
+    ranked = [sorted(memory, key=lambda pair: -_similarity(text, pair[0]))[:MEMORY_PER_LINE]
+              for text in texts if text.strip()]
+    picked: list = []
+    for rank in range(MEMORY_PER_LINE):            # every line's best match before anyone's second
+        for best in ranked:
+            if rank < len(best) and best[rank] not in picked:
+                picked.append(best[rank])
+    picked += [pair for pair in memory if pair not in picked]
+    return picked[:MEMORY_EXAMPLES]
 GEMINI_MAX_OUTPUT_TOKENS = 32768
 GEMINI_ATTEMPTS = 3
 GEMINI_RETRY_DELAYS = (5.0, 20.0)     # between attempts, unless Google says how long to wait
@@ -281,6 +319,9 @@ async def _translate_batch_with_gemini(
     target_lang: str,
     segments_context: list = None,
     story: str = "",
+    cast: str = "",
+    earlier: list | None = None,
+    examples: list | None = None,
 ) -> list[str]:
     """
     Translate ALL lines in a single Gemini API call.
@@ -321,10 +362,40 @@ async def _translate_batch_with_gemini(
         "\n- If ABOUT THIS DRAMA gives a character's gender or how they address\n"
         "  someone, use it instead of guessing." if story else ""
     )
+    # Who each speaker tag is (pipeline_common.translation_cast): the name the
+    # user gave, the Story notes' character, man/woman/child and age from the
+    # voice. Without it Gemini guessed genders line by line.
+    cast_block = f"{cast}\n\n" if cast else ""
+    cast_rule = (
+        "\n- WHO IS SPEAKING describes the speaker tags: take its names, and the\n"
+        "  genders and ages of chosen voices, as given; only infer what it leaves\n"
+        "  out (\"not known\"). A \"probably\" gender was heard from the voice and can be\n"
+        "  wrong: clear evidence in the lines (being called 哥/姐, 老公/老婆, a name)\n"
+        "  overrules it." if cast else ""
+    )
+    memory_block = (
+        "HOW THIS TEAM TRANSLATED OTHER LINES OF THIS DRAMA (their own checked Khmer —\n"
+        "reuse their names, terms and tone wherever they fit; polite particles (បាទ/ចាស)\n"
+        "and pronouns follow THIS line's speaker, never the example's):\n"
+        + "\n".join(f"{zh} → {km}" for zh, km in examples) + "\n\n"
+    ) if examples else ""
+    # The end of the previous batch, already translated: context, not work.
+    earlier_block = ""
+    if earlier:
+        earlier_block = (
+            "EARLIER IN THIS EPISODE (already translated — for context only, do not\n"
+            "translate or repeat these):\n"
+            + "\n".join(
+                f"[{e['speaker_label']}] {_clean_chinese(e['source_text'])} → {e['translation']}"
+                if e.get("speaker_label") else f"{_clean_chinese(e['source_text'])} → {e['translation']}"
+                for e in earlier
+            )
+            + "\n\n"
+        )
 
     prompt = f"""You are a professional {tgt_name} dubbing scriptwriter with expertise in {src_name} drama/film.
 
-{story_block}STEP 1 — ANALYZE THE SCENE (do this internally, don't write it out):
+{story_block}{cast_block}{memory_block}STEP 1 — ANALYZE THE SCENE (do this internally, don't write it out):
 Read all the lines below, in order. Each line is tagged with [SPEAKER_XX] —
 use these tags to follow the conversation:
 - Consecutive lines with the SAME speaker tag are one character continuing a
@@ -339,7 +410,7 @@ use these tags to follow the conversation:
   "老公"/"husband"). Once you decide a speaker's gender, use it CONSISTENTLY
   for every line from that same tag — never switch mid-conversation. If a
   speaker's gender truly cannot be determined from anything in the lines,
-  prefer using their name (if one is known) over guessing a gendered term.{story_rule}
+  prefer using their name (if one is known) over guessing a gendered term.{story_rule}{cast_rule}
 From the full set of lines, determine:
 - Era: Is this ancient/wuxia/xianxia (immortals, cultivation, dynasty) or modern/contemporary?
 - Tone: Formal/royal, family drama, action, comedy, romantic?
@@ -349,12 +420,12 @@ STEP 2 — CHOOSE THE RIGHT {tgt_name.upper()} REGISTER based on what you detect
 
 For ANCIENT/WUXIA/XIANXIA (immortals, cultivation, martial arts, historical):
 - Use classical Khmer vocabulary that feels like old stories/legends
-- Address words: father → "ឪពុក" or "ប្រុស", master → "លោកគ្រូ", elder → "អ្នកតា"
+- Address words: father → "ឪពុក" or "បិតា", mother → "ម្ដាយ" or "មាតា", master → "លោកគ្រូ"
 - Speech sounds like Khmer folk tales — dignified but not stiff
 
 For MODERN/CONTEMPORARY (cities, phones, offices, schools):
 - Use everyday casual {tgt_name}
-- Address words: dad → "ប៉ា", mom → "មា", grandpa → "តា"
+- Address words: dad → "ប៉ា", mom → "ម៉ាក់", grandpa → "តា"
 - Speech sounds like how young Khmers actually talk today
 
 For BOTH registers:
@@ -362,6 +433,8 @@ For BOTH registers:
   (from STEP 1): refer to or address a MALE character as "លោក", a FEMALE
   character as "អ្នកនាង" or "នាង" — never use the female form for a male
   speaker or vice versa
+- A speaker's OWN gender decides their polite particle: a man or boy says
+  "បាទ", a woman or girl says "ចាស" — never give a man "ចាស" or a woman "បាទ"
 - SHORT sentences — voice actors need to breathe and sync to video
 - Match the EMOTION of each line (anger, sadness, wonder, warmth)
 - Keep roughly the SAME LENGTH as the original
@@ -382,7 +455,7 @@ your reference only, not part of the line:
 No era analysis, no explanations, no speaker tags in the output — just the
 numbered {tgt_name} lines.
 
-LINES TO TRANSLATE:
+{earlier_block}LINES TO TRANSLATE:
 {numbered_lines}
 
 {tgt_name} translations:"""
@@ -477,11 +550,13 @@ async def _finish_lines(
 
 async def _translate_chunk(
     chunk: list[str], source_lang: str, target_lang: str, ctx: list | None, report: TranslationReport,
-    story: str = "",
+    story: str = "", cast: str = "", earlier: list | None = None, memory: list | None = None,
 ) -> list[str]:
     """Gemini for one chunk: retried call, then one more request for any lines its answer left out."""
+    examples = pick_examples(memory, chunk) if memory else None
     try:
-        results = await _gemini_with_retries(_translate_batch_with_gemini, chunk, source_lang, target_lang, ctx, story)
+        results = await _gemini_with_retries(
+            _translate_batch_with_gemini, chunk, source_lang, target_lang, ctx, story, cast, earlier, examples)
     except Exception as e:
         report.gemini_error = report.gemini_error or str(e)[:300]
         logger.error(f"Gemini translation failed: {e} — these lines go to the fallback")
@@ -496,7 +571,7 @@ async def _translate_chunk(
                 _translate_batch_with_gemini,
                 [chunk[i] for i in missing], source_lang, target_lang,
                 [ctx[i] for i in missing] if ctx else None,
-                story,
+                story, cast, earlier, examples,
             )
             for i, res in zip(missing, again):
                 if not _needs_translation(chunk[i], res, source_lang):
@@ -513,12 +588,17 @@ async def translate_batch_with_report(
     target_lang: str = "km",
     segments_context: list = None,
     story: str = "",
+    cast: str = "",
+    memory: list | None = None,
 ) -> tuple[list[str], TranslationReport]:
     """
     Translate a batch (one Gemini call per chunk of CHUNK_SIZE lines) and report
     how it went. See the module docstring for the order of fallbacks; lines
     nothing could translate are left "" — never the source text. `story` is
-    the project's story notes as story_notes.for_translation gives them.
+    the project's story notes as story_notes.for_translation gives them, and
+    `cast` who each speaker tag is (pipeline_common.translation_cast), and
+    `memory` the team's (source, translation) pairs from the project's other
+    episodes (pipeline_common.translation_memory), most recent first.
     """
     report = TranslationReport()
     if not texts:
@@ -531,10 +611,17 @@ async def translate_batch_with_report(
         for start in range(0, len(texts), CHUNK_SIZE):
             chunk = texts[start:start + CHUNK_SIZE]
             ctx = segments_context[start:start + CHUNK_SIZE] if segments_context else None
+            earlier = [
+                {"speaker_label": (segments_context[i].get("speaker_label", "")
+                                   if segments_context and i < len(segments_context) else ""),
+                 "source_text": texts[i], "translation": results[i]}
+                for i in range(max(0, start - EARLIER_LINES), start) if texts[i].strip() and results[i]
+            ]
             logger.info(
                 f"Translating lines {start + 1}-{start + len(chunk)} of {len(texts)} → {target_lang}"
             )
-            results.extend(await _translate_chunk(chunk, source_lang, target_lang, ctx, report, story))
+            results.extend(await _translate_chunk(
+                chunk, source_lang, target_lang, ctx, report, story, cast, earlier, memory))
         return await _finish_lines(texts, results, source_lang, target_lang, report, count_fallback=True), report
 
     # deep-translator as the configured backend (or Gemini configured without a key)

@@ -13,7 +13,7 @@ from app.services import gemini_models
 
 LISTED = [
     "gemini-2.5-flash-lite", "gemini-3.5-flash-lite", "gemini-flash-lite-latest",
-    "gemini-3.6-flash", "gemini-3.8-flash", "gemini-flash-latest", "gemini-3-flash-preview",
+    "gemini-3.6-flash", "gemini-3.8-flash", "gemini-flash-latest", "gemini-pro-latest", "gemini-3-flash-preview",
     "gemini-2.5-flash-preview-tts", "gemini-3.8-flash-tts", "gemini-3.1-flash-image",
     "text-embedding-005",
 ]
@@ -46,7 +46,8 @@ async def test_each_job_lists_only_models_that_suit_it(client, desktop):
     assert resp.status_code == 200
     body = resp.json()
     translation = _choice(body, "GEMINI_MODEL")["options"]
-    assert translation[0] == "gemini-flash-lite-latest"            # the maintained alias comes first
+    assert translation[0] == "gemini-flash-latest"                 # the maintained alias comes first
+    assert "gemini-pro-latest" in translation                      # a bigger model can be chosen for translation
     assert "gemini-3.5-flash-lite" in translation and "gemini-3.8-flash-tts" not in translation
     asr = _choice(body, "GEMINI_ASR_MODEL")["options"]
     assert asr.index("gemini-3.8-flash") < asr.index("gemini-3.6-flash")   # newest first
@@ -61,7 +62,7 @@ async def test_the_list_says_when_a_retired_choice_was_replaced(client, desktop,
     await gemini_models.switch_model("translation", "gemini-2.5-flash-lite", "no longer available")
     choice = _choice((await client.get("/api/v1/settings/models")).json(), "GEMINI_MODEL")
     assert choice["value"] == "gemini-2.5-flash-lite"
-    assert choice["in_use"] == "gemini-flash-lite-latest"
+    assert choice["in_use"] == "gemini-flash-latest"
 
 
 @pytest.mark.asyncio
@@ -96,7 +97,8 @@ async def test_a_model_is_checked_with_a_real_request(client, desktop, monkeypat
 async def test_automatic_means_the_built_in_choice(client, desktop):
     resp = await client.put("/api/v1/settings", json={"GEMINI_MODEL": "", "GEMINI_TTS_MODEL": ""})
     assert resp.status_code == 200
-    assert gemini_models.current_model("translation") == "gemini-flash-lite-latest"
+    assert gemini_models.current_model("translation") == gemini_models.default_model("translation")
+    assert "lite" not in gemini_models.current_model("translation")
     assert gemini_models.current_model("tts") == "gemini-2.5-flash-preview-tts"
     resp = await client.put("/api/v1/settings", json={"GEMINI_TTS_MODEL": "gemini-3.8-flash-tts"})
     assert gemini_models.current_model("tts") == "gemini-3.8-flash-tts"
