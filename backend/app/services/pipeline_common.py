@@ -4,11 +4,10 @@ Shared helpers used by both the ASR pipeline and the subtitle pipeline:
 job status updates, speaker bookkeeping, speaker reference voices, the atomic
 segment swap, failure recovery, and orphaned-job recovery on startup.
 """
-import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +17,7 @@ from app.core.paths import resolve_existing
 from app.models.models import (
     AgeGroup, ChatProposedEdit, Gender, Job, JobStatus, Project, Segment, Speaker, Voice,
 )
-from app.services import asr, auto_voice, story_notes
+from app.services import asr, story_notes
 from app.services.diarizer import build_voice_design_prompt
 
 logger = logging.getLogger(__name__)
@@ -57,37 +56,33 @@ async def translation_story(db: AsyncSession, project_id: str, job_id: str) -> s
 
 
 _VOICE_KIND = {"man": "a man", "woman": "a woman", "boy": "a boy", "girl": "a girl"}
-_PITCH_KIND = {"man": "probably a man", "woman": "probably a woman", "child": "probably a child"}
 
 
-async def translation_cast(db: AsyncSession, job: Job, lines: Sequence[Tuple[Optional[str], float, float]]) -> str:
+async def translation_cast(db: AsyncSession, job: Job, labels: Iterable[Optional[str]]) -> str:
     """
-    Who each speaker tag in an episode's lines is, for the translation prompt
-    (lines: (speaker label, start, end)). Per tag: the name the user gave, the
-    Story notes' character linked to it, and a man's, woman's or child's voice —
-    from the voice the user chose (with its age), else "probably …" from the
-    pitch of the tag's lines in the separated vocals (auto_voice), the same
-    measurement that picks a voice for a speaker nobody gave one. Read it
-    before releasing the connection for Gemini.
+    Who each speaker tag (labels: those of an episode's lines) is, for the
+    translation prompt. Per tag: the name the user gave, the
+    Story notes' character linked to it, and man/woman/boy/girl with age from
+    the voice the user chose. Nothing is guessed from pitch: on a real drama
+    the pitch of the lines called four of five men women or children (excited
+    young men speak at 230–250 Hz), and a wrong gender is worse than none —
+    Gemini then judges from the dialogue. Read it before releasing the
+    connection for Gemini.
     """
-    spans: Dict[str, List[Tuple[float, float]]] = {}
-    for label, start, end in lines:
-        if label:
-            spans.setdefault(label, []).append((start, end))
-    if not spans:
+    tags = sorted({label for label in labels if label})
+    if not tags:
         return ""
     speakers = {sp.label: sp for sp in (await db.execute(
-        select(Speaker).where(Speaker.project_id == job.project_id, Speaker.label.in_(list(spans)))
+        select(Speaker).where(Speaker.project_id == job.project_id, Speaker.label.in_(tags))
     )).scalars().all()}
     voice_ids = [sp.voice_id for sp in speakers.values() if sp.voice_id]
     voices = {v.id: v for v in (await db.execute(select(Voice).where(Voice.id.in_(voice_ids)))).scalars().all()} \
         if voice_ids else {}
     notes = (await db.execute(select(Project.story_notes).where(Project.id == job.project_id))).scalar_one_or_none()
     characters = {c["speaker"]: c for c in story_notes.normalize(notes)["characters"] if c["speaker"]}
-    vocals = auto_voice._separated_vocals(job)
 
     rows = []
-    for label in sorted(spans):
+    for label in tags:
         speaker, character = speakers.get(label), characters.get(label, {})
         name = (speaker.display_name or "").strip() if speaker else ""
         name = name if name and name != label else character.get("zh", "")
@@ -96,14 +91,10 @@ async def translation_cast(db: AsyncSession, job: Job, lines: Sequence[Tuple[Opt
         if voice is not None and voice.gender in _VOICE_KIND and not speaker.voice_auto:
             kind = _VOICE_KIND[voice.gender] + (f", {voice.age_group}" if voice.age_group else "")
         else:
-            longest = sorted(spans[label], key=lambda s: s[0] - s[1])[:auto_voice.MAX_LINES]
-            hz = await asyncio.to_thread(auto_voice._pitch_of_spans, [(vocals, a, b) for a, b in longest]) \
-                if vocals else None
-            kind = _PITCH_KIND.get(auto_voice.kind_from_pitch(hz), "not known")
+            kind = "not known"     # an automatic voice was picked by pitch — see above
         who = " ".join(part for part in (name, f"(Khmer: {km})" if km else "") if part)
         rows.append(f"- {label}: " + (f"{who} — {kind}" if who else kind))
-    return ("WHO IS SPEAKING — the speaker tags in these lines (a \"probably\" was judged "
-            "from the pitch of the voice):\n" + "\n".join(rows))
+    return "WHO IS SPEAKING — the speaker tags in these lines:\n" + "\n".join(rows)
 
 
 def vocals_path_for(job: Job) -> Optional[str]:

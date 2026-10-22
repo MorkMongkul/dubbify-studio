@@ -195,7 +195,7 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
             logger.info(f"Transcription: {has_text}/{len(diarized)} segments have text")
 
             story = await translation_story(db, project.id, job.id)
-            cast = await translation_cast(db, job, [(s.speaker_label, s.start_time, s.end_time) for s in diarized])
+            cast = await translation_cast(db, job, [s.speaker_label for s in diarized])
             await _update_job(db, job, JobStatus.TRANSLATING, 65)
             source_texts = [seg.source_text for seg in diarized]
             segments_context = [
@@ -278,9 +278,7 @@ async def run_translation(job_id: str) -> None:
             todo = [(seg.id, seg.source_text, label or "SPEAKER") for seg, label in rows if needs_translation(seg)]
             if todo:
                 story = await translation_story(db, project.id, job.id)
-                speaking = {label for _, _, label in todo}
-                cast = await translation_cast(
-                    db, job, [(label, seg.start_time, seg.end_time) for seg, label in rows if label in speaking])
+                cast = await translation_cast(db, job, [label for seg, label in rows if needs_translation(seg)])
                 await db.commit()   # release the connection before the Gemini calls
                 logger.info(f"Translating {len(todo)} missing line(s) for job {job_id[:8]}")
                 texts, report = await translate_batch_with_report(

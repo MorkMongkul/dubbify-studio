@@ -332,9 +332,7 @@ async def _translate_batch_with_gemini(
     cast_block = f"{cast}\n\n" if cast else ""
     cast_rule = (
         "\n- WHO IS SPEAKING describes the speaker tags: take its names, genders\n"
-        "  and ages as given, and only infer what it leaves out. A \"probably\" was\n"
-        "  judged from the pitch of the voice: clear evidence in the lines (a name,\n"
-        "  老公/老婆, how others address them) overrules it." if cast else ""
+        "  and ages as given, and only infer what it leaves out (\"not known\")." if cast else ""
     )
     # The end of the previous batch, already translated: context, not work.
     earlier_block = ""

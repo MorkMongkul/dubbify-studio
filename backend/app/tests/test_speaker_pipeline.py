@@ -19,7 +19,7 @@ from sqlalchemy import select
 import app.core.database as core_db
 from app.api.routes import jobs as jobs_routes
 from app.models.models import Job, JobStatus, Project, Segment, Speaker, Voice
-from app.services import asr, pipeline, pipeline_common, story_notes
+from app.services import asr, auto_voice, pipeline, story_notes
 from app.services.diarizer import DiarizedSegment
 from app.services.pipeline_common import recover_orphaned_jobs
 from app.services.translator import TranslationReport
@@ -567,8 +567,10 @@ async def test_translation_hears_who_each_speaker_is(monkeypatch, uploads, backg
     """
     Gemini used to get only "SPEAKER_01" and guessed genders — so a man could
     answer ចាស. It now hears the name the user gave, the Story notes' Khmer
-    name, and man/woman/age from the voice the user chose — or, for a speaker
-    with no voice yet, what the pitch of their lines suggests.
+    name, and man/woman/age from the voice the user chose. A speaker without a
+    voice is "not known", even when the pitch of their lines is high: on a real
+    drama the pitch called four of five men women or children (excited young
+    men speak at 230–250 Hz), and a wrong gender is worse than none.
     """
     project_id, job_id = await _seed(
         background_db,
@@ -585,9 +587,7 @@ async def test_translation_hears_who_each_speaker_is(monkeypatch, uploads, backg
         project.story_notes = story_notes.apply_user_edit(
             None, {"character": {"zh": "谢三", "km": "សៀ សាន", "about": "", "speaker": "SPEAKER_01"}})
         await s.commit()
-    pitches = {2.0: 220.0}                                    # SPEAKER_02 sounds like a woman; SPEAKER_03 can't be measured
-    monkeypatch.setattr(pipeline_common.auto_voice, "_pitch_of_spans",
-                        lambda spans: pitches.get(spans[0][1]) if spans else None)
+    monkeypatch.setattr(auto_voice, "_pitch_of_spans", lambda spans: 250.0)   # an excited young man
     casts: list[str] = []
 
     async def capture(texts, source_lang, target_lang, segments_context=None, story="", cast=""):
@@ -599,8 +599,8 @@ async def test_translation_hears_who_each_speaker_is(monkeypatch, uploads, backg
 
     lines = {line.split(":")[0].lstrip("- "): line for line in casts[0].splitlines() if line.startswith("- ")}
     assert "谢三" in lines["SPEAKER_01"] and "សៀ សាន" in lines["SPEAKER_01"] and "a man, 20s" in lines["SPEAKER_01"]
-    assert "probably a woman" in lines["SPEAKER_02"]
-    assert "not known" in lines["SPEAKER_03"]
+    assert "woman" not in casts[0].replace("a man", "")
+    assert "not known" in lines["SPEAKER_02"] and "not known" in lines["SPEAKER_03"]
 
 
 @pytest.mark.asyncio
@@ -611,7 +611,6 @@ async def test_analysis_tells_the_translation_who_is_speaking(monkeypatch, uploa
         DiarizedSegment("SPEAKER_00", 0.0, 1.0, "unknown", "adult", "你好"),
         DiarizedSegment("SPEAKER_01", 1.0, 2.0, "unknown", "adult", "谢谢"),
     ]))
-    monkeypatch.setattr(pipeline_common.auto_voice, "_pitch_of_spans", lambda spans: 120.0)
     casts: list[str] = []
 
     async def capture(texts, source_lang, target_lang, segments_context=None, story="", cast=""):
@@ -621,4 +620,4 @@ async def test_analysis_tells_the_translation_who_is_speaking(monkeypatch, uploa
     monkeypatch.setattr(pipeline, "translate_batch_with_report", capture)
     await pipeline.run_analysis_pipeline(job_id)
     assert "SPEAKER_00: 王医生" in casts[0]
-    assert "SPEAKER_01: probably a man" in casts[0]          # a new voice: measured, not named
+    assert "SPEAKER_01: not known" in casts[0]               # a new voice: nothing to go on yet

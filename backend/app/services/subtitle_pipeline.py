@@ -193,8 +193,7 @@ async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None =
 
             # Translate
             story = await translation_story(db, project.id, job.id)
-            cast = await translation_cast(
-                db, job, [(label, s.start_time, s.end_time) for s, label in zip(existing_segments, labels)])
+            cast = await translation_cast(db, job, labels)
             await _update_job(db, job, JobStatus.TRANSLATING, 65)
             source_texts = [s.source_text for s in existing_segments]
             segments_context = [
