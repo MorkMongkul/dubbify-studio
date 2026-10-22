@@ -367,12 +367,16 @@ async def _translate_batch_with_gemini(
     # voice. Without it Gemini guessed genders line by line.
     cast_block = f"{cast}\n\n" if cast else ""
     cast_rule = (
-        "\n- WHO IS SPEAKING describes the speaker tags: take its names, genders\n"
-        "  and ages as given, and only infer what it leaves out (\"not known\")." if cast else ""
+        "\n- WHO IS SPEAKING describes the speaker tags: take its names, and the\n"
+        "  genders and ages of chosen voices, as given; only infer what it leaves\n"
+        "  out (\"not known\"). A \"probably\" gender was heard from the voice and can be\n"
+        "  wrong: clear evidence in the lines (being called 哥/姐, 老公/老婆, a name)\n"
+        "  overrules it." if cast else ""
     )
     memory_block = (
         "HOW THIS TEAM TRANSLATED OTHER LINES OF THIS DRAMA (their own checked Khmer —\n"
-        "reuse their names, terms and tone wherever they fit):\n"
+        "reuse their names, terms and tone wherever they fit; polite particles (បាទ/ចាស)\n"
+        "and pronouns follow THIS line's speaker, never the example's):\n"
         + "\n".join(f"{zh} → {km}" for zh, km in examples) + "\n\n"
     ) if examples else ""
     # The end of the previous batch, already translated: context, not work.

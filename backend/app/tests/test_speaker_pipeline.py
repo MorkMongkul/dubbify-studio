@@ -11,6 +11,7 @@ Stage 2 / speaker detection behaviour at the pipeline + route level:
 ASR and translation are replaced at the service boundary; everything else
 (routes, sessions, models) runs for real against the in-memory test DB.
 """
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -633,7 +634,8 @@ async def test_translation_learns_from_the_other_episodes(monkeypatch, uploads, 
         other = Job(project_id=project_id, status=JobStatus.COMPLETED, progress=100, video_path="2.mp4")
         s.add(other)
         await s.flush()
-        s.add_all([Segment(job_id=other.id, start_time=0, end_time=1, source_text="谢三，走吧。", khmer_text="សុងសុឺអាន ទៅ!"),
+        s.add_all([Segment(job_id=other.id, start_time=0, end_time=1, source_text="谢三，走吧。", khmer_text="សុងសុឺអាន ទៅ!",
+                           tts_audio_path="voiced.wav"),
                    Segment(job_id=other.id, start_time=1, end_time=2, source_text="嗯", khmer_text="")])
         await s.commit()
     memories: list = []
@@ -757,3 +759,28 @@ async def test_choose_for_me_follows_the_heard_voice_before_pitch(monkeypatch, u
         assert await auto_voice._speaker_kind(s, speaker) == "child"
         speaker.gender = Gender.UNKNOWN
         assert await auto_voice._speaker_kind(s, speaker) == "woman"                # nothing heard: pitch as before
+
+
+@pytest.mark.asyncio
+async def test_only_the_teams_checked_khmer_is_learned_from(background_db):
+    """
+    An episode analysed but not yet reviewed holds Gemini's own first draft:
+    learning from it would bring Gemini's mistakes back as the team's words.
+    Checked means the team voiced or approved the line, or finished the episode.
+    """
+    project_id, job_id = await _seed(background_db, segments=[(0.0, 1.0, "你好", "", None, "")])
+    async with background_db() as s:
+        draft = Job(project_id=project_id, status=JobStatus.COMPLETED, progress=100, video_path="2.mp4")
+        done = Job(project_id=project_id, status=JobStatus.COMPLETED, progress=100, video_path="3.mp4",
+                   finished_at=datetime(2026, 10, 20))
+        s.add_all([draft, done])
+        await s.flush()
+        s.add_all([
+            Segment(job_id=draft.id, start_time=0, end_time=1, source_text="一", khmer_text="draft"),
+            Segment(job_id=draft.id, start_time=1, end_time=2, source_text="二", khmer_text="voiced", tts_audio_path="a.wav"),
+            Segment(job_id=draft.id, start_time=2, end_time=3, source_text="三", khmer_text="approved", is_approved=True),
+            Segment(job_id=done.id, start_time=0, end_time=1, source_text="四", khmer_text="finished"),
+        ])
+        await s.commit()
+        memory = await pipeline_common.translation_memory(s, project_id, job_id)
+    assert sorted(km for _, km in memory) == ["approved", "finished", "voiced"]

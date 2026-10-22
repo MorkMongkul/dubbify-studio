@@ -755,10 +755,11 @@ async def test_transcribed_lines_carry_who_the_voice_sounds_like(monkeypatch, fa
 
 def test_a_reference_voice_says_who_it_is_and_what_else_they_said(tmp_path):
     """
-    Measured on a real project (leave-one-episode-out, 130 lines): Gemini named
-    the right character for 36–42% of lines from a voice clip alone and 58%
-    when each reference also said "a man, 20s" and a few of that character's
-    other lines — young men's voices sound alike; what they say tells them apart.
+    Measured on a real project (leave-one-episode-out): Gemini named the right
+    character for 36–42% of lines from a voice clip alone and ~47% when each
+    reference also said "a man, 20s" and a few of that character's other lines
+    (55% with clips from the original sound) — young men's voices sound alike;
+    what they say tells them apart.
     """
     ref = SpeakerReference(label="SPEAKER_04", clip_path=_write(tmp_path, "r.wav"), text="他敢走一个试试！",
                            duration=2.0, about="a man, 20s", said=("我爸是这的校长。", "你现在敢走？"))

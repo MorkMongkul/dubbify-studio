@@ -109,14 +109,29 @@ def with_intro(notes, intro: str) -> dict:
     return out
 
 
-def relink_speaker(notes, old: str, new: str) -> dict:
-    """Two speaker labels became one (merged): characters linked to `old` move to `new`, unless one already has it."""
+def relink_speaker(notes, old: str, new: str) -> tuple[dict, list[str]]:
+    """
+    Two speaker labels became one (merged): characters linked to `old` move to
+    `new`, unless one already has it (then they're unlinked). Returns the notes
+    and the ids of the characters it changed, which link_characters restores.
+    """
     out = normalize(notes)
     taken = any(c["speaker"] == new for c in out["characters"])
+    changed = []
     for c in out["characters"]:
         if c["speaker"] == old:
             c["speaker"] = "" if taken else new
+            changed.append(c["id"])
             taken = True
+    return out, changed
+
+
+def link_characters(notes, ids: list[str], label: str) -> dict:
+    """Link these characters to a speaker label again (a merge undone)."""
+    out = normalize(notes)
+    for c in out["characters"]:
+        if c["id"] in ids:
+            c["speaker"] = label
     return out
 
 

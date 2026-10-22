@@ -158,8 +158,10 @@ export interface Speaker {
 export interface SpeakerMergeResponse {
   /** Lines that changed speaker */
   moved: string[]
-  /** The merged-away speaker as it was, so undo can create it again; null when only some lines moved */
-  removed: Speaker | null
+  /** The merged-away speaker as it was — POST /speakers/{into}/unmerge creates it again */
+  removed: Speaker
+  /** Story characters whose speaker link moved */
+  relinked: string[]
 }
 
 export interface SpeakerUpdate {

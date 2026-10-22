@@ -17,7 +17,7 @@ from app.core.paths import resolve_media_path
 from app.models.models import Segment, Speaker, Job, Project, Voice
 from app.schemas.schemas import (
     SegmentResponse, SegmentUpdate, SegmentCreate,
-    SpeakerResponse, SpeakerUpdate, SpeakerCreate, SpeakerMerge, SpeakerMergeResponse,
+    SpeakerResponse, SpeakerUpdate, SpeakerCreate, SpeakerMerge, SpeakerMergeResponse, SpeakerUnmerge,
 )
 from app.services import story_notes
 
@@ -362,11 +362,10 @@ async def merge_speaker(
 ):
     """
     Move this speaker's lines, in every episode, to another speaker of the same
-    project — the same person under two labels. Moving all of them removes this
-    speaker (returned as it was, so the editor can undo by creating it again and
-    moving `moved` back with segment_ids), and the Story character linked to its
-    label follows. Lines already voiced keep their audio until voiced again, as
-    when a speaker's voice changes.
+    project — the same person under two labels — and remove this speaker. The
+    Story character linked to its label follows. The response is what
+    /unmerge needs to undo it. Lines already voiced keep their audio until
+    voiced again, as when a speaker's voice changes.
     """
     source = await db.get(Speaker, speaker_id)
     target = await db.get(Speaker, payload.into)
@@ -374,21 +373,53 @@ async def merge_speaker(
         raise HTTPException(status_code=404, detail="Speaker not found")
     if source.id == target.id or source.project_id != target.project_id:
         raise HTTPException(status_code=400, detail="Choose another speaker of this project")
-    query = select(Segment).where(Segment.speaker_id == source.id)
-    if payload.segment_ids is not None:
-        query = query.where(Segment.id.in_(payload.segment_ids))
-    lines = (await db.execute(query)).scalars().all()
-    if payload.segment_ids is not None and len(lines) != len(set(payload.segment_ids)):
-        raise HTTPException(status_code=400, detail="Some of those lines aren't this speaker's")
+    lines = (await db.execute(select(Segment).where(Segment.speaker_id == source.id))).scalars().all()
     for line in lines:
         line.speaker_id = target.id
-    removed = None
-    if payload.segment_ids is None:
-        removed = SpeakerResponse.model_validate(source)
-        project = await db.get(Project, source.project_id)
-        project.story_notes = story_notes.relink_speaker(project.story_notes, source.label, target.label)
-        flag_modified(project, "story_notes")
-        await db.flush()
-        await db.delete(source)
+    removed = SpeakerResponse.model_validate(source)
+    project = await db.get(Project, source.project_id)
+    project.story_notes, relinked = story_notes.relink_speaker(project.story_notes, source.label, target.label)
+    flag_modified(project, "story_notes")
+    await db.flush()
+    await db.delete(source)
     await db.commit()
-    return SpeakerMergeResponse(moved=[line.id for line in lines], removed=removed)
+    return SpeakerMergeResponse(moved=[line.id for line in lines], removed=removed, relinked=relinked)
+
+
+@router.post("/speakers/{speaker_id}/unmerge", response_model=SpeakerResponse)
+async def unmerge_speaker(
+    speaker_id: str,
+    payload: SpeakerUnmerge,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """
+    Undo a merge into this speaker, in one step: the merged-away speaker comes
+    back as it was (label, name, voice and whether the app picked it, gender,
+    age, description), the moved lines that are still on this speaker go back
+    to it (one moved on since stays where it is), and its Story characters are
+    linked to it again.
+    """
+    target = await db.get(Speaker, speaker_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Speaker not found")
+    snap = payload.removed
+    voice_id = snap.voice_id if snap.voice_id and await db.get(Voice, snap.voice_id) else None
+    speaker = Speaker(
+        project_id=target.project_id, label=snap.label, display_name=snap.display_name, gender=snap.gender,
+        age_group=snap.age_group, voice_design_prompt=snap.voice_design_prompt, voice_id=voice_id,
+        voice_auto=snap.voice_auto and voice_id is not None,
+    )
+    db.add(speaker)
+    await db.flush()
+    if payload.moved:
+        lines = (await db.execute(select(Segment).where(
+            Segment.id.in_(payload.moved), Segment.speaker_id == target.id))).scalars().all()
+        for line in lines:
+            line.speaker_id = speaker.id
+    if payload.relinked:
+        project = await db.get(Project, target.project_id)
+        project.story_notes = story_notes.link_characters(project.story_notes, payload.relinked, snap.label)
+        flag_modified(project, "story_notes")
+    await db.commit()
+    await db.refresh(speaker)
+    return speaker

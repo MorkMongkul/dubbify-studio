@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -120,13 +120,17 @@ async def translation_memory(db: AsyncSession, project_id: str, job_id: str) -> 
     """
     The team's own translations in the project's OTHER episodes, as (source,
     Khmer) pairs, most recent episode first — the examples translator.
-    pick_examples chooses from. Every line with both texts counts: a line the
-    team corrected and one they kept as it was are both their Khmer. Read it
-    before releasing the connection for Gemini.
+    pick_examples chooses from. Only checked Khmer counts — a line the team
+    voiced or approved, or any line of an episode they marked finished: an
+    episode analysed but not reviewed yet holds Gemini's own first draft, and
+    learning from it would bring Gemini's mistakes back as the team's words.
+    Read it before releasing the connection for Gemini.
     """
+    checked = or_(Job.finished_at.is_not(None), Segment.is_approved.is_(True),
+                  (Segment.tts_audio_path.is_not(None)) & (Segment.tts_audio_path != ""))
     rows = (await db.execute(
         select(Segment.source_text, Segment.khmer_text).join(Job, Job.id == Segment.job_id)
-        .where(Job.project_id == project_id, Job.id != job_id)
+        .where(Job.project_id == project_id, Job.id != job_id, checked)
         .order_by(Job.created_at.desc(), Segment.start_time)
         .limit(MEMORY_MAX * 2)
     )).all()

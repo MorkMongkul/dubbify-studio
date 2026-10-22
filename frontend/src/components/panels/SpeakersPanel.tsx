@@ -80,7 +80,7 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
     setMergeIntoId(null)
     mergeSpeaker.mutate({ speakerId: source.id, into: into.id, projectId: projectId! }, {
       onSuccess: (result) => {
-        if (result.removed) recordSpeakerMerge(qc, projectId!, result.removed, result.moved, into.id)
+        recordSpeakerMerge(qc, projectId!, result, into.id)
         toast.success(`${nameOf(source)} merged into ${nameOf(into)}`)
       },
       onError: (e) => toast.error((e as Error).message || 'Could not merge the speakers'),

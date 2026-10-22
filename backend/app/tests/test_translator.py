@@ -292,3 +292,21 @@ def test_a_long_memory_gives_the_most_similar_lines_first_and_stays_bounded():
 def test_a_short_memory_is_given_whole():
     memory = [("一", "មួយ"), ("二", "ពីរ")]
     assert translator.pick_examples(memory, ["三"]) == memory
+
+
+@pytest.mark.asyncio
+async def test_a_heard_gender_gives_way_to_what_the_lines_say(gemini_http, google):
+    """'probably a woman (by the voice)' is wrong for about 1 speaker in 9; being called 老公 must win."""
+    gemini_http.script = [_gemini_reply(["បាទ"])]
+    await translator.translate_batch_with_report(
+        ["是"], "zh", "km", segments_context=[{"speaker_label": "SPEAKER_01"}],
+        cast="WHO IS SPEAKING —\n- SPEAKER_01: probably a woman (by the voice)")
+    assert "clear evidence in the lines" in gemini_http.prompts[0] and "overrules" in gemini_http.prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_examples_never_lend_their_polite_word_to_this_line(gemini_http, google):
+    """A similar example (是 → ចាស, said by a woman) must not make a man's 是 a ចាស."""
+    gemini_http.script = [_gemini_reply(["បាទ"])]
+    await translator.translate_batch_with_report(["是"], "zh", "km", memory=[("是。", "ចាស")])
+    assert "follow THIS line's speaker, never the example's" in gemini_http.prompts[0]

@@ -176,10 +176,13 @@ export const speakers = {
   update: (speakerId: string, data: SpeakerUpdate) =>
     api.patch<Speaker>(`/speakers/${speakerId}`, data).then((r) => r.data),
 
-  /** Move a speaker's lines (all of them, in every episode — or only segmentIds) to another speaker. */
-  merge: (speakerId: string, into: string, segmentIds?: string[]) =>
-    api.post<SpeakerMergeResponse>(`/speakers/${speakerId}/merge`, { into, segment_ids: segmentIds })
-      .then((r) => r.data),
+  /** Move all of a speaker's lines, in every episode, to another speaker and remove it. */
+  merge: (speakerId: string, into: string) =>
+    api.post<SpeakerMergeResponse>(`/speakers/${speakerId}/merge`, { into }).then((r) => r.data),
+
+  /** Undo a merge into `speakerId` in one step: the removed speaker comes back as it was, with its lines. */
+  unmerge: (speakerId: string, merged: SpeakerMergeResponse) =>
+    api.post<Speaker>(`/speakers/${speakerId}/unmerge`, merged).then((r) => r.data),
 }
 
 // ── Segments ──────────────────────────────────────────────────

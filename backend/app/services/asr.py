@@ -134,9 +134,10 @@ class GeminiRequestRejected(RuntimeError):
 class SpeakerReference:
     """
     A known voice: its global label, a short clip of it and what is said in it,
-    plus who it is ("a man, 20s") and other lines that character said. The last
-    two lifted a real project from 36–42% to 58% of lines given the right
-    character: young men's voices sound alike, what they say tells them apart.
+    plus who it is ("a man, 20s") and other lines that character said. On a
+    real project the right character went from 36–42% of lines to ~47% with
+    these, 55% together with clips from the original sound: young men's voices
+    sound alike, what they say tells them apart.
     """
     label: str
     clip_path: str
@@ -231,7 +232,8 @@ async def _detect_speech_segments(audio_path: str) -> List[Tuple[float, float]]:
 async def _slice_chunk(audio_path: str, start: float, end: float, out_path: str) -> None:
     # -ss BEFORE -i seeks in the input instead of decoding from the start of
     # the file for every clip — measured 1.37 s vs 0.05 s per clip 40 minutes
-    # into an episode. Sample-accurate for the PCM WAV stems used here.
+    # into an episode. Accurate for the WAV stems and for the mp4/mkv/webm video
+    # clips are also cut from (pipeline_common.original_sound_for).
     # FLAC (lossless) instead of WAV: a whole-scene request of WAV clips was
     # ~7 MB of base64 and hit upload timeouts on a slow connection.
     cmd = [
