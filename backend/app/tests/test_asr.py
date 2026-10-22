@@ -711,3 +711,115 @@ async def test_a_retired_transcription_model_is_replaced_without_using_up_retrie
     assert rows == [{"clip": 1, "no_speech": True, "turns": []}]
     assert models == ["gemini-3.6-flash", "gemini-flash-latest"]
     gemini_models.reset()
+
+
+# ── Who each voice sounds like ────────────────────────────────────────────────
+# The pitch of the lines called four of five men in a real drama women or
+# children (excited young men speak at 230–250 Hz). Gemini, which hears the
+# whole voice and the conversation, now says it per turn.
+
+def test_the_prompt_asks_who_each_voice_sounds_like():
+    prompt = asr._window_prompt(3, False, "zh")
+    assert "man, woman, boy or girl" in prompt
+
+
+def test_parse_window_voices_keeps_known_voices_in_turn_order():
+    rows = [
+        {"clip": 1, "no_speech": False, "turns": [{"speaker": "A", "text": "走", "voice": "man"},
+                                                  {"speaker": "B", "text": "", "voice": "woman"},     # dropped turn
+                                                  {"speaker": "B", "text": "好", "voice": "robot"}]},  # unknown voice
+        {"clip": 2, "no_speech": True, "turns": []},
+    ]
+    assert asr._parse_window_voices(rows, 2) == {1: ["man", None]}
+
+
+@pytest.mark.asyncio
+async def test_transcribed_lines_carry_who_the_voice_sounds_like(monkeypatch, fake_audio):
+    async def fake_spans(path):
+        return [(0.0, 2.0), (3.0, 5.0), (6.0, 8.0)]
+
+    async def fake_call(parts):
+        return [
+            {"clip": 1, "no_speech": False, "turns": [{"speaker": "A", "text": "你好", "voice": "man"}]},
+            {"clip": 2, "no_speech": False, "turns": [{"speaker": "B", "text": "嗯", "voice": "woman"}]},
+            {"clip": 3, "no_speech": False, "turns": [{"speaker": "A", "text": "走吧", "voice": "woman"},
+                                                      {"speaker": "A", "text": "快", "voice": "man"}]},
+        ]
+
+    monkeypatch.setattr(asr, "_detect_speech_segments", fake_spans)
+    monkeypatch.setattr(asr, "_call_window", fake_call)
+    segments, _ = await asr.transcribe_audio(fake_audio)
+    by_label = {s.speaker_label: s.gender for s in segments}
+    assert by_label == {"SPEAKER_00": "man", "SPEAKER_01": "woman"}     # A: man by 2 turns to 1
+
+
+def test_a_reference_voice_says_who_it_is_and_what_else_they_said(tmp_path):
+    """
+    Measured on a real project (leave-one-episode-out, 130 lines): Gemini named
+    the right character for 36–42% of lines from a voice clip alone and 58%
+    when each reference also said "a man, 20s" and a few of that character's
+    other lines — young men's voices sound alike; what they say tells them apart.
+    """
+    ref = SpeakerReference(label="SPEAKER_04", clip_path=_write(tmp_path, "r.wav"), text="他敢走一个试试！",
+                           duration=2.0, about="a man, 20s", said=("我爸是这的校长。", "你现在敢走？"))
+    parts = _build_window_parts([(_write(tmp_path, "a.wav"), 1.0)], refs=[("R1", ref)])
+    texts = [p.get("text", "") for p in parts]
+    i = next(i for i, t in enumerate(texts) if t.startswith("Reference voice R1"))
+    assert "a man, 20s" in texts[i] and "他敢走一个试试！" in texts[i]
+    assert "inlineData" in parts[i + 1]
+    assert texts[i + 2].startswith("R1 also said") and "「我爸是这的校长。」" in texts[i + 2]
+
+
+@pytest.mark.asyncio
+async def test_a_clip_whose_text_cannot_fit_its_length_is_asked_for_again(monkeypatch, fake_audio):
+    """A real 90 s episode once came back with 1,543 characters (about 200 normally): Gemini looped on a clip."""
+    async def fake_spans(path):
+        return [(0.0, 2.0), (3.0, 5.0)]
+
+    calls = []
+
+    async def fake_call(parts):
+        calls.append(_clip_markers(parts))
+        if len(calls) == 1:
+            return [{"clip": 1, "no_speech": False, "turns": [{"speaker": "A", "text": "你好"}]},
+                    {"clip": 2, "no_speech": False, "turns": [{"speaker": "A", "text": "哈" * 300}]}]
+        return [{"clip": 1, "no_speech": False, "turns": [{"speaker": "A", "text": "再见"}]}]
+
+    monkeypatch.setattr(asr, "_detect_speech_segments", fake_spans)
+    monkeypatch.setattr(asr, "_call_window", fake_call)
+    segments, used_mock = await asr.transcribe_audio(fake_audio)
+    assert [s.source_text for s in segments] == ["你好", "再见"]
+    assert len(calls) == 2 and len(calls[1]) == 1          # only the runaway clip was asked again
+
+
+# ── Gemini hears the original sound ───────────────────────────────────────────
+# The separation service's vocals lose everything below ~180 Hz (0.1–1.4% of the
+# energy there vs 17–33% in the original): men sound thin, and Gemini called 3
+# of 6 speakers' genders right from them, 7 of 7 from the original sound, with
+# transcription as good or better. Pauses are still found on the vocals.
+
+@pytest.mark.asyncio
+async def test_clips_can_be_cut_from_the_original_sound(monkeypatch, fake_audio):
+    detected_on, cut_from = [], []
+
+    async def fake_spans(path):
+        detected_on.append(path)
+        return [(0.0, 2.0)]
+
+    async def fake_slice(audio_path, start, end, out_path):
+        cut_from.append(audio_path)
+        with open(out_path, "wb") as f:
+            f.write(b"RIFF")
+
+    async def fake_call(parts):
+        return [{"clip": 1, "no_speech": False, "turns": [{"speaker": "A", "text": "你好"}]}]
+
+    monkeypatch.setattr(asr, "_detect_speech_segments", fake_spans)
+    monkeypatch.setattr(asr, "_slice_chunk", fake_slice)
+    monkeypatch.setattr(asr, "_call_window", fake_call)
+    await asr.transcribe_audio(fake_audio, clip_audio="/media/source.mp4")
+    assert detected_on == [fake_audio] and cut_from == ["/media/source.mp4"]
+
+
+def test_the_prompt_leaves_out_song_lyrics():
+    assert "lyrics" in asr._window_prompt(2, False, "zh")

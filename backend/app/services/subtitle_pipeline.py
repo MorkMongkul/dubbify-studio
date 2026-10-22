@@ -32,6 +32,7 @@ from app.services.pipeline_common import (
     project_speaker_labels,
     remove_unused_auto_speakers,
     restore_or_fail_job,
+    original_sound_for,
     translation_cast,
     translation_memory,
     translation_story,
@@ -165,7 +166,7 @@ async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None =
 
             taken_labels = await project_speaker_labels(db, project.id)
             with tempfile.TemporaryDirectory(prefix="speaker_refs_") as ref_dir:
-                references = await build_speaker_references(db, project.id, ref_dir)
+                references = await build_speaker_references(db, project.id, ref_dir, exclude_job_id=job.id)
                 # Release the connection before the Gemini calls — the dev SQLite
                 # engine has exactly one, and every UI poll needs it meanwhile.
                 await db.commit()
@@ -174,6 +175,7 @@ async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None =
                     references=references,
                     taken_labels=taken_labels,
                     language=project.source_lang or "zh",
+                    clip_audio=original_sound_for(job),
                 )
             if not labels:
                 labels = [DEFAULT_SPEAKER] * len(existing_segments)

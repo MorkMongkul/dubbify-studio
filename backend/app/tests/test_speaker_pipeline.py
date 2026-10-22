@@ -18,8 +18,8 @@ from sqlalchemy import select
 
 import app.core.database as core_db
 from app.api.routes import jobs as jobs_routes
-from app.models.models import Job, JobStatus, Project, Segment, Speaker, Voice
-from app.services import asr, auto_voice, pipeline, story_notes
+from app.models.models import AgeGroup, Gender, Job, JobStatus, Project, Segment, Speaker, Voice
+from app.services import asr, auto_voice, pipeline, pipeline_common, story_notes
 from app.services.diarizer import DiarizedSegment
 from app.services.pipeline_common import recover_orphaned_jobs
 from app.services.translator import TranslationReport
@@ -101,9 +101,10 @@ async def _speaker_labels(db_sessionmaker, project_id):
 
 
 def _fake_transcribe(segments, capture=None):
-    async def fake(audio_path, references=(), taken_labels=(), language="zh"):
+    async def fake(audio_path, references=(), taken_labels=(), language="zh", clip_audio=None):
         if capture is not None:
-            capture.update(references=list(references), taken_labels=set(taken_labels), language=language)
+            capture.update(references=list(references), taken_labels=set(taken_labels), language=language,
+                           clip_audio=clip_audio)
         return segments, False
     return fake
 
@@ -218,6 +219,7 @@ async def test_analysis_offers_named_speakers_as_references_and_reserves_taken_l
     assert {"SPEAKER_00", "SPEAKER_01"} <= seen["taken_labels"]
     assert [(r.label, r.text) for r in seen["references"]] == [("SPEAKER_00", "我已经有工作了")]
     rows = await _segments(background_db, ep2_id)
+    assert seen["references"][0].said == ("我已经有工作了",)     # what the character said in other episodes
     assert rows[0][1] == "SPEAKER_00"           # matched to the existing named speaker
     assert await _speaker_labels(background_db, project_id) == ["SPEAKER_00", "SPEAKER_01"]
 
@@ -369,7 +371,7 @@ async def test_detect_speakers_keeps_existing_speakers_when_nothing_was_heard(
     )
     _vocals(uploads, project_id, job_id)
 
-    async def nothing_heard(audio_path, references=(), taken_labels=(), language="zh"):
+    async def nothing_heard(audio_path, references=(), taken_labels=(), language="zh", clip_audio=None):
         return [DiarizedSegment("SPEAKER_03", 0.0, 2.0, "unknown", "adult", "")], True
 
     monkeypatch.setattr(pipeline, "transcribe_audio", nothing_heard)
@@ -648,3 +650,110 @@ async def test_translation_learns_from_the_other_episodes(monkeypatch, uploads, 
     ]))
     await pipeline.run_analysis_pipeline(job_id)
     assert memories == [[("谢三，走吧。", "សុងសុឺអាន ទៅ!")]] * 2
+
+
+@pytest.mark.asyncio
+async def test_a_reference_says_the_chosen_voice_and_only_other_episodes_lines(monkeypatch, uploads, background_db):
+    project_id, ep1 = await _seed(
+        background_db, speakers=[("SPEAKER_04", "SPEAKER_04", True)],
+        segments=[(0.0, 2.0, "我爸是这的校长。", "x", "SPEAKER_04", ""), (3.0, 5.0, "他敢走一个试试！", "y", "SPEAKER_04", "")])
+    _vocals(uploads, project_id, ep1)
+    async with background_db() as s:
+        (await s.execute(select(Voice))).scalar_one().gender = "man"
+        (await s.execute(select(Voice))).scalar_one().age_group = "20s"
+        ep2 = Job(project_id=project_id, status=JobStatus.COMPLETED, progress=100, video_path="2.mp4")
+        s.add(ep2)
+        await s.flush()
+        speaker = (await s.execute(select(Speaker))).scalar_one()
+        s.add(Segment(job_id=ep2.id, start_time=0, end_time=2, source_text="这一集的旧话", speaker_id=speaker.id))
+        await s.commit()
+        ep2_id = ep2.id
+
+    async def fake_slice(audio_path, start, end, out_path):
+        Path(out_path).write_bytes(b"RIFFref")
+
+    monkeypatch.setattr(asr, "_slice_chunk", fake_slice)
+    async with background_db() as s:
+        refs = await pipeline_common.build_speaker_references(s, project_id, str(uploads), exclude_job_id=ep2_id)
+    assert [r.about for r in refs] == ["a man, 20s"]
+    assert set(refs[0].said) == {"我爸是这的校长。", "他敢走一个试试！"}      # not the episode being analysed
+
+
+@pytest.mark.asyncio
+async def test_gemini_hears_the_original_sound_of_the_episode_and_of_the_references(monkeypatch, uploads, background_db):
+    project_id, ep1 = await _seed(
+        background_db, speakers=[("SPEAKER_00", "Lin Dong", False)],
+        segments=[(10.0, 13.5, "我已经有工作了", "x", "SPEAKER_00", "")])
+    _vocals(uploads, project_id, ep1)
+    async with background_db() as s:
+        ep2 = Job(project_id=project_id, status=JobStatus.STEMS_READY, video_path="v2.mp4")
+        s.add(ep2)
+        await s.flush()
+        for job_id in (ep1, ep2.id):
+            video = uploads / project_id / job_id / "source.mp4"
+            video.parent.mkdir(parents=True, exist_ok=True)
+            video.write_bytes(b"video")
+            (await s.get(Job, job_id)).video_path = str(video)
+        await s.commit()
+        ep2_id = ep2.id
+    _vocals(uploads, project_id, ep2_id)
+    cut_from = []
+
+    async def fake_slice(audio_path, start, end, out_path):
+        cut_from.append(audio_path)
+        Path(out_path).write_bytes(b"RIFFref")
+
+    monkeypatch.setattr(asr, "_slice_chunk", fake_slice)
+    seen = {}
+    monkeypatch.setattr(pipeline, "transcribe_audio", _fake_transcribe(
+        [DiarizedSegment("SPEAKER_00", 0.0, 1.0, "unknown", "adult", "又见面了")], capture=seen))
+    monkeypatch.setattr(pipeline, "translate_batch_with_report", _fake_translate)
+    await pipeline.run_analysis_pipeline(ep2_id)
+    assert seen["clip_audio"] == str(uploads / project_id / ep2_id / "source.mp4")
+    assert cut_from == [str(uploads / project_id / ep1 / "source.mp4")]      # the reference clip too
+
+
+# ── Who the voice sounds like, as Gemini heard it ─────────────────────────────
+
+@pytest.mark.asyncio
+async def test_analysis_keeps_who_each_new_voice_sounds_like(monkeypatch, uploads, background_db):
+    """Gemini heard the right gender for 7 of 7 speakers from the original sound; pitch for 1 of 6."""
+    project_id, job_id = await _seed(background_db, speakers=[("SPEAKER_00", "SPEAKER_00", False)])
+    async with background_db() as s:
+        (await s.execute(select(Speaker))).scalar_one().gender = Gender.MALE      # already known: kept
+        await s.commit()
+    _vocals(uploads, project_id, job_id)
+    monkeypatch.setattr(pipeline, "transcribe_audio", _fake_transcribe([
+        DiarizedSegment("SPEAKER_00", 0.0, 1.0, "woman", "adult", "你好"),
+        DiarizedSegment("SPEAKER_01", 1.0, 2.0, "woman", "adult", "谢谢"),
+        DiarizedSegment("SPEAKER_02", 2.0, 3.0, "boy", "adult", "妈妈"),
+    ]))
+    casts: list[str] = []
+
+    async def capture(texts, source_lang, target_lang, segments_context=None, story="", cast="", memory=None):
+        casts.append(cast)
+        return [f"km:{t}" for t in texts], TranslationReport()
+
+    monkeypatch.setattr(pipeline, "translate_batch_with_report", capture)
+    await pipeline.run_analysis_pipeline(job_id)
+    async with background_db() as s:
+        kinds = {sp.label: (sp.gender, sp.age_group) for sp in (await s.execute(select(Speaker))).scalars().all()}
+    assert kinds == {"SPEAKER_00": (Gender.MALE, AgeGroup.ADULT), "SPEAKER_01": (Gender.FEMALE, AgeGroup.ADULT),
+                     "SPEAKER_02": (Gender.MALE, AgeGroup.CHILD)}
+    assert "SPEAKER_01: probably a woman (by the voice)" in casts[0]
+    assert "SPEAKER_02: probably a boy (by the voice)" in casts[0]
+
+
+@pytest.mark.asyncio
+async def test_choose_for_me_follows_the_heard_voice_before_pitch(monkeypatch, uploads, background_db):
+    project_id, job_id = await _seed(background_db, speakers=[("SPEAKER_01", "SPEAKER_01", False)],
+                                     segments=[(0.0, 2.0, "你好", "x", "SPEAKER_01", "")])
+    monkeypatch.setattr(auto_voice, "_pitch_of_spans", lambda spans: 250.0)     # pitch would say "woman"
+    async with background_db() as s:
+        speaker = (await s.execute(select(Speaker))).scalar_one()
+        speaker.gender = Gender.MALE
+        assert await auto_voice._speaker_kind(s, speaker) == "man"
+        speaker.age_group = AgeGroup.CHILD
+        assert await auto_voice._speaker_kind(s, speaker) == "child"
+        speaker.gender = Gender.UNKNOWN
+        assert await auto_voice._speaker_kind(s, speaker) == "woman"                # nothing heard: pitch as before

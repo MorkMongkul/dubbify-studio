@@ -37,6 +37,7 @@ import os
 import random
 import re
 import tempfile
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -71,6 +72,10 @@ ASR_CALL_TIMEOUT = 180.0         # wall clock per attempt; a 29-clip scene took 
 ASR_MAX_ATTEMPTS = 3             # per request, for 429/5xx/timeouts
 ASR_CIRCUIT_BREAKER_FAILURES = 2  # consecutive failed requests before giving up on the rest
 ASR_SLICE_CONCURRENCY = 8
+# Far more text than a clip can hold means Gemini looped (a real 90 s episode
+# once came back with 1,543 characters, ~200 normally): such a clip is asked
+# for again. The prompt asks for 3–7 characters per second; this is generous.
+MAX_CHARS_PER_SECOND = 20
 
 GEMINI_ASR_THINKING_LEVEL = "low"   # the level the windowed design was validated with
 # Gemini 3's thinking tokens share maxOutputTokens with the answer and scale
@@ -96,7 +101,11 @@ _RESPONSE_SCHEMA = {
                 "type": "ARRAY",
                 "items": {
                     "type": "OBJECT",
-                    "properties": {"speaker": {"type": "STRING"}, "text": {"type": "STRING"}},
+                    "properties": {
+                        "speaker": {"type": "STRING"},
+                        "text": {"type": "STRING"},
+                        "voice": {"type": "STRING", "enum": ["man", "woman", "boy", "girl"]},
+                    },
                     "required": ["speaker", "text"],
                 },
             },
@@ -123,11 +132,18 @@ class GeminiRequestRejected(RuntimeError):
 
 @dataclass(frozen=True)
 class SpeakerReference:
-    """A known voice: its global label, a short clip of it, and what is said in that clip."""
+    """
+    A known voice: its global label, a short clip of it and what is said in it,
+    plus who it is ("a man, 20s") and other lines that character said. The last
+    two lifted a real project from 36–42% to 58% of lines given the right
+    character: young men's voices sound alike, what they say tells them apart.
+    """
     label: str
     clip_path: str
     text: str
     duration: float
+    about: str = ""
+    said: Tuple[str, ...] = ()
 
 
 # ── Silence detection → speech spans ──────────────────────────────────────────
@@ -285,7 +301,8 @@ def _window_prompt(n_clips: int, has_refs: bool, language: str) -> str:
     )
     refs_intro = (
         "Before them are reference clips of voices already identified, each labelled with "
-        "an ID (R1, R2, ...) and its transcript.\n" if has_refs else ""
+        "an ID (R1, R2, ...) and its transcript — and, when known, who it is and other lines "
+        "that character said; use those to recognise the character by what they say too.\n" if has_refs else ""
     )
     refs_rule = (
         "If the voice is one of the reference voices, use that exact ID (e.g. R2). " if has_refs else ""
@@ -304,6 +321,10 @@ def _window_prompt(n_clips: int, has_refs: bool, language: str) -> str:
         "(A, B, C, ...) and keep using that letter for the same voice in later clips. Decide by "
         "voice (pitch, timbre) and use the conversation (who is addressed by name, who answers) "
         "as supporting evidence.\n"
+        "- voice: who the voice sounds like — a man, woman, boy or girl — judged from the whole "
+        "voice and the conversation, not from pitch alone (excited or shouting men can speak as "
+        "high as women).\n"
+        "- Transcribe spoken dialogue only — never the lyrics of a song playing in the background.\n"
         "- If a clip has no intelligible speech (silence, music, breathing, noise), set "
         "no_speech=true and turns=[].\n"
         "Return one JSON object per numbered clip (none for the reference clips)."
@@ -318,8 +339,11 @@ def _build_window_parts(
     """Gemini request parts: instructions, then labelled reference voices, then labelled clips."""
     parts: List[dict] = [{"text": _window_prompt(len(clips), bool(refs), language)}]
     for rid, ref in refs:
-        parts.append({"text": f"Reference voice {rid} ({ref.duration:.1f} s): 「{ref.text}」"})
+        about = f" — {ref.about}" if ref.about else ""
+        parts.append({"text": f"Reference voice {rid} ({ref.duration:.1f} s){about}: 「{ref.text}」"})
         parts.append(_audio_part(ref.clip_path))
+        if ref.said:
+            parts.append({"text": f"{rid} also said, in other episodes: " + " ".join(f"「{line}」" for line in ref.said)})
     for k, (path, duration) in enumerate(clips, 1):
         parts.append({"text": f"Clip {k} ({duration:.1f} s):"})
         parts.append(_audio_part(path))
@@ -413,21 +437,21 @@ async def _call_window(parts: List[dict]) -> list:
 
 # ── Response handling ─────────────────────────────────────────────────────────
 
-def _parse_window_rows(rows: object, n_clips: int) -> Dict[int, Optional[List[Tuple[str, str]]]]:
-    """
-    Validate Gemini's rows → {clip number: [(speaker token, text), ...]}, or None
-    for a clip without speech. Clips the model skipped are simply absent.
-    """
-    parsed: Dict[int, Optional[List[Tuple[str, str]]]] = {}
+VOICES = ("man", "woman", "boy", "girl")
+
+
+def _clip_turns(rows: object, n_clips: int) -> Dict[int, List[Tuple[str, str, Optional[str]]]]:
+    """Gemini's valid rows → {clip number: [(speaker token, text, voice or None), ...]}; skipped clips absent."""
+    clips: Dict[int, List[Tuple[str, str, Optional[str]]]] = {}
     if not isinstance(rows, list):
-        return parsed
+        return clips
     for row in rows:
         if not isinstance(row, dict):
             continue
         k = row.get("clip")
-        if isinstance(k, bool) or not isinstance(k, int) or not 1 <= k <= n_clips or k in parsed:
+        if isinstance(k, bool) or not isinstance(k, int) or not 1 <= k <= n_clips or k in clips:
             continue
-        turns: List[Tuple[str, str]] = []
+        turns: List[Tuple[str, str, Optional[str]]] = []
         if not row.get("no_speech"):
             for turn in row.get("turns") or []:
                 if not isinstance(turn, dict):
@@ -436,9 +460,29 @@ def _parse_window_rows(rows: object, n_clips: int) -> Dict[int, Optional[List[Tu
                 if not text or text.lower() in _NO_SPEECH_MARKERS:
                     continue
                 speaker = str(turn.get("speaker") or "").strip().upper() or "?"
-                turns.append((speaker, text))
-        parsed[k] = turns or None
-    return parsed
+                voice = str(turn.get("voice") or "").strip().lower()
+                turns.append((speaker, text, voice if voice in VOICES else None))
+        clips[k] = turns
+    return clips
+
+
+def _parse_window_rows(rows: object, n_clips: int) -> Dict[int, Optional[List[Tuple[str, str]]]]:
+    """
+    Validate Gemini's rows → {clip number: [(speaker token, text), ...]}, or None
+    for a clip without speech. Clips the model skipped are simply absent.
+    """
+    return {k: [(speaker, text) for speaker, text, _ in turns] or None
+            for k, turns in _clip_turns(rows, n_clips).items()}
+
+
+def _parse_window_voices(rows: object, n_clips: int) -> Dict[int, List[Optional[str]]]:
+    """Who each kept turn's voice sounds like (VOICES or None), in the order of _parse_window_rows' turns."""
+    return {k: [voice for _, _, voice in turns] for k, turns in _clip_turns(rows, n_clips).items() if turns}
+
+
+def heard_voice(votes: Optional[Counter]) -> Optional[str]:
+    """The voice Gemini heard most often for one speaker, or None."""
+    return votes.most_common(1)[0][0] if votes else None
 
 
 class _LabelAllocator:
@@ -552,6 +596,7 @@ class _LabelledSpans:
     turns: Dict[int, Optional[List[Tuple[str, str]]]] = field(default_factory=dict)
     failed: Set[int] = field(default_factory=set)
     allocator: _LabelAllocator = field(default_factory=_LabelAllocator)
+    voices: Dict[str, Counter] = field(default_factory=dict)   # label → how often each voice was heard
 
 
 async def _label_windows(
@@ -560,8 +605,13 @@ async def _label_windows(
     references: Sequence[SpeakerReference] = (),
     taken_labels: Iterable[str] = (),
     language: str = "zh",
+    clip_audio: Optional[str] = None,
 ) -> _LabelledSpans:
-    """Transcribe + speaker-label every span, window by window, carrying known voices forward."""
+    """
+    Transcribe + speaker-label every span, window by window, carrying known
+    voices forward. Clips are cut from `clip_audio` (the episode's original
+    sound) when given, else from `audio_path`.
+    """
     result = _LabelledSpans(allocator=_LabelAllocator(set(taken_labels) | {r.label for r in references}))
     if not settings.GEMINI_API_KEY:
         logger.warning("GEMINI_API_KEY not set — skipping transcription; segments will have no text")
@@ -579,7 +629,7 @@ async def _label_windows(
 
         async def _slice(i: int) -> None:
             async with sem:
-                await _slice_chunk(audio_path, spans[i][0], spans[i][1], paths[i])
+                await _slice_chunk(clip_audio or audio_path, spans[i][0], spans[i][1], paths[i])
 
         await asyncio.gather(*(_slice(i) for i in range(len(spans))))
 
@@ -611,6 +661,11 @@ async def _label_windows(
 
             consecutive_failures = 0
             parsed = _normalise_script(_parse_window_rows(rows, len(window)), language)
+            for k, turns in list(parsed.items()):
+                seconds = spans[window[k - 1]][1] - spans[window[k - 1]][0]
+                if turns and sum(_speech_chars(t) for _, t in turns) > MAX_CHARS_PER_SECOND * seconds + 10:
+                    logger.warning(f"Gemini ASR wrote far too much for a {seconds:.1f} s clip — asking again")
+                    del parsed[k]
             missing = [window[k - 1] for k in range(1, len(window) + 1) if k not in parsed]
             retry = [i for i in missing if i not in requeued]
             if retry:
@@ -620,7 +675,11 @@ async def _label_windows(
             result.failed.update(i for i in missing if i not in retry)
 
             resolved = _resolve_speakers(parsed, {rid: ref.label for rid, ref in refs}, result.allocator)
+            voices = _parse_window_voices(rows, len(window))
             for k, turns in resolved.items():
+                for (label, _), voice in zip(turns or [], voices.get(k, [])):
+                    if voice:
+                        result.voices.setdefault(label, Counter())[voice] += 1
                 i = window[k - 1]
                 result.turns[i] = turns
                 if not turns:
@@ -632,7 +691,10 @@ async def _label_windows(
                 duration = spans[i][1] - spans[i][0]
                 if len(turns) == 1 and REFERENCE_MIN_SECONDS <= duration <= REFERENCE_MAX_SECONDS:
                     label, text = turns[0]
-                    known[label] = SpeakerReference(label, paths[i], text, duration)
+                    before = known.get(label)      # a fresher clip, same character: keep who it is
+                    known[label] = SpeakerReference(label, paths[i], text, duration,
+                                                    about=before.about if before else "",
+                                                    said=before.said if before else ())
     return result
 
 
@@ -676,6 +738,7 @@ async def label_speech(
     references: Sequence[SpeakerReference] = (),
     taken_labels: Iterable[str] = (),
     language: str = "zh",
+    clip_audio: Optional[str] = None,
 ) -> Tuple[List[str], List[str], bool]:
     """
     For each (start, end) span, return one speaker label (whoever says the
@@ -688,7 +751,7 @@ async def label_speech(
     if not spans:
         return [], [], True
 
-    result = await _label_windows(audio_path, spans, references, taken_labels, language)
+    result = await _label_windows(audio_path, spans, references, taken_labels, language, clip_audio)
     labels: List[str] = []
     texts: List[str] = []
     last: Optional[str] = None
@@ -713,9 +776,14 @@ async def transcribe_audio(
     references: Sequence[SpeakerReference] = (),
     taken_labels: Iterable[str] = (),
     language: str = "zh",
+    clip_audio: Optional[str] = None,
 ) -> Tuple[List[DiarizedSegment], bool]:
     """
     ASR + voice-based speaker labeling entry point (see module docstring).
+    Pauses are found on `audio_path` (the separated vocals: no music to mask
+    them); Gemini hears clips cut from `clip_audio` (the original sound) when
+    given — the separation service's vocals lose a voice's low end, and men
+    sounded like women or children to Gemini.
 
     references: known voices (e.g. the project's named speakers) Gemini may match.
     taken_labels: labels already used in the project — new voices never reuse them.
@@ -727,7 +795,7 @@ async def transcribe_audio(
     if not spans:
         return [], True
 
-    result = await _label_windows(audio_path, spans, references, taken_labels, language)
+    result = await _label_windows(audio_path, spans, references, taken_labels, language, clip_audio)
     segments: List[DiarizedSegment] = []
     last: Optional[str] = None
     fallback: Optional[str] = None
@@ -745,7 +813,7 @@ async def transcribe_audio(
                 speaker_label=label,
                 start_time=round(start, 3),
                 end_time=round(end, 3),
-                gender="unknown",
+                gender=heard_voice(result.voices.get(label)) or "unknown",
                 age_group="adult",
                 source_text=text,
             ))

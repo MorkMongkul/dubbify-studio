@@ -56,14 +56,29 @@ async def translation_story(db: AsyncSession, project_id: str, job_id: str) -> s
 
 
 _VOICE_KIND = {"man": "a man", "woman": "a woman", "boy": "a boy", "girl": "a girl"}
+# Who a voice sounds like, as Gemini heard it (asr.VOICES) ↔ the speaker's own fields.
+_HEARD = {"man": (Gender.MALE, AgeGroup.ADULT), "woman": (Gender.FEMALE, AgeGroup.ADULT),
+          "boy": (Gender.MALE, AgeGroup.CHILD), "girl": (Gender.FEMALE, AgeGroup.CHILD)}
 
 
-async def translation_cast(db: AsyncSession, job: Job, labels: Iterable[Optional[str]]) -> str:
+def heard_voice_of(speaker: Optional[Speaker]) -> Optional[str]:
+    """The voice stored on a speaker (from Gemini's ear) as man/woman/boy/girl, or None."""
+    if speaker is None or speaker.gender not in (Gender.MALE, Gender.FEMALE):
+        return None
+    child = speaker.age_group == AgeGroup.CHILD
+    return ("boy" if child else "man") if speaker.gender == Gender.MALE else ("girl" if child else "woman")
+
+
+async def translation_cast(
+    db: AsyncSession, job: Job, labels: Iterable[Optional[str]], heard: Optional[Dict[str, str]] = None,
+) -> str:
     """
     Who each speaker tag (labels: those of an episode's lines) is, for the
     translation prompt. Per tag: the name the user gave, the
     Story notes' character linked to it, and man/woman/boy/girl with age from
-    the voice the user chose. Nothing is guessed from pitch: on a real drama
+    the voice the user chose — else "probably …" from what Gemini heard (`heard`,
+    this run's transcription, or what is stored on the speaker; 7 of 7 speakers
+    right from the original sound). Nothing is guessed from pitch: on a real drama
     the pitch of the lines called four of five men women or children (excited
     young men speak at 230–250 Hz), and a wrong gender is worse than none —
     Gemini then judges from the dialogue. Read it before releasing the
@@ -91,7 +106,8 @@ async def translation_cast(db: AsyncSession, job: Job, labels: Iterable[Optional
         if voice is not None and voice.gender in _VOICE_KIND and not speaker.voice_auto:
             kind = _VOICE_KIND[voice.gender] + (f", {voice.age_group}" if voice.age_group else "")
         else:
-            kind = "not known"     # an automatic voice was picked by pitch — see above
+            voice_heard = (heard or {}).get(label) or heard_voice_of(speaker)
+            kind = f"probably {_VOICE_KIND[voice_heard]} (by the voice)" if voice_heard in _VOICE_KIND else "not known"
         who = " ".join(part for part in (name, f"(Khmer: {km})" if km else "") if part)
         rows.append(f"- {label}: " + (f"{who} — {kind}" if who else kind))
     return "WHO IS SPEAKING — the speaker tags in these lines:\n" + "\n".join(rows)
@@ -118,6 +134,18 @@ async def translation_memory(db: AsyncSession, project_id: str, job_id: str) -> 
     return [(zh, km) for zh, km in pairs if zh and km][:MEMORY_MAX]
 
 
+def original_sound_for(job: Job) -> Optional[str]:
+    """
+    The episode's original sound for Gemini to hear: the extracted audio, else
+    the video itself (the extracted audio is deleted after separation; clips
+    are cut straight from the video). None when neither is on disk. Not the
+    separated vocals: the separation service drops a voice's low end, and
+    Gemini then took men for women or children (3 of 6 right vs 7 of 7).
+    """
+    found = resolve_existing(job.audio_path) or resolve_existing(job.video_path)
+    return str(found) if found else None
+
+
 def vocals_path_for(job: Job) -> Optional[str]:
     """The job's separated vocals stem, else its extracted audio — whichever exists on disk."""
     stem = Path(settings.UPLOAD_DIR) / job.project_id / job.id / "vocals.wav"
@@ -141,12 +169,16 @@ async def project_speaker_labels(db: AsyncSession, project_id: str) -> set:
     return set(result.scalars().all())
 
 
-async def ensure_speakers(db: AsyncSession, project_id: str, labels: Iterable[str]) -> Dict[str, Speaker]:
+async def ensure_speakers(
+    db: AsyncSession, project_id: str, labels: Iterable[str], heard: Optional[Dict[str, str]] = None,
+) -> Dict[str, Speaker]:
     """
     {label: Speaker} for every label, creating the missing ones. Flushes but
     does not commit, so the caller decides what is written atomically.
     Speakers are project-scoped: the same label means the same character
-    across the project's episodes.
+    across the project's episodes. `heard` (label → man/woman/boy/girl, from
+    the transcription) is kept on a speaker whose gender isn't known yet —
+    "Choose for me" (auto_voice) and the translation use it.
     """
     result = await db.execute(select(Speaker).where(Speaker.project_id == project_id))
     speaker_map: Dict[str, Speaker] = {sp.label: sp for sp in result.scalars().all()}
@@ -162,6 +194,10 @@ async def ensure_speakers(db: AsyncSession, project_id: str, labels: Iterable[st
             )
             db.add(speaker)
             speaker_map[label] = speaker
+    for label, voice in (heard or {}).items():
+        speaker = speaker_map.get(label)
+        if speaker is not None and voice in _HEARD and speaker.gender in (None, Gender.UNKNOWN):
+            speaker.gender, speaker.age_group = _HEARD[voice]
     await db.flush()
     return speaker_map
 
@@ -178,11 +214,19 @@ async def remove_unused_auto_speakers(db: AsyncSession, project_id: str) -> None
     await db.flush()
 
 
-async def build_speaker_references(db: AsyncSession, project_id: str, tmp_dir: str) -> List[asr.SpeakerReference]:
+REFERENCE_SAID = 8   # other lines of a character shown with its reference voice
+
+
+async def build_speaker_references(
+    db: AsyncSession, project_id: str, tmp_dir: str, exclude_job_id: Optional[str] = None,
+) -> List[asr.SpeakerReference]:
     """
     Reference voices for the ASR: one short clip per named/voiced speaker in
     the project (from any episode), so a recurring character keeps the same
-    label — and with it the name and voice the user assigned.
+    label — and with it the name and voice the user assigned. Each also says
+    who it is (the voice the user chose: "a man, 20s") and up to
+    REFERENCE_SAID of its lines from episodes other than `exclude_job_id`
+    (the one being analysed, whose old lines may be wrongly labelled).
     """
     result = await db.execute(select(Speaker).where(Speaker.project_id == project_id))
     # A voice the app picked (auto_voice.py) counts once lines were voiced with
@@ -201,13 +245,20 @@ async def build_speaker_references(db: AsyncSession, project_id: str, tmp_dir: s
         select(Segment, Job).join(Job, Job.id == Segment.job_id)
         .where(Segment.speaker_id.in_(list(confirmed)))
     )).all()
+    voice_ids = [sp.voice_id for sp in confirmed.values() if sp.voice_id and not sp.voice_auto]
+    voices = {v.id: v for v in (await db.execute(select(Voice).where(Voice.id.in_(voice_ids)))).scalars().all()} \
+        if voice_ids else {}
     counts: Dict[str, int] = {}
     best: Dict[str, tuple] = {}
+    said: Dict[str, List[str]] = {}
     for seg, job in rows:
         counts[seg.speaker_id] = counts.get(seg.speaker_id, 0) + 1
-        duration = seg.end_time - seg.start_time
-        if not (seg.source_text or "").strip():
+        text = (seg.source_text or "").strip()
+        if not text:
             continue
+        if job.id != exclude_job_id and text not in said.setdefault(seg.speaker_id, []):
+            said[seg.speaker_id].append(text)
+        duration = seg.end_time - seg.start_time
         if not asr.REFERENCE_MIN_SECONDS <= duration <= asr.REFERENCE_MAX_SECONDS:
             continue
         if seg.speaker_id not in best or duration > best[seg.speaker_id][0]:
@@ -216,16 +267,21 @@ async def build_speaker_references(db: AsyncSession, project_id: str, tmp_dir: s
     references: List[asr.SpeakerReference] = []
     for speaker_id in sorted(best, key=lambda sid: -counts[sid]):
         duration, seg, job = best[speaker_id]
-        vocals = vocals_path_for(job)
-        if not vocals:
+        source = original_sound_for(job) or vocals_path_for(job)   # as the clips it is compared with
+        if not source:
             continue
         clip = os.path.join(tmp_dir, f"ref_{speaker_id}.flac")
         try:
-            await asr._slice_chunk(vocals, seg.start_time, seg.end_time, clip)
+            await asr._slice_chunk(source, seg.start_time, seg.end_time, clip)
         except Exception as e:
             logger.warning(f"Could not cut a reference clip for speaker {confirmed[speaker_id].label}: {e}")
             continue
-        references.append(asr.SpeakerReference(confirmed[speaker_id].label, clip, seg.source_text.strip(), duration))
+        voice = voices.get(confirmed[speaker_id].voice_id)
+        about = (_VOICE_KIND[voice.gender] + (f", {voice.age_group}" if voice.age_group else "")) \
+            if voice is not None and voice.gender in _VOICE_KIND else ""
+        lines = tuple(sorted(said.get(speaker_id, []), key=len, reverse=True)[:REFERENCE_SAID])
+        references.append(asr.SpeakerReference(confirmed[speaker_id].label, clip, seg.source_text.strip(), duration,
+                                               about=about, said=lines))
         if len(references) >= asr.ASR_MAX_REFERENCES:
             break
     return references

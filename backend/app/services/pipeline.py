@@ -22,7 +22,7 @@ from app.core.config import settings
 from app.models.models import Job, Project, Segment, Speaker, JobStatus
 from app.services.audio_extractor import extract_audio, get_video_duration
 from app.services.source_separator import render_bgm_volume, separate_vocals_bgm
-from app.services.asr import labels_for_spans, transcribe_audio
+from app.services.asr import VOICES, labels_for_spans, transcribe_audio
 from app.services.translator import translate_batch_with_report
 from app.services.pipeline_common import (
     update_job_status as _update_job,
@@ -31,6 +31,7 @@ from app.services.pipeline_common import (
     project_speaker_labels,
     remove_unused_auto_speakers,
     replace_job_segments,
+    original_sound_for,
     restore_or_fail_job,
     translation_cast,
     translation_memory,
@@ -180,7 +181,7 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
             await _update_job(db, job, JobStatus.DIARIZING, 35)
             taken_labels = await project_speaker_labels(db, project.id)
             with tempfile.TemporaryDirectory(prefix="speaker_refs_") as ref_dir:
-                references = await build_speaker_references(db, project.id, ref_dir)
+                references = await build_speaker_references(db, project.id, ref_dir, exclude_job_id=job.id)
                 # Release the connection before minutes of Gemini calls — the dev
                 # SQLite engine has exactly one.
                 await db.commit()
@@ -189,6 +190,7 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
                     references=references,
                     taken_labels=taken_labels,
                     language=project.source_lang or "zh",
+                    clip_audio=original_sound_for(job),
                 )
 
             await _update_job(db, job, JobStatus.TRANSCRIBING, 55)
@@ -196,7 +198,8 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
             logger.info(f"Transcription: {has_text}/{len(diarized)} segments have text")
 
             story = await translation_story(db, project.id, job.id)
-            cast = await translation_cast(db, job, [s.speaker_label for s in diarized])
+            heard = {s.speaker_label: s.gender for s in diarized if s.gender in VOICES}
+            cast = await translation_cast(db, job, [s.speaker_label for s in diarized], heard)
             memory = await translation_memory(db, project.id, job.id)
             await _update_job(db, job, JobStatus.TRANSLATING, 65)
             source_texts = [seg.source_text for seg in diarized]
@@ -213,7 +216,7 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
 
             # Atomic swap: speakers, old-segment removal, new segments and the
             # COMPLETED status are all written in the one commit below.
-            speaker_map = await ensure_speakers(db, project.id, [seg.speaker_label for seg in diarized])
+            speaker_map = await ensure_speakers(db, project.id, [seg.speaker_label for seg in diarized], heard)
             lane_by_speaker: dict = {}   # each speaker starts on its own lane (user can rearrange)
             new_segments = []
             for i, seg in enumerate(diarized):
@@ -337,7 +340,7 @@ async def run_speaker_detection(job_id: str) -> None:
 
             taken_labels = await project_speaker_labels(db, project.id)
             with tempfile.TemporaryDirectory(prefix="speaker_refs_") as ref_dir:
-                references = await build_speaker_references(db, project.id, ref_dir)
+                references = await build_speaker_references(db, project.id, ref_dir, exclude_job_id=job.id)
                 await db.commit()   # release the connection before the Gemini calls
                 # Analyse the audio fresh (whole scenes, accurate turns) and map
                 # it onto the existing segments by overlap — see labels_for_spans.
@@ -346,12 +349,14 @@ async def run_speaker_detection(job_id: str) -> None:
                     references=references,
                     taken_labels=taken_labels,
                     language=project.source_lang or "zh",
+                    clip_audio=original_sound_for(job),
                 )
             labels = labels_for_spans(spans, pieces)
             if labels is None:
                 raise RuntimeError("Gemini didn't return any speech for this audio — try again in a minute.")
 
-            speaker_map = await ensure_speakers(db, project.id, labels)
+            heard = {p.speaker_label: p.gender for p in pieces if p.gender in VOICES}
+            speaker_map = await ensure_speakers(db, project.id, labels, heard)
             # Re-read: the user may have deleted segments while Gemini was listening.
             current = {s.id: s for s in (await db.execute(
                 select(Segment).where(Segment.id.in_(segment_ids))
