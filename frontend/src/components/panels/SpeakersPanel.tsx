@@ -1,19 +1,19 @@
 // src/components/panels/SpeakersPanel.tsx
-// Speakers tab of the dock — rename the session's speakers and assign each a
-// library voice. Extracted from EditorPage; fully self-contained (React Query
+// Speakers tab of the dock — rename the session's speakers, assign each a
+// library voice, and merge a speaker into another (the same person under two labels). Extracted from EditorPage; fully self-contained (React Query
 // dedupes the segment/speaker subscriptions it shares with the editor).
 import { VoiceBrowser } from '@/components/voices/VoiceBrowser'
 import { VoiceTrigger } from '@/components/voices/VoiceTrigger'
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { AudioLines, ChevronLeft, RefreshCw, Users } from 'lucide-react'
+import { AudioLines, ChevronLeft, Merge, RefreshCw, Users } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
-  useAnalyzeJob, useDetectSpeakers, useJob, useSegments, useSpeakers, useVoices, useUpdateSpeaker,
+  useAnalyzeJob, useDetectSpeakers, useJob, useMergeSpeaker, useSegments, useSpeakers, useVoices, useUpdateSpeaker,
 } from '@/hooks/useApi'
 import { getSpeakerColor, getSpeakerDisplayName, isJobRunning } from '@/lib/utils'
-import { recordSpeakerChange } from '@/lib/historyHelpers'
+import { recordSpeakerChange, recordSpeakerMerge } from '@/lib/historyHelpers'
 import { voiceUsers } from '@/lib/voiceTags'
 import type { Speaker } from '@/types'
 import { useHistoryStore } from '@/store/historyStore'
@@ -38,6 +38,10 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
   const [confirmReanalyze, setConfirmReanalyze] = useState(false)
   // The speaker whose voice is being chosen: the voice browser covers the list meanwhile
   const [browsingId, setBrowsingId] = useState<string | null>(null)
+  // "Same person as…": the card choosing, then the speaker chosen (waiting for the confirm)
+  const mergeSpeaker = useMergeSpeaker()
+  const [mergingId, setMergingId] = useState<string | null>(null)
+  const [mergeIntoId, setMergeIntoId] = useState<string | null>(null)
 
   // Speakers actually present in this session, each keeping the index it has
   // in the FULL project speaker list: that index is what getSpeakerColor() is
@@ -68,6 +72,20 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
   // running shows in the transcript panel, not here as well.
   const showActions = segs.length > 0 && (finished || busy)
   const UNAVAILABLE = 'Available when the current step finishes'
+
+  const nameOf = (speaker: Speaker) => getSpeakerDisplayName(speaker, spks.findIndex((sp) => sp.id === speaker.id))
+
+  const runMerge = (source: Speaker, into: Speaker) => {
+    setMergingId(null)
+    setMergeIntoId(null)
+    mergeSpeaker.mutate({ speakerId: source.id, into: into.id, projectId: projectId! }, {
+      onSuccess: (result) => {
+        if (result.removed) recordSpeakerMerge(qc, projectId!, result.removed, result.moved, into.id)
+        toast.success(`${nameOf(source)} merged into ${nameOf(into)}`)
+      },
+      onError: (e) => toast.error((e as Error).message || 'Could not merge the speakers'),
+    })
+  }
 
   const runDetectSpeakers = () => {
     if (!jobId) return
@@ -198,6 +216,19 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
                       {getSpeakerDisplayName(speaker, projectIndex)}
                     </span>
                   )}
+                  <button
+                    onClick={() => {
+                      setMergingId(mergingId === speaker.id ? null : speaker.id)
+                      setMergeIntoId(null)
+                    }}
+                    disabled={busy || spks.length < 2}
+                    className={`shrink-0 p-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+                      mergingId === speaker.id ? 'text-white bg-ink-700/60' : 'text-ink-500 hover:text-white hover:bg-ink-700/60'}`}
+                    title={busy ? UNAVAILABLE : 'Same person as another speaker…'}
+                    aria-label="Same person as another speaker"
+                  >
+                    <Merge size={11} />
+                  </button>
                 </div>
                 <VoiceTrigger
                   voice={speaker.voice_id ? availableVoices.find((v) => v.id === speaker.voice_id) : undefined}
@@ -209,6 +240,52 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
                   title="Choose the voice for all of this speaker's lines"
                   auto={!!speaker.voice_auto && !!speaker.voice_id}
                 />
+                {mergingId === speaker.id && (() => {
+                  const into = spks.find((sp) => sp.id === mergeIntoId)
+                  if (into) {
+                    return (
+                      <div className="space-y-1.5 pt-1.5 border-t border-ink-800/60">
+                        <p className="text-[9px] text-amber-300/90 leading-snug">
+                          Move all of {nameOf(speaker)}'s lines, in every episode, to {nameOf(into)}? {nameOf(speaker)} is removed.
+                        </p>
+                        <div className="flex gap-1.5">
+                          <button
+                            onClick={() => runMerge(speaker, into)}
+                            className="flex-1 py-1 rounded bg-brand-600 hover:bg-brand-500 text-white text-[10px] font-semibold transition-colors"
+                          >
+                            Merge
+                          </button>
+                          <button
+                            onClick={() => setMergeIntoId(null)}
+                            className="flex-1 py-1 rounded bg-ink-800 hover:bg-ink-700 text-ink-300 text-[10px] transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  }
+                  return (
+                    <div className="space-y-1 pt-1.5 border-t border-ink-800/60">
+                      <p className="text-[9px] text-ink-400">Same person as:</p>
+                      <div className="max-h-40 overflow-y-auto space-y-0.5">
+                        {spks.map((other, otherIndex) => other.id === speaker.id ? null : (
+                          <button
+                            key={other.id}
+                            onClick={() => setMergeIntoId(other.id)}
+                            className="w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-left hover:bg-ink-700/50 transition-colors"
+                          >
+                            <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: other.color ?? getSpeakerColor(otherIndex) }} />
+                            <span className="text-[10px] text-ink-200 truncate flex-1">{getSpeakerDisplayName(other, otherIndex)}</span>
+                            {!sessionSpeakerIds.has(other.id) && (
+                              <span className="text-[9px] text-ink-500 shrink-0">other episodes</span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })()}
               </div>
             )
           })

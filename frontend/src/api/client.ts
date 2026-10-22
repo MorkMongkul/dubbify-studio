@@ -3,7 +3,7 @@
 
 import axios, { type AxiosProgressEvent } from 'axios'
 import type {
-  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, Segment, SegmentUpdate, SegmentCreate, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView,
+  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, SpeakerMergeResponse, Segment, SegmentUpdate, SegmentCreate, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView,
 } from '@/types'
 
 const api = axios.create({
@@ -175,6 +175,11 @@ export const speakers = {
 
   update: (speakerId: string, data: SpeakerUpdate) =>
     api.patch<Speaker>(`/speakers/${speakerId}`, data).then((r) => r.data),
+
+  /** Move a speaker's lines (all of them, in every episode — or only segmentIds) to another speaker. */
+  merge: (speakerId: string, into: string, segmentIds?: string[]) =>
+    api.post<SpeakerMergeResponse>(`/speakers/${speakerId}/merge`, { into, segment_ids: segmentIds })
+      .then((r) => r.data),
 }
 
 // ── Segments ──────────────────────────────────────────────────

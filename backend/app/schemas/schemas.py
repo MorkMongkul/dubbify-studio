@@ -172,6 +172,11 @@ class SpeakerUpdate(BaseModel):
     voice_id: Optional[str] = None
 
 
+class SpeakerMerge(BaseModel):
+    into: str                                   # the speaker that keeps the lines
+    segment_ids: Optional[List[str]] = None     # only these lines (undo); all of them otherwise
+
+
 class SpeakerResponse(BaseModel):
     id: str
     project_id: str
@@ -190,6 +195,11 @@ class SpeakerResponse(BaseModel):
         return bool(value)           # NULL on speakers from before 0.2.4
 
     model_config = {"from_attributes": True}
+
+
+class SpeakerMergeResponse(BaseModel):
+    moved: List[str]                           # the lines that changed speaker
+    removed: Optional[SpeakerResponse] = None  # the merged-away speaker, as it was (to undo)
 
 
 # ── Segment schemas ───────────────────────────────────────────

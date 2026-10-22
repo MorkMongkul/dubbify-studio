@@ -7,7 +7,8 @@
 
 import type { QueryClient } from '@tanstack/react-query'
 import { segments as segmentsApi, speakers as speakersApi } from '@/api/client'
-import type { Segment, SegmentCreate, SegmentUpdate, SpeakerUpdate } from '@/types'
+import type { Segment, SegmentCreate, SegmentUpdate, Speaker, SpeakerUpdate } from '@/types'
+import { invalidateSpeakerLines } from '@/hooks/useApi'
 import { useHistoryStore } from '@/store/historyStore'
 
 export function recordSegmentChange(
@@ -221,6 +222,32 @@ export function recordSpeakerChange(
     redo: async () => {
       await speakersApi.update(speakerId, after)
       qc.invalidateQueries({ queryKey: ['speakers', projectId] })
+    },
+  })
+}
+
+/** Undo creates the merged-away speaker again (same label, name and voice) and moves its lines back. */
+export function recordSpeakerMerge(
+  qc: QueryClient,
+  projectId: string,
+  removed: Speaker,
+  moved: string[],
+  intoId: string,
+) {
+  const box = { currentId: removed.id }
+  useHistoryStore.getState().push({
+    label: 'Merge speakers',
+    undo: async () => {
+      const back = await speakersApi.create(projectId, {
+        label: removed.label, display_name: removed.display_name, voice_id: removed.voice_id ?? null,
+      })
+      box.currentId = back.id
+      await speakersApi.merge(intoId, back.id, moved)
+      invalidateSpeakerLines(qc, projectId)
+    },
+    redo: async () => {
+      await speakersApi.merge(box.currentId, intoId)
+      invalidateSpeakerLines(qc, projectId)
     },
   })
 }

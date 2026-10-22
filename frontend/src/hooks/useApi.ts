@@ -189,6 +189,22 @@ export function useUpdateSpeaker() {
   })
 }
 
+/** Lines moved between speakers in any episode, and the Story character may have followed. */
+export function invalidateSpeakerLines(qc: ReturnType<typeof useQueryClient>, projectId: string) {
+  qc.invalidateQueries({ queryKey: ['speakers', projectId] })
+  qc.invalidateQueries({ queryKey: ['segments'] })
+  qc.invalidateQueries({ queryKey: ['story', projectId] })
+}
+
+export function useMergeSpeaker() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ speakerId, into }: { speakerId: string; into: string; projectId: string }) =>
+      speakers.merge(speakerId, into),
+    onSuccess: (_result, { projectId }) => invalidateSpeakerLines(qc, projectId),
+  })
+}
+
 export function useCreateSpeaker() {
   const qc = useQueryClient()
   return useMutation({

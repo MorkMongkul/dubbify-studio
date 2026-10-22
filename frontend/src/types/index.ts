@@ -154,6 +154,14 @@ export interface Speaker {
   segment_count?: number
 }
 
+/** POST /speakers/{id}/merge — the same person under two labels (backend routes/segments.py merge_speaker). */
+export interface SpeakerMergeResponse {
+  /** Lines that changed speaker */
+  moved: string[]
+  /** The merged-away speaker as it was, so undo can create it again; null when only some lines moved */
+  removed: Speaker | null
+}
+
 export interface SpeakerUpdate {
   display_name?: string
   color?: string

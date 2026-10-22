@@ -109,6 +109,17 @@ def with_intro(notes, intro: str) -> dict:
     return out
 
 
+def relink_speaker(notes, old: str, new: str) -> dict:
+    """Two speaker labels became one (merged): characters linked to `old` move to `new`, unless one already has it."""
+    out = normalize(notes)
+    taken = any(c["speaker"] == new for c in out["characters"])
+    for c in out["characters"]:
+        if c["speaker"] == old:
+            c["speaker"] = "" if taken else new
+            taken = True
+    return out
+
+
 # ── What the AI learned ───────────────────────────────────────────────────────
 
 def _learn_items(items: list[dict], learned, fields: tuple[str, ...], prefix: str,

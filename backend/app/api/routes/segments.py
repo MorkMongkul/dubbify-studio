@@ -6,6 +6,7 @@ Also includes speaker management endpoints.
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 from typing import List
 import uuid
 from pathlib import Path
@@ -16,8 +17,9 @@ from app.core.paths import resolve_media_path
 from app.models.models import Segment, Speaker, Job, Project, Voice
 from app.schemas.schemas import (
     SegmentResponse, SegmentUpdate, SegmentCreate,
-    SpeakerResponse, SpeakerUpdate, SpeakerCreate,
+    SpeakerResponse, SpeakerUpdate, SpeakerCreate, SpeakerMerge, SpeakerMergeResponse,
 )
+from app.services import story_notes
 
 router = APIRouter(tags=["Segments & Speakers"])
 
@@ -350,3 +352,43 @@ async def update_speaker(
     await db.flush()
     await db.refresh(speaker)
     return speaker
+
+
+@router.post("/speakers/{speaker_id}/merge", response_model=SpeakerMergeResponse)
+async def merge_speaker(
+    speaker_id: str,
+    payload: SpeakerMerge,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """
+    Move this speaker's lines, in every episode, to another speaker of the same
+    project — the same person under two labels. Moving all of them removes this
+    speaker (returned as it was, so the editor can undo by creating it again and
+    moving `moved` back with segment_ids), and the Story character linked to its
+    label follows. Lines already voiced keep their audio until voiced again, as
+    when a speaker's voice changes.
+    """
+    source = await db.get(Speaker, speaker_id)
+    target = await db.get(Speaker, payload.into)
+    if not source or not target:
+        raise HTTPException(status_code=404, detail="Speaker not found")
+    if source.id == target.id or source.project_id != target.project_id:
+        raise HTTPException(status_code=400, detail="Choose another speaker of this project")
+    query = select(Segment).where(Segment.speaker_id == source.id)
+    if payload.segment_ids is not None:
+        query = query.where(Segment.id.in_(payload.segment_ids))
+    lines = (await db.execute(query)).scalars().all()
+    if payload.segment_ids is not None and len(lines) != len(set(payload.segment_ids)):
+        raise HTTPException(status_code=400, detail="Some of those lines aren't this speaker's")
+    for line in lines:
+        line.speaker_id = target.id
+    removed = None
+    if payload.segment_ids is None:
+        removed = SpeakerResponse.model_validate(source)
+        project = await db.get(Project, source.project_id)
+        project.story_notes = story_notes.relink_speaker(project.story_notes, source.label, target.label)
+        flag_modified(project, "story_notes")
+        await db.flush()
+        await db.delete(source)
+    await db.commit()
+    return SpeakerMergeResponse(moved=[line.id for line in lines], removed=removed)
