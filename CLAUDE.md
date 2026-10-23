@@ -46,7 +46,7 @@ scripts/build-ffmpeg.sh aarch64-apple-darwin    # once per arch: LGPL-only ffmpe
 scripts/build-fribidi.sh aarch64-apple-darwin   # once per arch: FriBiDi (Khmer subtitle shaping) → vendor/fribidi/<target>/ (required by build_sidecar.sh)
 scripts/release-macos.sh aarch64-apple-darwin   # frontend → backend folder (serves frontend/dist) → .app/.dmg; Intel: VENV=<x86_64 venv> … x86_64-apple-darwin
 # CI: pushing a v* tag runs .github/workflows/desktop-release.yml (macos-15 + macos-15-intel) → draft GitHub Release; a push to main builds too, only to save the caches (ffmpeg, FriBiDi, Rust) that release builds read — a tag's run can't read a previous tag's caches, so without it every release rebuilt them (Intel 26 min)
-# before publishing the draft: gh release download vX.Y.Z -D <dir> -p latest.json -p 'Movelo-Studio-*', then
+# CI runs the two checks below before it makes the draft (a draft exists only when they passed): each build job self-tests its update package and runs check-upgrade.sh against the newest published release on its own chip, and the release job runs verify-release.py --no-self-test. By hand (downloads ~370 MB): gh release download vX.Y.Z -D <dir> -p latest.json -p 'Movelo-Studio-*', then
 python3 -I scripts/verify-release.py <dir> X.Y.Z   # names, latest.json, signatures; inside each update package its version, chip and backend self-test (Intel under Rosetta); needs `cryptography`
 scripts/check-upgrade.sh <previous release's DMG> <dir>/Movelo-Studio-Apple-Silicon.dmg <new work dir> "<text only the new editor has>"   # the previous release's data opened by the new app, in throwaway folders
 cd frontend && npm run tauri dev                # dev shell: uses Vite + a backend you run yourself (no sidecar)

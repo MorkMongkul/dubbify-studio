@@ -2,7 +2,7 @@
 """Checks a draft release's files before the release is published.
 
     gh release download v0.2.7 -D <folder> -p latest.json -p 'Movelo-Studio-*'
-    python3 -I scripts/verify-release.py <folder> 0.2.7 [--only-arm]
+    python3 -I scripts/verify-release.py <folder> 0.2.7 [--only-arm] [--no-self-test]
 
 - the asset names the website and the updater rely on;
 - the update feed (latest.json): its version, its URLs, and each signature
@@ -11,7 +11,9 @@
   the public key in frontend/src-tauri/tauri.conf.json;
 - inside each update package: the app's version and chip, and the backend's
   --self-test (it loads, shapes Khmer, finds its built-in voices). On Apple
-  Silicon the Intel one runs under Rosetta.
+  Silicon the Intel one runs under Rosetta. --no-self-test leaves it out: the
+  release job (Linux) runs this script that way, after each build job ran the
+  self-test from its own update package on its own chip.
 
 Needs the `cryptography` package (`pip install cryptography`); the backend's
 venv doesn't have it.
@@ -32,6 +34,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 folder, version = Path(sys.argv[1]), sys.argv[2]
 chips = [("darwin-aarch64", "Apple-Silicon")] if "--only-arm" in sys.argv else [
     ("darwin-aarch64", "Apple-Silicon"), ("darwin-x86_64", "Intel")]
+self_test = "--no-self-test" not in sys.argv
 CPU = {"Apple-Silicon": 0x0100000C, "Intel": 0x01000007}     # Mach-O cputype: arm64, x86_64
 
 conf = json.loads((Path(__file__).resolve().parent.parent / "frontend/src-tauri/tauri.conf.json").read_text())
@@ -59,6 +62,8 @@ def check_inside(package: Path, chip: str) -> str:
         assert info["CFBundleShortVersionString"] == version, f"{chip}: the app inside is {info['CFBundleShortVersionString']}"
         magic, cpu = struct.unpack("<II", (app / "Contents/MacOS" / info["CFBundleExecutable"]).read_bytes()[:8])
         assert magic == 0xFEEDFACF and cpu == CPU[chip], f"{chip}: the app inside is built for another chip"
+        if not self_test:
+            return "left to the build"
         cmd = [str(app / "Contents/Resources/backend/movelo-backend"), "--self-test"]
         if chip == "Intel" and platform.machine() == "arm64":
             cmd = ["/usr/bin/arch", "-x86_64", *cmd]

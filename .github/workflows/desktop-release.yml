@@ -155,6 +155,27 @@ jobs:
           path: out/*
           if-no-files-found: error
 
+      # The update package as installed copies get it: its backend loads and
+      # shapes Khmer on this chip (the Intel one on a real Intel Mac).
+      - name: Self-test the update package
+        if: github.ref != 'refs/heads/main'
+        run: |
+          d="$RUNNER_TEMP/package"; mkdir -p "$d/home"
+          tar -xzf "out/Movelo-Studio-${{ matrix.label }}.app.tar.gz" -C "$d"
+          (cd / && env -i HOME="$d/home" PATH=/usr/bin:/bin \
+            "$d/Movelo Studio.app/Contents/Resources/backend/movelo-backend" --self-test) | tee "$d/self-test.txt"
+          grep -q "Khmer text shaping: ok" "$d/self-test.txt"
+
+      # The newest published release's data opens in this build (this one isn't
+      # published yet). A failed check fails the job, so no draft is made.
+      - name: Upgrade check
+        if: github.ref != 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo "$GITHUB_REPOSITORY" -D "$RUNNER_TEMP/previous" -p "Movelo-Studio-${{ matrix.label }}.dmg"
+          scripts/check-upgrade.sh "$RUNNER_TEMP/previous/Movelo-Studio-${{ matrix.label }}.dmg" out/*.dmg "$RUNNER_TEMP/upgrade-check"
+
   release:
     name: Draft GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
@@ -165,7 +186,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          sparse-checkout: scripts
+          sparse-checkout: |
+            scripts
+            frontend/src-tauri
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
 
       - uses: actions/download-artifact@v8
         with:
@@ -186,6 +213,13 @@ jobs:
         run: |
           python3 scripts/updater-manifest.py "$GITHUB_REF_NAME" dist > dist/latest.json
           cat dist/latest.json
+
+      # Names, the feed, the signatures, each package's version and chip (the
+      # build jobs ran the self-tests): nothing to download before publishing.
+      - name: Check the release files
+        run: |
+          pip install --quiet cryptography
+          python3 -I scripts/verify-release.py dist "${GITHUB_REF_NAME#v}" --no-self-test
 
       # The LGPL is satisfied by offering the FFmpeg and FriBiDi source from
       # the same place as the binaries that include them.
