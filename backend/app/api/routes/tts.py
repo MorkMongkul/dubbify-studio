@@ -600,10 +600,15 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
                 "offset": timeline.offset_of(seg),
                 "length": seg.end_time - seg.start_time,
                 "fit_rate": timeline.rate_of(seg),
+                "fade_in": timeline.fades_of(seg)[0],
+                "fade_out": timeline.fades_of(seg)[1],
             }
             for seg in segments
             if resolve_existing(seg.tts_audio_path)
         ]
+        # The music dips where the voices play (off for episodes analysed before 0.3.1)
+        duck_expr = timeline.duck_volume_expr(timeline.duck_spans(
+            [s for s in segments if resolve_existing(s.tts_audio_path)])) if job.duck_music else None
         missing_clips = len(segments) - len(tts_seg_list)
         if missing_clips:
             logger.warning(f"Mix: {missing_clips} TTS clip(s) missing on disk — skipped")
@@ -696,6 +701,7 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
                 video_width=video_width,
                 video_height=video_height,
                 on_progress=lambda fraction: _set_mix_progress(job_id, fraction),
+                duck_expr=duck_expr,
             )
             job.output_path = final_path
             job.status = JobStatus.COMPLETED

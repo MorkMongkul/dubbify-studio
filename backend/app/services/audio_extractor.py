@@ -367,8 +367,17 @@ async def _render_dub_part(clips: list, offset: float, output: Path) -> None:
         # corrupts the mux — asetpts regenerates sample-accurate pts.
         tempo = _tempo_chain(rate)
         setpts = ",asetpts=N/SR/TB" if tempo else ""
+        # Linear fades on the clip as played (timeline seconds, after the window and rate)
+        fades = ""
+        fade_in, fade_out = seg.get("fade_in") or 0.0, seg.get("fade_out") or 0.0
+        if (fade_in > 0 or fade_out > 0) and "length" in seg:
+            fades = "asetpts=N/SR/TB,"
+            if fade_in > 0:
+                fades += f"afade=t=in:st=0:d={fade_in:.3f},"
+            if fade_out > 0:
+                fades += f"afade=t=out:st={max(0.0, seg['length'] - fade_out):.3f}:d={fade_out:.3f},"
         chains.append(
-            f"[{i}:a]{window}{tempo}aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=mono,"
+            f"[{i}:a]{window}{tempo}{fades}aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=mono,"
             f"adelay=delays={delay_ms}:all=1{setpts}[c{i}]"
         )
         labels.append(f"[c{i}]")
@@ -436,6 +445,7 @@ async def mix_dubbed_audio(
     video_width: int | None = None,
     video_height: int | None = None,
     on_progress=None,
+    duck_expr: str | None = None,
 ) -> str:
     """
     Mix TTS audio segments back onto the video timeline using ffmpeg, and
@@ -454,6 +464,8 @@ async def mix_dubbed_audio(
                        atempo so it fits its segment window — it must match
                        the editor's auto-fit playback rate, or the export
                        sounds slower than the preview.
+        duck_expr:     Optional ffmpeg `volume` expression over `t` that dips
+                       the BGM under the voices (timeline.duck_volume_expr).
         output_path:   Where to save the dubbed video
         mute_original: Whether to silence the original audio track
         bgm_path:      Optional path to a separated BGM/no_vocals WAV file.
@@ -500,7 +512,7 @@ async def mix_dubbed_audio(
     try:
         return await _mix_with_parts(
             video_path, tts_segments, output_path, mute_original, bgm_path,
-            video_layers, video_width, video_height, work_dir, report,
+            video_layers, video_width, video_height, work_dir, report, duck_expr,
         )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -508,7 +520,7 @@ async def mix_dubbed_audio(
 
 async def _mix_with_parts(
     video_path, tts_segments, output_path, mute_original, bgm_path,
-    video_layers, video_width, video_height, work_dir: Path, report,
+    video_layers, video_width, video_height, work_dir: Path, report, duck_expr: str | None = None,
 ) -> str:
     parts = await build_dub_parts(
         tts_segments, work_dir, on_progress=lambda f: report(0.05 + 0.35 * f),
@@ -555,7 +567,12 @@ async def _mix_with_parts(
     #   mute_original=True → dubbed TTS only (no background)
     #   mute_original=False → original audio at 15% + dubbed TTS
     if bgm_input_idx is not None:
-        filter_parts.append(f"[{bgm_input_idx}:a][dubbed]amix=inputs=2:normalize=0[final]")
+        music = f"[{bgm_input_idx}:a]"
+        if duck_expr:
+            # The music dips under the voices: one expression, still one input
+            filter_parts.append(f"{music}volume='{duck_expr}':eval=frame[ducked]")
+            music = "[ducked]"
+        filter_parts.append(f"{music}[dubbed]amix=inputs=2:normalize=0[final]")
         audio_map = "[final]"
     elif mute_original:
         audio_map = "[dubbed]"

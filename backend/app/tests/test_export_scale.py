@@ -225,3 +225,96 @@ async def test_the_export_is_given_each_clips_window(monkeypatch, client, db_ses
     (clip,) = seen["clips"]
     assert {k: clip[k] for k in ("start_time", "offset", "length", "fit_rate")} == {
         "start_time": 2.0, "offset": 0.4, "length": pytest.approx(1.0), "fit_rate": 1.2}
+
+
+# ── 0.3.1: fades and the music dipping under voices ───────────────────────────
+
+def _decoded(path, tmp_path, name="out.wav"):
+    import soundfile as sf
+    wav = tmp_path / name
+    subprocess.run([ffmpeg(), "-v", "error", "-y", "-i", str(path), "-ac", "1", "-ar", "48000", str(wav)], check=True)
+    return sf.read(str(wav), dtype="float32")
+
+
+@pytest.mark.skipif(not find("ffmpeg"), reason="needs ffmpeg")
+def test_export_fades_the_clips_window(tmp_path):
+    import soundfile as sf
+    clip = _clip_with_lead(tmp_path / "clip.wav", 0.0, 1.0)
+    (part, _), = asyncio.run(ax.build_dub_parts(
+        [{"start_time": 0.0, "audio_path": clip, "duration": 1.0, "offset": 0.0, "length": 1.0, "fit_rate": 1.0,
+          "fade_in": 0.5, "fade_out": 0.2}],
+        tmp_path / "work"))
+    data, rate = sf.read(part, dtype="float32")
+    first = _rms_db(data[: int(0.1 * rate)])
+    middle = _rms_db(data[int(0.6 * rate): int(0.75 * rate)])
+    last = _rms_db(data[int(0.95 * rate):])
+    assert middle - first > 12
+    assert middle - last > 12
+
+
+@pytest.mark.skipif(not find("ffmpeg"), reason="needs ffmpeg")
+def test_export_ducks_the_music_under_a_voice(tmp_path):
+    import numpy as np
+    import soundfile as sf
+    from app.services.timeline import duck_volume_expr
+    video = tmp_path / "v.mp4"
+    subprocess.run([ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=320x240:d=4",
+                    "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", "4", "-c:v", "libx264", "-c:a", "aac",
+                    "-shortest", str(video)], check=True)
+    t = np.arange(4 * 48000) / 48000
+    bgm = tmp_path / "bgm.wav"
+    sf.write(str(bgm), np.stack([0.2 * np.sin(2 * np.pi * 440 * t)] * 2, axis=1).astype(np.float32), 48000)
+    voice = tmp_path / "voice.wav"
+    sf.write(str(voice), np.zeros(48000, dtype=np.float32), 48000)    # a silent voice: only the music is heard
+    out = tmp_path / "out.mp4"
+    asyncio.run(ax.mix_dubbed_audio(
+        str(video), [{"start_time": 1.5, "audio_path": str(voice), "duration": 1.0, "offset": 0.0, "length": 1.0,
+                      "fit_rate": 1.0}],
+        str(out), bgm_path=str(bgm), duck_expr=duck_volume_expr([(1.5, 2.5)])))
+    data, rate = _decoded(out, tmp_path)
+    before = _rms_db(data[int(0.2 * rate): int(1.0 * rate)])
+    under = _rms_db(data[int(1.7 * rate): int(2.3 * rate)])
+    assert under - before == pytest.approx(-8, abs=1)
+
+
+@pytest.mark.asyncio
+async def test_an_older_episode_exports_without_ducking(monkeypatch, client, db_sessionmaker, tmp_path):
+    seen = await _export_job(monkeypatch, client, db_sessionmaker, tmp_path, duck_music=None)
+    assert seen["duck_expr"] is None
+    seen = await _export_job(monkeypatch, client, db_sessionmaker, tmp_path, duck_music=True)
+    assert seen["duck_expr"].startswith("1-") and "clip(" in seen["duck_expr"]
+    (clip,) = seen["clips"]
+    assert (clip["fade_in"], clip["fade_out"]) == (0.25, 0.1)
+
+
+async def _export_job(monkeypatch, client, db_sessionmaker, tmp_path, duck_music):
+    import app.core.database as core_db
+    from app.api.routes import tts as tts_routes
+    from app.models.models import Job, JobStatus, Segment
+    from app.tests.timeline_helpers import _make_job, _write_clip
+
+    monkeypatch.setattr(core_db, "AsyncSessionLocal", db_sessionmaker)
+    job_id = await _make_job(client, db_sessionmaker)
+    video = tmp_path / f"{job_id}.mp4"
+    video.write_bytes(b"x")
+    async with db_sessionmaker() as s:
+        job = await s.get(Job, job_id)
+        job.video_path = str(video)
+        job.duck_music = duck_music
+        seg = Segment(job_id=job_id, start_time=2.0, end_time=3.0, khmer_text="ក", tts_duration_secs=1.0,
+                      fade_in_secs=0.25, fade_out_secs=0.1)
+        s.add(seg)
+        await s.flush()
+        seg.tts_audio_path = _write_clip(tmp_path, seg.id, 1.0)
+        job.status = JobStatus.MIXING
+        await s.commit()
+    seen = {}
+
+    async def fake_mix(video_path, tts_segments, output_path, **kwargs):
+        seen["clips"] = tts_segments
+        seen["duck_expr"] = kwargs.get("duck_expr")
+        return output_path
+
+    monkeypatch.setattr(tts_routes, "mix_dubbed_audio", fake_mix)
+    await tts_routes._mix_job_task(job_id, True)
+    return seen
