@@ -6,12 +6,12 @@ import {
   ZoomIn, ZoomOut, Maximize2, Loader2, Scissors, X, RefreshCw,
   MousePointer2, SplitSquareHorizontal, Trash2, Magnet, Wand2, Layers, ChevronDown, Undo2, Redo2,
   ArrowLeftToLine, ArrowRightToLine, Gauge, AudioLines, Music, Volume2, VolumeX, Headphones, HeadphoneOff,
-  ArrowDownWideNarrow, Star, type LucideIcon,
+  ArrowDownWideNarrow, Star, Film, type LucideIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Segment, SegmentUpdate, Speaker, Job, LayoutChange, Stem, StemPiece } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
-import { useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useSetBgmVolume, useLayoutSegments, useSplitSegment, useDuplicateSegment, useSetDucking, useStemPieces, useSetStemPieces, putSegments } from '@/hooks/useApi'
+import { useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useSetBgmVolume, useLayoutSegments, useSplitSegment, useDuplicateSegment, useSetDucking, useStemPieces, useSetStemPieces, useFrames, putSegments } from '@/hooks/useApi'
 import { useScrubAudio } from '@/hooks/useScrubAudio'
 import { segments as segmentsApi } from '@/api/client'
 import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, cn, isJobRunning, originalVoicesReplaced } from '@/lib/utils'
@@ -30,6 +30,7 @@ import { ContextMenu, type MenuItem } from '@/components/ui/ContextMenu'
 
 const PX_PER_SEC = 100 // base pixels per second at zoom=1
 const STEM_HEIGHT = 64  // BGM / Vocals stem rows
+const STRIP_HEIGHT = 44 // the picture strip
 // The speeds the right-click menu offers
 const SPEEDS = [0.8, 0.9, 1.0, 1.1, 1.2, 1.25, 1.5]
 
@@ -152,6 +153,8 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const qc = useQueryClient()
   // The music's and the original voices' pieces (0.3.2)
   const { data: stemPieceLists } = useStemPieces(jobId)
+  // The picture strip, made in the background
+  const { data: frames } = useFrames(jobId, !!job?.video_url)
 
   // BGM & SFX gain — mirrors job.bgm_volume_db while dragging, committed on
   // release (see handleVolumeChange). Re-synced whenever the confirmed
@@ -1070,6 +1073,36 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                 backgroundImage: `repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent ${PX_PER_SEC * zoom}px)`,
               }}
             />
+
+            {/* Picture strip — frames of the video to find scenes; for looking only */}
+            {job?.video_url && (
+              <div className="relative border-b border-timeline-grid bg-ink-950/40" style={{ height: STRIP_HEIGHT }}>
+                <div
+                  className="sticky left-0 z-10 h-full flex items-center px-2.5 shrink-0 bg-ink-900/95 backdrop-blur-sm border-r border-white/[0.06]"
+                  style={{ float: 'left', width: 'var(--speaker-width)' }}
+                >
+                  <Tooltip content="Picture" side="right">
+                    <Film size={15} className="text-white/50 shrink-0" />
+                  </Tooltip>
+                </div>
+                <div
+                  className="absolute top-1 bottom-1 overflow-hidden rounded pointer-events-none"
+                  style={{ left: 'calc(var(--speaker-width) + 4px)', width: `${timeToPixels(duration || 60, zoom, PX_PER_SEC)}px` }}
+                >
+                  {frames?.ready && frames.urls.map((url, i) => (
+                    <img
+                      key={url}
+                      src={url}
+                      alt=""
+                      loading="lazy"
+                      draggable={false}
+                      className="absolute top-0 h-full object-cover opacity-90"
+                      style={{ left: timeToPixels(i * frames.interval, zoom, PX_PER_SEC), width: Math.ceil(timeToPixels(frames.interval, zoom, PX_PER_SEC)) }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Background Music (BGM) Track */}
             <div
