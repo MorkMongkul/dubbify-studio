@@ -514,7 +514,10 @@ async def _mix_with_parts(
     # ffmpeg 8 sometimes queues it faster than -shortest stops it — the queue
     # overflows and the export fails with "No space left on device".
     pad = f"apad=whole_dur={duration:.6f}" if duration > 0 else "apad"
-    filter_parts.append(f"[dubmix]{pad}[dubbed]")
+    # The voices are mono; made stereo here at full level on both sides, as the
+    # preview plays them. Left to amix, ffmpeg's mono-to-stereo pan law put
+    # them 3 dB lower against the (stereo) music than the user heard.
+    filter_parts.append(f"[dubmix]{pad},pan=stereo|c0=c0|c1=c0[dubbed]")
 
     # Determine final audio:
     #   bgm_path provided  → BGM (full volume) + dubbed TTS (full volume)
