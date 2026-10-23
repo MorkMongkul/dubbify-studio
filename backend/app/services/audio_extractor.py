@@ -446,6 +446,9 @@ async def mix_dubbed_audio(
     video_height: int | None = None,
     on_progress=None,
     duck_expr: str | None = None,
+    music_expr: str | None = None,
+    voices_path: str | None = None,
+    voices_expr: str | None = None,
 ) -> str:
     """
     Mix TTS audio segments back onto the video timeline using ffmpeg, and
@@ -466,6 +469,10 @@ async def mix_dubbed_audio(
                        sounds slower than the preview.
         duck_expr:     Optional ffmpeg `volume` expression over `t` that dips
                        the BGM under the voices (timeline.duck_volume_expr).
+        music_expr:    Optional `volume` expression for the BGM's pieces
+                       (stem_pieces.pieces_volume_expr): silence between them.
+        voices_path / voices_expr: the original voices stem and the
+                       expression of its pieces switched into the export.
         output_path:   Where to save the dubbed video
         mute_original: Whether to silence the original audio track
         bgm_path:      Optional path to a separated BGM/no_vocals WAV file.
@@ -513,6 +520,7 @@ async def mix_dubbed_audio(
         return await _mix_with_parts(
             video_path, tts_segments, output_path, mute_original, bgm_path,
             video_layers, video_width, video_height, work_dir, report, duck_expr,
+            music_expr, voices_path, voices_expr,
         )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -521,6 +529,7 @@ async def mix_dubbed_audio(
 async def _mix_with_parts(
     video_path, tts_segments, output_path, mute_original, bgm_path,
     video_layers, video_width, video_height, work_dir: Path, report, duck_expr: str | None = None,
+    music_expr: str | None = None, voices_path: str | None = None, voices_expr: str | None = None,
 ) -> str:
     parts = await build_dub_parts(
         tts_segments, work_dir, on_progress=lambda f: report(0.05 + 0.35 * f),
@@ -540,7 +549,13 @@ async def _mix_with_parts(
         inputs += ["-i", bgm_path]
         bgm_input_idx = 1  # input index 1 = BGM file
 
-    part_offset = 2 if bgm_input_idx is not None else 1
+    # Pieces of the original voices switched into the export: one more input
+    voices_input_idx: int | None = None
+    if voices_path and voices_expr and Path(voices_path).exists():
+        voices_input_idx = 2 if bgm_input_idx is not None else 1
+        inputs += ["-i", voices_path]
+
+    part_offset = 1 + (bgm_input_idx is not None) + (voices_input_idx is not None)
     part_labels = []
     for i, (path, offset) in enumerate(parts):
         inputs += ["-i", path]
@@ -566,18 +581,29 @@ async def _mix_with_parts(
     #   bgm_path provided  → BGM (full volume) + dubbed TTS (full volume)
     #   mute_original=True → dubbed TTS only (no background)
     #   mute_original=False → original audio at 15% + dubbed TTS
+    if voices_input_idx is not None:
+        # Only the switched-on pieces of the actors' own voices are heard
+        filter_parts.append(f"[{voices_input_idx}:a]volume='{voices_expr}':eval=frame[origpieces]")
+        filter_parts.append("[dubbed][origpieces]amix=inputs=2:normalize=0:duration=first[dubbed2]")
+        dubbed = "[dubbed2]"
+    else:
+        dubbed = "[dubbed]"
     if bgm_input_idx is not None:
         music = f"[{bgm_input_idx}:a]"
+        if music_expr:
+            # The music's pieces: silence between them — one expression, still one input
+            filter_parts.append(f"{music}volume='{music_expr}':eval=frame[musicpieces]")
+            music = "[musicpieces]"
         if duck_expr:
             # The music dips under the voices: one expression, still one input
             filter_parts.append(f"{music}volume='{duck_expr}':eval=frame[ducked]")
             music = "[ducked]"
-        filter_parts.append(f"{music}[dubbed]amix=inputs=2:normalize=0[final]")
+        filter_parts.append(f"{music}{dubbed}amix=inputs=2:normalize=0[final]")
         audio_map = "[final]"
     elif mute_original:
-        audio_map = "[dubbed]"
+        audio_map = dubbed
     else:
-        filter_parts.append(f"[0:a]volume=0.15[orig];[orig][dubbed]amix=inputs=2[final]")
+        filter_parts.append(f"[0:a]volume=0.15[orig];[orig]{dubbed}amix=inputs=2[final]")
         audio_map = "[final]"
 
     # ── Optional video layers (dropped images, burned-in subtitles, plain

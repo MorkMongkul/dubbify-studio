@@ -287,7 +287,8 @@ async def test_an_older_episode_exports_without_ducking(monkeypatch, client, db_
     assert (clip["fade_in"], clip["fade_out"]) == (0.25, 0.1)
 
 
-async def _export_job(monkeypatch, client, db_sessionmaker, tmp_path, duck_music):
+async def _export_job(monkeypatch, client, db_sessionmaker, tmp_path, duck_music, with_pieces=False,
+                      music=None, voices=None):
     import app.core.database as core_db
     from app.api.routes import tts as tts_routes
     from app.models.models import Job, JobStatus, Segment
@@ -301,6 +302,7 @@ async def _export_job(monkeypatch, client, db_sessionmaker, tmp_path, duck_music
         job = await s.get(Job, job_id)
         job.video_path = str(video)
         job.duck_music = duck_music
+        job.duration_secs = 10.0
         seg = Segment(job_id=job_id, start_time=2.0, end_time=3.0, khmer_text="ក", tts_duration_secs=1.0,
                       fade_in_secs=0.25, fade_out_secs=0.1)
         s.add(seg)
@@ -308,13 +310,104 @@ async def _export_job(monkeypatch, client, db_sessionmaker, tmp_path, duck_music
         seg.tts_audio_path = _write_clip(tmp_path, seg.id, 1.0)
         job.status = JobStatus.MIXING
         await s.commit()
+    if with_pieces:   # the editor opened the episode: one whole piece per stem
+        await client.get(f"/api/v1/jobs/{job_id}/stem-pieces")
+    for stem, pieces in (("music", music), ("voices", voices)):
+        if pieces is not None:
+            await client.put(f"/api/v1/jobs/{job_id}/stem-pieces/{stem}", json={"pieces": pieces})
+    if voices:   # the separated original voices, next to the episode's other files
+        from app.api.routes import tts as tts_routes
+        monkeypatch.setattr(tts_routes.settings, "UPLOAD_DIR", str(tmp_path))
+        async with db_sessionmaker() as s:
+            project_id = (await s.get(Job, job_id)).project_id
+        (tmp_path / project_id / job_id).mkdir(parents=True, exist_ok=True)
+        _tone_wav(tmp_path / project_id / job_id / "vocals.wav", seconds=1)
     seen = {}
 
     async def fake_mix(video_path, tts_segments, output_path, **kwargs):
         seen["clips"] = tts_segments
-        seen["duck_expr"] = kwargs.get("duck_expr")
+        seen.update({k: kwargs.get(k) for k in ("duck_expr", "music_expr", "voices_path", "voices_expr")})
         return output_path
 
     monkeypatch.setattr(tts_routes, "mix_dubbed_audio", fake_mix)
     await tts_routes._mix_job_task(job_id, True)
     return seen
+
+
+# ── 0.3.2: the music and the original voices in pieces ────────────────────────
+
+def _silent_video(tmp_path, seconds=4):
+    video = tmp_path / "v.mp4"
+    subprocess.run([ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", f"color=c=black:s=320x240:d={seconds}",
+                    "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", str(seconds), "-c:v", "libx264",
+                    "-c:a", "aac", "-shortest", str(video)], check=True)
+    return video
+
+
+def _tone_wav(path, seconds=4, level=0.2, stereo=True):
+    import numpy as np
+    import soundfile as sf
+    t = np.arange(int(seconds * 48000)) / 48000
+    x = (level * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    sf.write(str(path), np.stack([x, x], axis=1) if stereo else x, 48000)
+    return path
+
+
+@pytest.mark.skipif(not find("ffmpeg"), reason="needs ffmpeg")
+def test_a_deleted_music_piece_is_silent_in_the_export(tmp_path):
+    from types import SimpleNamespace
+    import numpy as np
+    import soundfile as sf
+    from app.services.stem_pieces import pieces_volume_expr
+    video = _silent_video(tmp_path)
+    bgm = _tone_wav(tmp_path / "bgm.wav")
+    voice = tmp_path / "voice.wav"
+    sf.write(str(voice), np.zeros(4800, dtype=np.float32), 48000)
+    pieces = [SimpleNamespace(start_time=0.0, end_time=1.0, volume_db=0.0, fade_in_secs=0.0, fade_out_secs=0.0, in_export=True),
+              SimpleNamespace(start_time=2.0, end_time=4.0, volume_db=0.0, fade_in_secs=0.0, fade_out_secs=0.0, in_export=True)]
+    out = tmp_path / "out.mp4"
+    asyncio.run(ax.mix_dubbed_audio(
+        str(video), [{"start_time": 0.0, "audio_path": str(voice), "duration": 0.1}], str(out),
+        bgm_path=str(bgm), music_expr=pieces_volume_expr(pieces, 4.0)))
+    data, rate = _decoded(out, tmp_path)
+    assert _rms_db(data[int(1.2 * rate): int(1.8 * rate)]) < -60
+    assert _rms_db(data[int(2.5 * rate): int(3.5 * rate)]) > -25
+
+
+@pytest.mark.skipif(not find("ffmpeg"), reason="needs ffmpeg")
+def test_a_switched_on_voices_piece_is_exported(tmp_path):
+    from types import SimpleNamespace
+    import numpy as np
+    import soundfile as sf
+    from app.services.stem_pieces import pieces_volume_expr
+    video = _silent_video(tmp_path)
+    bgm = tmp_path / "bgm.wav"
+    sf.write(str(bgm), np.zeros((4 * 48000, 2), dtype=np.float32), 48000)
+    vocals = _tone_wav(tmp_path / "vocals.wav")
+    voice = tmp_path / "voice.wav"
+    sf.write(str(voice), np.zeros(4800, dtype=np.float32), 48000)
+    pieces = [SimpleNamespace(start_time=0.0, end_time=1.0, volume_db=0.0, fade_in_secs=0.0, fade_out_secs=0.0, in_export=False),
+              SimpleNamespace(start_time=1.0, end_time=2.0, volume_db=0.0, fade_in_secs=0.0, fade_out_secs=0.0, in_export=True)]
+    out = tmp_path / "out.mp4"
+    asyncio.run(ax.mix_dubbed_audio(
+        str(video), [{"start_time": 0.0, "audio_path": str(voice), "duration": 0.1}], str(out),
+        bgm_path=str(bgm), voices_path=str(vocals), voices_expr=pieces_volume_expr(pieces, 4.0, export_only=True)))
+    data, rate = _decoded(out, tmp_path)
+    assert _rms_db(data[int(1.2 * rate): int(1.8 * rate)]) > -25
+    assert _rms_db(data[int(0.2 * rate): int(0.8 * rate)]) < -60
+    assert _rms_db(data[int(2.5 * rate): int(3.5 * rate)]) < -60
+
+
+@pytest.mark.asyncio
+async def test_untouched_pieces_add_no_filter(monkeypatch, client, db_sessionmaker, tmp_path):
+    seen = await _export_job(monkeypatch, client, db_sessionmaker, tmp_path, duck_music=None, with_pieces=True)
+    assert seen["music_expr"] is None and seen["voices_path"] is None and seen["voices_expr"] is None
+
+
+@pytest.mark.asyncio
+async def test_edited_pieces_reach_the_export(monkeypatch, client, db_sessionmaker, tmp_path):
+    seen = await _export_job(monkeypatch, client, db_sessionmaker, tmp_path, duck_music=None, with_pieces=True,
+                             music=[{"start_time": 0.0, "end_time": 4.0}],
+                             voices=[{"start_time": 1.0, "end_time": 2.0, "in_export": True}])
+    assert seen["music_expr"].startswith("gte(t,0.000)")
+    assert seen["voices_expr"].startswith("gte(t,1.000)") and seen["voices_path"].endswith("vocals.wav")

@@ -17,13 +17,13 @@ from pydantic import BaseModel
  
 from app.core.database import get_db
 from app.core.config import settings
-from app.models.models import Segment, Speaker, Job, JobStatus, Voice, VoiceMode, Overlay
+from app.models.models import Segment, Speaker, Job, JobStatus, Voice, VoiceMode, Overlay, StemPiece
 from app.schemas.schemas import TTSResponse
 from app.services.tts_client import tts_client
 from app.services.audio_extractor import mix_dubbed_audio, probe_video
 from app.services.video_overlay import build_subtitle_track, render_subtitle_pngs
 from app.services.pipeline_common import RUNNING_STATUSES
-from app.services import timeline, voice_level
+from app.services import stem_pieces, timeline, voice_level
 from app.services import auto_voice
 from app.core.paths import resolve_media_path, resolve_existing
 
@@ -606,6 +606,15 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
             for seg in segments
             if resolve_existing(seg.tts_audio_path)
         ]
+        # The music's and the original voices' pieces (0.3.2): nothing to do for
+        # an episode whose pieces nobody cut
+        pieces = (await db.execute(
+            select(StemPiece).where(StemPiece.job_id == job_id).order_by(StemPiece.start_time)
+        )).scalars().all()
+        music_pieces = [p for p in pieces if p.stem == "music"]
+        voices_pieces = [p for p in pieces if p.stem == "voices"]
+        music_expr = stem_pieces.pieces_volume_expr(music_pieces, job.duration_secs or 0.0) if music_pieces else None
+        voices_expr = stem_pieces.pieces_volume_expr(voices_pieces, job.duration_secs or 0.0, export_only=True)
         # The music dips where the voices play (off for episodes analysed before 0.3.1)
         duck_expr = timeline.duck_volume_expr(timeline.duck_spans(
             [s for s in segments if resolve_existing(s.tts_audio_path)])) if job.duck_music else None
@@ -702,6 +711,9 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
                 video_height=video_height,
                 on_progress=lambda fraction: _set_mix_progress(job_id, fraction),
                 duck_expr=duck_expr,
+                music_expr=music_expr,
+                voices_path=str(job_dir / "vocals.wav") if voices_expr else None,
+                voices_expr=voices_expr,
             )
             job.output_path = final_path
             job.status = JobStatus.COMPLETED
