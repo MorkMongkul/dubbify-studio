@@ -130,6 +130,8 @@ export interface Job {
   finished_at?: string | null
   /** The video's frame rate (one ← / → step); null until read. */
   frame_rate?: number | null
+  /** The music & effects dip under the voices (off for episodes analysed before 0.3.1). */
+  duck_music?: boolean
 }
 
 export interface SubtitleTrack {
@@ -243,6 +245,9 @@ export interface Segment {
   fit_rate: number
   /** The Khmer text the voice was made from (differs from khmer_text once edited). */
   voice_text?: string | null
+  /** Linear fades on the clip as trimmed, in seconds. */
+  fade_in_secs: number
+  fade_out_secs: number
 }
 
 export interface SegmentUpdate {
@@ -264,6 +269,8 @@ export interface SegmentUpdate {
   source_end?: number | null
   voice_offset?: number
   voice_text?: string | null
+  fade_in_secs?: number
+  fade_out_secs?: number
 }
 
 /** One clip's new place on the timeline (PUT /jobs/{id}/segments/layout). */

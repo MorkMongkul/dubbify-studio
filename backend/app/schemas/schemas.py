@@ -82,6 +82,13 @@ class JobResponse(BaseModel):
     completed_at: Optional[datetime]
     finished_at: Optional[datetime] = None
     frame_rate: Optional[float] = None
+    duck_music: bool = False
+
+    # NULL: analysed before 0.3.1 — the music doesn't dip
+    @field_validator("duck_music", mode="before")
+    @classmethod
+    def _duck_default(cls, v):
+        return bool(v)
 
     @computed_field
     def video_url(self) -> Optional[str]:
@@ -148,6 +155,11 @@ class BgmVolumeUpdate(BaseModel):
 
 class JobTitleUpdate(BaseModel):
     title: str = Field(..., max_length=255)
+
+
+class JobDuckingUpdate(BaseModel):
+    """Whether the music & effects dip under the voices."""
+    duck_music: bool
 
 
 class JobFinishedUpdate(BaseModel):
@@ -252,6 +264,8 @@ class SegmentUpdate(BaseModel):
     source_end: Optional[float] = None
     voice_offset: Optional[float] = None
     voice_text: Optional[str] = None
+    fade_in_secs: Optional[float] = Field(None, ge=0)
+    fade_out_secs: Optional[float] = Field(None, ge=0)
 
 
 class SegmentResponse(BaseModel):
@@ -277,6 +291,14 @@ class SegmentResponse(BaseModel):
     voice_offset: float = 0.0
     fit_rate: float = 1.0
     voice_text: Optional[str] = None
+    fade_in_secs: float = 0.0
+    fade_out_secs: float = 0.0
+
+    # Rows from before 0.3.0 / 0.3.1 hold NULL
+    @field_validator("fade_in_secs", "fade_out_secs", mode="before")
+    @classmethod
+    def _fade_default(cls, v):
+        return 0.0 if v is None else v
 
     # Rows from before 0.3.0 hold NULL until they are converted
     @field_validator("voice_offset", mode="before")

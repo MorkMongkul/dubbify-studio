@@ -184,6 +184,9 @@ class Job(Base):
     timeline_version = Column(Integer, nullable=True, default=1)
     # The video's frame rate (one ← / → step in the editor); NULL = not read yet.
     frame_rate = Column(Float, nullable=True)
+    # The music & effects dip under the voices (timeline.duck_spans). NULL =
+    # analysed before 0.3.1: off, so its export doesn't change; analysis sets it.
+    duck_music = Column(Boolean, nullable=True)
 
     project  = relationship("Project", back_populates="jobs")
     segments = relationship("Segment", back_populates="job", cascade="all, delete",
@@ -258,6 +261,10 @@ class Segment(Base):
     # The Khmer text the voice was made from; differs from khmer_text once the
     # text is edited after the voice was made (the voice is kept).
     voice_text   = Column(Text, nullable=True)
+    # Linear fades on the clip as trimmed, in seconds of timeline (0.3.1);
+    # NULL (rows from before 0.3.1) reads as 0 — no fade.
+    fade_in_secs  = Column(Float, nullable=True, default=0.0)
+    fade_out_secs = Column(Float, nullable=True, default=0.0)
 
     # Per-segment voice override — takes precedence over the speaker's voice.
     voice_id = Column(String, ForeignKey("voices.id"), nullable=True)

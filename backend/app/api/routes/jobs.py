@@ -18,7 +18,7 @@ from typing import List
 from app.core.database import get_db
 from app.core.config import settings
 from app.models.models import Job, Project, JobStatus, Segment
-from app.schemas.schemas import JobResponse, PipelineStartResponse, BgmVolumeUpdate, JobTitleUpdate, JobFinishedUpdate
+from app.schemas.schemas import JobResponse, PipelineStartResponse, BgmVolumeUpdate, JobTitleUpdate, JobFinishedUpdate, JobDuckingUpdate
 from app.services import story_learning
 from app.services.pipeline import (
     needs_translation, run_analysis_pipeline, run_pipeline, run_separation_retry, run_speaker_detection,
@@ -455,6 +455,22 @@ async def update_job_title(
         raise HTTPException(status_code=404, detail="Job not found")
 
     job.title = payload.title.strip()
+    await db.commit()
+    await db.refresh(job)
+    return job
+
+
+@router.patch("/{job_id}/ducking", response_model=JobResponse)
+async def set_job_ducking(
+    job_id: str,
+    payload: JobDuckingUpdate,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """Switch the music dipping under the voices on or off, in the preview and the export."""
+    job = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job.duck_music = payload.duck_music
     await db.commit()
     await db.refresh(job)
     return job
