@@ -8,6 +8,11 @@ name: Desktop release
 # or from the Actions tab ("Run workflow"), which only uploads the DMGs as
 # build artifacts.
 #
+# A push to main builds too, only to save the caches (ffmpeg, FriBiDi, the
+# Rust build): a run can read caches saved on its own tag or on main, never a
+# previous tag's, so every release rebuilt them (12 and 7 of the Intel build's
+# 26 minutes in 0.2.8). Release builds read main's caches and save none.
+#
 # The website's download buttons point at
 #   releases/latest/download/Movelo-Studio-Apple-Silicon.dmg (and -Intel.dmg),
 # so the DMGs are published under those fixed names. "latest" only counts
@@ -26,6 +31,8 @@ name: Desktop release
 on:
   push:
     tags: ["v*"]
+    branches: [main]
+    paths-ignore: ["website/**", "docs/**", "**.md"]   # not checked for tags
   workflow_dispatch:
 
 # Least privilege: building only reads the repo; the release job alone may
@@ -66,28 +73,46 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           workspaces: frontend/src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Restore the ffmpeg build
-        uses: actions/cache@v6
+        id: ffmpeg
+        uses: actions/cache/restore@v6
         with:
           path: vendor/ffmpeg/${{ matrix.target }}
           key: ffmpeg-${{ matrix.target }}-${{ hashFiles('scripts/build-ffmpeg.sh') }}
 
+      # The script returns at once when the restored build is the right version.
       - name: Build ffmpeg (LGPL)
         run: |
-          brew install nasm
+          [ "${{ steps.ffmpeg.outputs.cache-hit }}" = "true" ] || brew install nasm
           scripts/build-ffmpeg.sh ${{ matrix.target }}
+
+      - name: Save the ffmpeg build
+        if: github.ref == 'refs/heads/main' && steps.ffmpeg.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: vendor/ffmpeg/${{ matrix.target }}
+          key: ${{ steps.ffmpeg.outputs.cache-primary-key }}
 
       # Burned-in Khmer subtitles are shaped through FriBiDi (backend/build_sidecar.sh
       # stops without it).
       - name: Restore the FriBiDi build
-        uses: actions/cache@v6
+        id: fribidi
+        uses: actions/cache/restore@v6
         with:
           path: vendor/fribidi/${{ matrix.target }}
           key: fribidi-${{ matrix.target }}-${{ hashFiles('scripts/build-fribidi.sh') }}
 
       - name: Build FriBiDi (LGPL)
         run: scripts/build-fribidi.sh ${{ matrix.target }}
+
+      - name: Save the FriBiDi build
+        if: github.ref == 'refs/heads/main' && steps.fribidi.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: vendor/fribidi/${{ matrix.target }}
+          key: ${{ steps.fribidi.outputs.cache-primary-key }}
 
       - name: Backend build environment
         run: |
@@ -114,6 +139,7 @@ jobs:
       # The DMG for new installs, and the signed update package (named per chip
       # so the two builds don't collide) for copies that are already installed.
       - name: Collect the files to release
+        if: github.ref != 'refs/heads/main'
         run: |
           bundle="frontend/src-tauri/target/${{ matrix.target }}/release/bundle"
           mkdir -p out
@@ -123,6 +149,7 @@ jobs:
           ls -l out
 
       - uses: actions/upload-artifact@v7
+        if: github.ref != 'refs/heads/main'
         with:
           name: movelo-studio-${{ matrix.target }}
           path: out/*
