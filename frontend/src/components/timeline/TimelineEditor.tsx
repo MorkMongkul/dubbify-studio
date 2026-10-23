@@ -8,7 +8,7 @@ import {
   ArrowLeftToLine, ArrowRightToLine, Gauge, AudioLines, Music, Volume2, VolumeX, type LucideIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import type { Segment, Speaker, Job, LayoutChange } from '@/types'
+import type { Segment, SegmentUpdate, Speaker, Job, LayoutChange } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useSetBgmVolume, useLayoutSegments, useSplitSegment, useDuplicateSegment, putSegments } from '@/hooks/useApi'
 import { segments as segmentsApi } from '@/api/client'
@@ -433,6 +433,19 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
         'Change voice speed')
     } catch {
       toast.error('Failed to update voice speed')
+    }
+  }, [jobId, qc])
+
+  // A setting changed on the clip itself (fades, the volume line): one PATCH, one undo step
+  const handleClipPatch = useCallback(async (seg: Segment, after: SegmentUpdate, before: SegmentUpdate, label: string) => {
+    if (!jobId) return
+    try {
+      const updated = await segmentsApi.update(seg.id, after)
+      putSegments(qc, jobId, [updated])
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      recordSegmentChange(qc, jobId, seg.id, before, after, label)
+    } catch {
+      toast.error(`Couldn't save: ${label.toLowerCase()}`)
     }
   }, [jobId, qc])
 
@@ -1205,6 +1218,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                           overruns={overruns[seg.id]}
                           onCommitLayout={handleCommitLayout}
                           onContextMenu={handleClipContextMenu}
+                          onPatch={handleClipPatch}
                           onSelect={handleSegmentSelect}
                           onDelete={handleSegmentDelete}
                           onRegenerate={jobId ? handleSegmentRegenerate : undefined}

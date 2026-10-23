@@ -6,14 +6,18 @@
 // another clip in time (lib/tracks.ts planDrop).
 import { memo, useRef, useEffect, useState, useMemo } from 'react'
 import { Loader2, X, RefreshCw, Gauge, FilePenLine } from 'lucide-react'
-import type { Segment, LayoutChange } from '@/types'
+import type { Segment, SegmentUpdate, LayoutChange } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { timeToPixels, pixelsToTime, hexToRgba, cn } from '@/lib/utils'
-import { effectiveSpeed, isVoiceOutdated, isVoiced, trimEnd, trimStart, waveformSlice } from '@/lib/clipRules'
+import {
+  clampFades, effectiveSpeed, fractionToVolume, isVoiceOutdated, isVoiced, trimEnd, trimStart, volumeToFraction, waveformSlice,
+} from '@/lib/clipRules'
 import { dropSpot, planDrop, type DropSpot } from '@/lib/tracks'
 import { previewClip } from '@/hooks/useVoicePlayback'
 
 export const LANE_HEIGHT = 64  // clip row height — also the divisor for drop-target row math
+// Pixels of drag across the whole volume range (VOLUME_MIN_DB..MAX_DB): 2 px per dB
+const VOLUME_DRAG_PX = 60
 
 interface InteractiveSegmentProps {
   seg: Segment
@@ -36,6 +40,8 @@ interface InteractiveSegmentProps {
   overruns?: [number, number][]
   /** One layout request + one undo step for the gesture (TimelineEditor.handleCommitLayout). */
   onCommitLayout: (changes: LayoutChange[], label: string) => void
+  /** A clip setting changed on the clip itself (fades, the volume line): one PATCH + one undo step. */
+  onPatch?: (seg: Segment, after: SegmentUpdate, before: SegmentUpdate, label: string) => void
   onSelect: (seg: Segment) => void
   onDelete: (id: string) => void
   onRegenerate?: (id: string) => void
@@ -57,7 +63,7 @@ interface InteractiveSegmentProps {
 // difference between smooth and stuttering timeline interaction.
 export const InteractiveSegment = memo(function InteractiveSegment({
   seg, color, isActive, isSelected, onToggleSelect, isApproved, zoom, duration, rows, allSegments, PX_PER_SEC,
-  lanesRef, insertLineRef, overruns, onCommitLayout, onSelect, onDelete, onRegenerate, onContextMenu,
+  lanesRef, insertLineRef, overruns, onCommitLayout, onPatch, onSelect, onDelete, onRegenerate, onContextMenu,
   isPersisting, isRegenerating, isSplitting,
   mutedTrackIds, soloedTrackIds, volume,
   activeTool, snapEnabled, onSplit,
@@ -95,6 +101,74 @@ export const InteractiveSegment = memo(function InteractiveSegment({
     ? `${seg.tts_audio_url}?v=${seg.tts_duration_secs ?? 0}`
     : undefined
   const slice = useMemo(() => waveformSlice(seg), [seg])
+
+  // Fades and the volume line, while one is being dragged (saved on release)
+  const [fadeDraft, setFadeDraft] = useState<{ fade_in_secs: number; fade_out_secs: number } | null>(null)
+  const [volumeDraft, setVolumeDraft] = useState<number | null>(null)
+  const fadeIn = fadeDraft?.fade_in_secs ?? seg.fade_in_secs ?? 0
+  const fadeOut = fadeDraft?.fade_out_secs ?? seg.fade_out_secs ?? 0
+  const fadeInPx = timeToPixels(fadeIn, zoom, PX_PER_SEC)
+  const fadeOutPx = timeToPixels(fadeOut, zoom, PX_PER_SEC)
+  const shownVolume = volumeDraft ?? seg.volume_db ?? 0
+
+  // Drag a top corner inward: a fade, as long as the drag (never past the other fade)
+  const startFadeDrag = (e: React.PointerEvent<HTMLDivElement>, side: 'in' | 'out') => {
+    e.stopPropagation()
+    e.preventDefault()
+    const el = e.currentTarget
+    el.setPointerCapture(e.pointerId)
+    const startX = e.clientX
+    const from = side === 'in' ? seg.fade_in_secs ?? 0 : seg.fade_out_secs ?? 0
+    let draft = { fade_in_secs: seg.fade_in_secs ?? 0, fade_out_secs: seg.fade_out_secs ?? 0 }
+    const move = (ev: PointerEvent) => {
+      const dx = pixelsToTime(ev.clientX - startX, zoom, PX_PER_SEC)
+      const wanted = from + (side === 'in' ? dx : -dx)
+      draft = side === 'in'
+        ? clampFades(seg, wanted, seg.fade_out_secs ?? 0)
+        : clampFades(seg, seg.fade_in_secs ?? 0, wanted)
+      setFadeDraft(draft)
+    }
+    const up = (ev: PointerEvent) => {
+      el.releasePointerCapture(ev.pointerId)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      setFadeDraft(null)
+      const field = side === 'in' ? 'fade_in_secs' : 'fade_out_secs'
+      if (Math.abs(draft[field] - from) > 0.0005) {
+        onPatch?.(seg, { [field]: draft[field] }, { [field]: from }, side === 'in' ? 'Fade in' : 'Fade out')
+      }
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
+  // Drag the volume line up or down: the preview follows at once, saved on release
+  const startVolumeDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation()
+    e.preventDefault()
+    const el = e.currentTarget
+    el.setPointerCapture(e.pointerId)
+    const startY = e.clientY
+    const from = seg.volume_db ?? 0
+    const startFraction = volumeToFraction(from)
+    let db = from
+    const move = (ev: PointerEvent) => {
+      // 2 px per dB, whatever the clip's height
+      db = fractionToVolume(startFraction - (ev.clientY - startY) / VOLUME_DRAG_PX)
+      setVolumeDraft(db)
+      useEditorStore.getState().setLiveClipVolume({ id: seg.id, db })
+    }
+    const up = (ev: PointerEvent) => {
+      el.releasePointerCapture(ev.pointerId)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      setVolumeDraft(null)
+      useEditorStore.getState().setLiveClipVolume(null)
+      if (db !== from) onPatch?.(seg, { volume_db: db }, { volume_db: from }, 'Change volume')
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
 
   // Double-click: hear this clip's window alone — what the export plays for it
   const playAudio = () => {
@@ -424,6 +498,54 @@ export const InteractiveSegment = memo(function InteractiveSegment({
           width={width}
           slice={slice}
         />
+      )}
+
+      {/* Fades: a shaded slope at each end */}
+      {voiced && (fadeIn > 0 || fadeOut > 0) && (
+        <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox={`0 0 ${width} 100`} preserveAspectRatio="none">
+          {fadeIn > 0 && <polygon points={`0,0 ${fadeInPx},0 0,100`} fill="rgba(0,0,0,0.35)" />}
+          {fadeOut > 0 && <polygon points={`${width},0 ${width - fadeOutPx},0 ${width},100`} fill="rgba(0,0,0,0.35)" />}
+          {fadeIn > 0 && <line x1={0} y1={100} x2={fadeInPx} y2={0} stroke="rgba(255,255,255,0.6)" strokeWidth={1} vectorEffect="non-scaling-stroke" />}
+          {fadeOut > 0 && <line x1={width} y1={100} x2={width - fadeOutPx} y2={0} stroke="rgba(255,255,255,0.6)" strokeWidth={1} vectorEffect="non-scaling-stroke" />}
+        </svg>
+      )}
+
+      {/* Fade handles on the top corners of the selected clip */}
+      {isActive && voiced && activeTool === 'select' && onPatch && width > 36 && (
+        <>
+          <div
+            className="absolute top-0 z-30 h-3 w-3 -translate-x-1/2 rounded-full border border-white/80 bg-ink-900 cursor-ew-resize hover:bg-brand-500"
+            style={{ left: Math.max(6, fadeInPx) }}
+            title="Fade in"
+            onPointerDown={(e) => startFadeDrag(e, 'in')}
+          />
+          <div
+            className="absolute top-0 z-30 h-3 w-3 translate-x-1/2 rounded-full border border-white/80 bg-ink-900 cursor-ew-resize hover:bg-brand-500"
+            style={{ right: Math.max(6, fadeOutPx) }}
+            title="Fade out"
+            onPointerDown={(e) => startFadeDrag(e, 'out')}
+          />
+        </>
+      )}
+
+      {/* The volume line: drag it up or down */}
+      {voiced && onPatch && width >= 40 && activeTool === 'select' && (
+        <div
+          className="absolute left-3 right-3 z-20 h-[9px] cursor-ns-resize group/vol"
+          style={{ bottom: `${3 + volumeToFraction(shownVolume) * 21 - 4}px` }}
+          title="Volume"
+          onPointerDown={startVolumeDrag}
+        >
+          <div className={cn(
+            'absolute inset-x-0 top-1/2 h-px',
+            volumeDraft != null ? 'bg-brand-300' : 'bg-white/45 group-hover/vol:bg-white/90',
+          )} />
+          {volumeDraft != null && (
+            <span className="absolute -top-5 left-1/2 -translate-x-1/2 rounded bg-ink-900 px-1.5 text-[10.5px] font-semibold text-white tabular-nums">
+              {`${volumeDraft > 0 ? '+' : volumeDraft < 0 ? '−' : ''}${Math.abs(volumeDraft)} dB`}
+            </span>
+          )}
+        </div>
       )}
 
       {/* Regenerating indicator — reflects the real in-flight synth call */}
