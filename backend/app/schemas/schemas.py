@@ -357,6 +357,34 @@ class SplitResponse(BaseModel):
     second: SegmentResponse
 
 
+class StemPieceIn(BaseModel):
+    """One piece of a stem, as the editor sends the stem's whole list."""
+    id: Optional[str] = None
+    start_time: float
+    end_time: float
+    volume_db: float = 0.0
+    fade_in_secs: float = 0.0
+    fade_out_secs: float = 0.0
+    in_export: bool = False
+
+
+class StemPiecesUpdate(BaseModel):
+    pieces: List[StemPieceIn]
+
+
+class StemPieceResponse(BaseModel):
+    id: str
+    stem: str
+    start_time: float
+    end_time: float
+    volume_db: float = 0.0
+    fade_in_secs: float = 0.0
+    fade_out_secs: float = 0.0
+    in_export: bool = False
+
+    model_config = {"from_attributes": True}
+
+
 # ── Overlay schemas ─────────────────────────────────────────────
 class OverlayUpdate(BaseModel):
     x: Optional[float] = None

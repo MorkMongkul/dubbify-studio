@@ -17,7 +17,7 @@ from typing import List
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.models.models import Job, Project, JobStatus, Segment
+from app.models.models import Job, Project, JobStatus, Segment, StemPiece
 from app.schemas.schemas import JobResponse, PipelineStartResponse, BgmVolumeUpdate, JobTitleUpdate, JobFinishedUpdate, JobDuckingUpdate
 from app.services import story_learning
 from app.services.pipeline import (
@@ -553,5 +553,6 @@ async def delete_job(job_id: str, db: AsyncSession = Depends(get_db, scope="func
     # Delete child segments explicitly first (avoids relying on async ORM
     # cascade and any FK ordering issues), then the job.
     await db.execute(delete(Segment).where(Segment.job_id == job_id))
+    await db.execute(delete(StemPiece).where(StemPiece.job_id == job_id))
     await db.delete(job)
     await db.commit()

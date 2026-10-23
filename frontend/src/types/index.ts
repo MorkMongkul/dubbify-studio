@@ -282,6 +282,22 @@ export interface SplitResult {
   second: Segment
 }
 
+/** A stem of the episode that can be cut into pieces (0.3.2). */
+export type Stem = 'music' | 'voices'
+
+/** The part of a stem heard from start to end, at the same time as in the video (never moves). */
+export interface StemPiece {
+  id: string
+  stem: Stem
+  start_time: number
+  end_time: number
+  volume_db: number
+  fade_in_secs: number
+  fade_out_secs: number
+  /** Original voices only: this piece is in the export (drawn in gold). Music pieces always are. */
+  in_export: boolean
+}
+
 export interface SegmentCreate {
   speaker_id?: string | null
   voice_id?: string | null

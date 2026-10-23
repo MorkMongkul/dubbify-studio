@@ -193,6 +193,8 @@ class Job(Base):
                             order_by="Segment.start_time")
     overlays = relationship("Overlay", back_populates="job", cascade="all, delete",
                             order_by="Overlay.z_index")
+    stem_pieces = relationship("StemPiece", back_populates="job", cascade="all, delete",
+                               order_by="StemPiece.start_time")
 
 
 # ── Speaker ───────────────────────────────────────────────────
@@ -283,6 +285,32 @@ class Segment(Base):
 
     job     = relationship("Job", back_populates="segments")
     speaker = relationship("Speaker", back_populates="segments")
+
+
+# ── Stem pieces (0.3.2) ───────────────────────────────────────
+class StemPiece(Base):
+    """
+    A piece of the music & effects (stem "music") or of the original voices
+    (stem "voices"): the part of that stem heard from start_time to end_time,
+    at the same time as in the video (pieces never move — locked to the
+    picture), with its own volume and fades. Between pieces: silence. An
+    episode starts with one whole piece per stem (app/services/stem_pieces.py),
+    so it sounds as before. The original voices are only in the export where a
+    piece is switched on (in_export); the music always is.
+    """
+    __tablename__ = "stem_pieces"
+
+    id            = Column(String, primary_key=True, default=generate_uuid)
+    job_id        = Column(String, ForeignKey("jobs.id"), nullable=False, index=True)
+    stem          = Column(String(10), nullable=False)
+    start_time    = Column(Float, nullable=False)
+    end_time      = Column(Float, nullable=False)
+    volume_db     = Column(Float, default=0.0)
+    fade_in_secs  = Column(Float, default=0.0)
+    fade_out_secs = Column(Float, default=0.0)
+    in_export     = Column(Boolean, default=False)
+
+    job = relationship("Job", back_populates="stem_pieces")
 
 
 # ── Overlay ───────────────────────────────────────────────────
