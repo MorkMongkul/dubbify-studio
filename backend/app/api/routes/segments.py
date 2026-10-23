@@ -3,6 +3,8 @@ app/api/routes/segments.py
 Segment endpoints: review, edit translations, approve lines.
 Also includes speaker management endpoints.
 """
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -19,7 +21,7 @@ from app.schemas.schemas import (
     SegmentResponse, SegmentUpdate, SegmentCreate,
     SpeakerResponse, SpeakerUpdate, SpeakerCreate, SpeakerMerge, SpeakerMergeResponse, SpeakerUnmerge,
 )
-from app.services import story_notes
+from app.services import story_notes, voice_level
 
 router = APIRouter(tags=["Segments & Speakers"])
 
@@ -129,15 +131,8 @@ async def update_segment(
                 return seg
             shutil.copy2(final_path, raw_path)
 
-        from app.services.audio_extractor import apply_audio_effects
-        new_duration = await apply_audio_effects(
-            input_path=str(raw_path),
-            output_path=final_path,
-            volume_db=seg.volume_db,
-            voice_filter=seg.voice_filter,
-            voice_speed=seg.voice_speed,
-        )
-        seg.tts_duration_secs = new_duration
+        # Trimmed and set to the original line's loudness first, as when the voice was made
+        seg.tts_duration_secs = await voice_level.render_clip(seg, raw_path, Path(final_path))
 
     await db.flush()
     await db.refresh(seg)
@@ -197,7 +192,6 @@ async def autofit_segment_speeds(job_id: str, db: AsyncSession = Depends(get_db,
     import shutil
     import soundfile as sf
     from app.core.paths import resolve_media_path
-    from app.services.audio_extractor import apply_audio_effects
 
     result = await db.execute(
         select(Segment)
@@ -219,25 +213,24 @@ async def autofit_segment_speeds(job_id: str, db: AsyncSession = Depends(get_db,
             shutil.copy2(final_path, raw_path)
 
         try:
-            raw_duration = sf.info(str(raw_path)).duration
+            # Measured without the engine's silence (a clip made before 0.2.8
+            # still has it): speeding a voice up to cover silence that's cut
+            # anyway made it rush for nothing.
+            before = sf.info(str(raw_path)).duration
+            raw_duration = await asyncio.to_thread(voice_level.trim_silence, str(raw_path))
         except Exception:
             missing += 1
             continue
         window = max(0.1, seg.end_time - seg.start_time)
         target = max(0.5, min(2.0, raw_duration / window))
-
-        if abs(target - (seg.voice_speed or 1.0)) < 0.02:
+        speed_changes = abs(target - (seg.voice_speed or 1.0)) >= 0.02
+        if not speed_changes and raw_duration >= before - 0.01:
             skipped += 1
             continue
 
-        seg.voice_speed = target
-        seg.tts_duration_secs = await apply_audio_effects(
-            input_path=str(raw_path),
-            output_path=final_path,
-            volume_db=seg.volume_db,
-            voice_filter=seg.voice_filter,
-            voice_speed=target,
-        )
+        if speed_changes:
+            seg.voice_speed = target
+        seg.tts_duration_secs = await voice_level.render_clip(seg, raw_path, Path(final_path))
         fitted += 1
         # Commit per clip: releases the (single, in SQLite dev) DB connection
         # between ffmpeg runs and lets polling clients see progress.
