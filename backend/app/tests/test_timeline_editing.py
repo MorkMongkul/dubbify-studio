@@ -281,3 +281,37 @@ async def test_duplicating_copies_the_voice_and_finds_a_free_track(client, db_se
     assert (d["source_start"], d["source_end"]) == (None, None)
     assert d["voice_speed"] == 1.2 and d["lane_index"] == 1
     assert Path(d["tts_audio_path"]).exists() and d["tts_audio_path"] != (await _row(db_sessionmaker, sid)).tts_audio_path
+
+
+# ── Review fixes ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_a_converted_voice_can_be_set_back_to_its_files_own_speed(client, db_sessionmaker, tmp_path):
+    """After the upgrade a sped-up voice is voice_speed 1.0 × fit_rate 1.4: the clip shows 1.4×, and 1.0× must play it at 1.0×."""
+    job_id = await _make_job(client, db_sessionmaker)
+    sid = await _add_segment(db_sessionmaker, job_id, 0.0, 1.0)
+    async with db_sessionmaker() as s:
+        seg = await s.get(Segment, sid)
+        seg.tts_audio_path = _write_clip(tmp_path, sid, 2.0)
+        seg.tts_duration_secs, seg.fit_rate, seg.end_time = 2.0, 1.4, 2.0 / 1.4
+        await s.commit()
+    b = (await client.patch(f"/api/v1/segments/{sid}", json={"voice_speed": 1.0})).json()
+    assert (b["voice_speed"], b["fit_rate"]) == (1.0, 1.0)
+    assert b["end_time"] == pytest.approx(2.0, abs=0.02)
+
+
+@pytest.mark.asyncio
+async def test_a_created_line_follows_its_text_and_never_overlaps_on_its_track(client, db_sessionmaker):
+    """Add line, and undo of a delete, create lines: the same rules as any other change."""
+    job_id = await _make_job(client, db_sessionmaker)
+    b = await _voiced(db_sessionmaker, job_id, 8.0, 11.0, 3.0)
+    resp = await client.post(f"/api/v1/jobs/{job_id}/segments",
+                             json={"start_time": 10.0, "end_time": 12.0, "lane_index": 0, "khmer_text": ""})
+    assert resp.status_code == 201
+    created = resp.json()
+    assert (created["start_time"], created["end_time"]) == (10.0, 12.0)
+    assert created["lane_index"] != 0
+    assert (await _row(db_sessionmaker, b)).lane_index == 0
+    texty = (await client.post(f"/api/v1/jobs/{job_id}/segments",
+                               json={"start_time": 2.0, "end_time": 9.0, "khmer_text": "ក" * 30})).json()
+    assert texty["end_time"] == pytest.approx(3.95)

@@ -52,10 +52,14 @@ async def create_segment(
         raise HTTPException(status_code=422, detail="end_time must be greater than start_time")
 
     seg = Segment(job_id=job_id, **payload.model_dump())
+    # A line with no voice is as long as its text; on a track where it would
+    # overlap another clip, it goes to the nearest free one (never in time)
+    timeline.follow_text(seg)
     db.add(seg)
     await db.flush()
-    await db.refresh(seg)
     await db.commit()
+    await timeline.settle_job(db, job_id, [seg.id])
+    await db.refresh(seg)
     return seg
 
 
@@ -124,6 +128,8 @@ async def update_segment(
     old_volume = seg.volume_db
     old_filter = seg.voice_filter
     old_speed = seg.voice_speed or 1.0
+    # The speed heard: the file's own × fit_rate (an upgraded voice can carry both)
+    old_total = timeline.total_speed(seg)
     old_start = seg.start_time
 
     update_data = payload.model_dump(exclude_unset=True)
@@ -135,8 +141,10 @@ async def update_segment(
         # The voice is gone: so is the part of it the clip played
         seg.voice_offset, seg.fit_rate, seg.voice_text = 0.0, 1.0, None
 
+    # The editor sends the speed the user hears; it becomes the file's own speed
     new_speed = seg.voice_speed or 1.0
-    speed_changed = "voice_speed" in update_data and abs(new_speed - old_speed) > 1e-6
+    speed_changed = "voice_speed" in update_data and (
+        abs(new_speed - old_total) > 1e-6 or abs(new_speed - old_speed) > 1e-6)
     if speed_changed and timeline.is_voiced(seg):
         # Keep the same words cut at the new speed (the file is re-rendered below)
         seg.voice_speed = old_speed
