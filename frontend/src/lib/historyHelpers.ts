@@ -6,7 +6,7 @@
 // so the UI reflects the reverted/reapplied server state.
 
 import type { QueryClient } from '@tanstack/react-query'
-import { segments as segmentsApi, speakers as speakersApi } from '@/api/client'
+import { jobs as jobsApi, segments as segmentsApi, speakers as speakersApi } from '@/api/client'
 import type { LayoutChange, Segment, SegmentCreate, SegmentUpdate, SpeakerMergeResponse, SpeakerUpdate, SplitResult } from '@/types'
 import { invalidateSpeakerLines, putSegments } from '@/hooks/useApi'
 import { useHistoryStore } from '@/store/historyStore'
@@ -235,6 +235,18 @@ export function recordSegmentDuplicate(qc: QueryClient, jobId: string, created: 
       box.currentId = (await segmentsApi.duplicate(sourceId)).id
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
     },
+  })
+}
+
+/** The music dipping under the voices switched on or off: one undo step. */
+export function recordDuckingChange(qc: QueryClient, jobId: string, before: boolean, after: boolean) {
+  const send = async (on: boolean) => {
+    qc.setQueryData(['job', jobId], await jobsApi.setDucking(jobId, on))
+  }
+  useHistoryStore.getState().push({
+    label: after ? 'Music dips under voices' : 'Music stays level',
+    undo: () => send(before),
+    redo: () => send(after),
   })
 }
 

@@ -78,6 +78,14 @@ interface EditorStore {
   clearPendingLayout: (ids: string[]) => void
   updateSegmentText: (id: string, text: string) => void
   clearSegmentTextOverride: (id: string) => void
+  // A clip's volume line being dragged: the preview plays this level until
+  // it's saved on release (then null)
+  liveClipVolume: { id: string; db: number } | null
+  setLiveClipVolume: (v: { id: string; db: number } | null) => void
+  // Hear the mix in short snippets while dragging the playhead. A preference:
+  // outside DEFAULT_STATE, so switching episodes keeps it.
+  scrubAudio: boolean
+  toggleScrubAudio: () => void
 
   // Mute & Solo States
   mutedTrackIds: Record<string, boolean>
@@ -165,6 +173,7 @@ const DEFAULT_STATE = {
   leftPanelCollapsed: false,
   rightPanelCollapsed: false,
   segmentPositions: {},
+  liveClipVolume: null as { id: string; db: number } | null,
   mutedTrackIds: {},
   soloedTrackIds: {},
   selectedSegmentIds: [] as string[],
@@ -188,6 +197,9 @@ export const useEditorStore = create<EditorStore>()(
     },
     settingsOpen: false,
     setSettingsOpen: (open) => set({ settingsOpen: open }),
+    scrubAudio: true,
+    toggleScrubAudio: () => set((s) => ({ scrubAudio: !s.scrubAudio })),
+    setLiveClipVolume: (v) => set({ liveClipVolume: v }),
 
     // ── Batch voice generation (not part of DEFAULT_STATE) ─────
     // The backend batch keeps running no matter where the user navigates;

@@ -345,6 +345,16 @@ export function useSetBgmVolume() {
   })
 }
 
+export function useSetDucking() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ jobId, on }: { jobId: string; on: boolean }) => jobs.setDucking(jobId, on),
+    onSuccess: (updated) => {
+      qc.setQueryData(['job', updated.id], updated)
+    },
+  })
+}
+
 export function useSetJobTitle() {
   const qc = useQueryClient()
   return useMutation({

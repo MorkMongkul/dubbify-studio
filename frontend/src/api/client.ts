@@ -158,6 +158,10 @@ export const jobs = {
   setBgmVolume: (jobId: string, volumeDb: number) =>
     api.patch<Job>(`/jobs/${jobId}/bgm-volume`, { volume_db: volumeDb }).then((r) => r.data),
 
+  /** The music & effects dip under the voices (preview and export). */
+  setDucking: (jobId: string, on: boolean) =>
+    api.patch<Job>(`/jobs/${jobId}/ducking`, { duck_music: on }).then((r) => r.data),
+
   setTitle: (jobId: string, title: string) =>
     api.patch<Job>(`/jobs/${jobId}/title`, { title }).then((r) => r.data),
 
