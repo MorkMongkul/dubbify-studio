@@ -5,15 +5,17 @@ import WaveSurfer from 'wavesurfer.js'
 import {
   ZoomIn, ZoomOut, Maximize2, Loader2, Scissors, X, RefreshCw,
   MousePointer2, SplitSquareHorizontal, Trash2, Magnet, Wand2, Layers, ChevronDown, Undo2, Redo2,
-  ArrowLeftToLine, ArrowRightToLine, Gauge, AudioLines, Music, Volume2, VolumeX, type LucideIcon,
+  ArrowLeftToLine, ArrowRightToLine, Gauge, AudioLines, Music, Volume2, VolumeX, Headphones, HeadphoneOff,
+  ArrowDownWideNarrow, type LucideIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Segment, SegmentUpdate, Speaker, Job, LayoutChange } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
-import { useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useSetBgmVolume, useLayoutSegments, useSplitSegment, useDuplicateSegment, putSegments } from '@/hooks/useApi'
+import { useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useSetBgmVolume, useLayoutSegments, useSplitSegment, useDuplicateSegment, useSetDucking, putSegments } from '@/hooks/useApi'
+import { useScrubAudio } from '@/hooks/useScrubAudio'
 import { segments as segmentsApi } from '@/api/client'
 import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, cn, isJobRunning, originalVoicesReplaced } from '@/lib/utils'
-import { recordLayoutChange, recordSegmentChange, recordSegmentDelete, recordSegmentsChange, recordSegmentsDelete, recordSegmentDuplicate, recordSegmentSplit } from '@/lib/historyHelpers'
+import { recordDuckingChange, recordLayoutChange, recordSegmentChange, recordSegmentDelete, recordSegmentsChange, recordSegmentsDelete, recordSegmentDuplicate, recordSegmentSplit } from '@/lib/historyHelpers'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { InteractiveSegment, LANE_HEIGHT } from './TimelineClip'
 import { clipAtPlayhead, trackRows } from '@/lib/tracks'
@@ -158,6 +160,19 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     setSyncedBgm({ jobId: job?.id, value: serverBgmVolume })
     setBgmVolumeLocal(serverBgmVolume)
   }
+  // The music dips under the voices — one undo step
+  const { mutate: setDucking, isPending: isSettingDucking } = useSetDucking()
+  const handleToggleDucking = useCallback(() => {
+    if (!jobId) return
+    const before = !!job?.duck_music
+    setDucking({ jobId, on: !before }, {
+      onSuccess: () => recordDuckingChange(qc, jobId, before, !before),
+      onError: () => toast.error("Couldn't change the music dip"),
+    })
+  }, [jobId, job?.duck_music, setDucking, qc])
+  const scrubAudio = useEditorStore((s) => s.scrubAudio)
+  const toggleScrubAudio = useEditorStore((s) => s.toggleScrubAudio)
+
   const handleBgmVolumeCommit = useCallback((value: number) => {
     if (!jobId || value === (job?.bgm_volume_db ?? 0)) return
     setBgmVolume({ jobId, volumeDb: value }, {
@@ -567,12 +582,23 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   }, [])
 
   // Click/drag on ruler or tracks to seek
+  // Hear while dragging: a snippet of the mix wherever the playhead is dragged to
+  const musicUrl = jobId && projectId && job?.stems_separated != null
+    ? `/uploads/${projectId}/${jobId}/no_vocals.m4a?v=${job?.bgm_volume_db ?? 0}-${job?.stems_version ?? 0}`
+    : null
+  const scrubSnippet = useScrubAudio({ segmentsRef, musicUrl, duckMusic: !!job?.duck_music })
+  const scrubTo = useCallback((t: number) => {
+    const clamped = Math.max(0, Math.min(duration, t))
+    setCurrentTime(clamped)
+    const st = useEditorStore.getState()
+    if (st.scrubAudio && !st.isPlaying) scrubSnippet(clamped)
+  }, [duration, setCurrentTime, scrubSnippet])
+
   const seekFromEvent = useCallback((clientX: number, rect: DOMRect) => {
     const scrollLeft = scrollRef.current?.scrollLeft ?? 0
     const x = clientX - rect.left + scrollLeft
-    const t = pixelsToTime(x, zoom, PX_PER_SEC)
-    setCurrentTime(Math.max(0, Math.min(duration, t)))
-  }, [zoom, duration, setCurrentTime])
+    scrubTo(pixelsToTime(x, zoom, PX_PER_SEC))
+  }, [zoom, scrubTo])
 
   const onRulerMouseDown = useCallback((e: React.MouseEvent) => {
     isDraggingRef.current = true
@@ -592,9 +618,8 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     const rect = scrollEl.getBoundingClientRect()
     const scrollLeft = scrollEl.scrollLeft
     const x = clientX - rect.left + scrollLeft - speakerPanelWidth
-    const t = pixelsToTime(x, zoom, PX_PER_SEC)
-    setCurrentTime(Math.max(0, Math.min(duration, t)))
-  }, [zoom, duration, speakerPanelWidth, setCurrentTime])
+    scrubTo(pixelsToTime(x, zoom, PX_PER_SEC))
+  }, [zoom, speakerPanelWidth, scrubTo])
 
   // Empty-track-space gesture: press seeks the playhead (immediate feedback);
   // with the select tool, dragging past a small threshold becomes a marquee —
@@ -841,6 +866,8 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
 
         {/* Right: snapping, zoom */}
         <div className="flex items-center justify-end gap-1 z-10">
+          <ToolButton label="Hear while dragging" icon={scrubAudio ? Headphones : HeadphoneOff}
+            onClick={toggleScrubAudio} pressed={scrubAudio} />
           <ToolButton label="Snapping" icon={Magnet} onClick={toggleSnap} pressed={snapEnabled} />
           <ToolButton label="Zoom to fit" icon={Maximize2} onClick={handleZoomToFit} />
 
@@ -999,6 +1026,20 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
               >
                 <Tooltip content="Music & effects" side="right">
                   <Music size={15} className="text-sky-400 shrink-0" />
+                </Tooltip>
+                <Tooltip content="Music dips under voices" side="bottom">
+                  <button
+                    onClick={handleToggleDucking}
+                    disabled={!jobId || isSettingDucking}
+                    aria-label="Music dips under voices"
+                    aria-pressed={!!job?.duck_music}
+                    className={cn(
+                      'h-6 w-6 rounded-md flex items-center justify-center transition-colors shrink-0 disabled:opacity-40',
+                      job?.duck_music ? 'bg-sky-500/20 text-sky-300' : 'text-white/45 hover:text-white hover:bg-white/8',
+                    )}
+                  >
+                    <ArrowDownWideNarrow size={13} />
+                  </button>
                 </Tooltip>
                 <Tooltip content={mutedTrackIds['__bgm__'] ? 'Unmute' : 'Mute'} side="bottom">
                   <button
