@@ -24,6 +24,7 @@ from app.services.audio_extractor import extract_audio, get_video_duration
 from app.services.source_separator import render_bgm_volume, separate_vocals_bgm
 from app.services.asr import VOICES, labels_for_spans, transcribe_audio
 from app.services.translator import translate_batch_with_report
+from app.services.timeline import follow_text, lay_out_new, settle_job
 from app.services.pipeline_common import (
     update_job_status as _update_job,
     build_speaker_references,
@@ -226,10 +227,15 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
                     lane_index=lane_by_speaker.setdefault(seg.speaker_label, len(lane_by_speaker)),
                     start_time=seg.start_time,
                     end_time=seg.end_time,
+                    source_start=seg.start_time,
+                    source_end=seg.end_time,
                     source_text=seg.source_text,
                     english_text="",
                     khmer_text=km_texts[i] if i < len(km_texts) else "",
                 ))
+            # Each line is as long as its Khmer text takes to say; the
+            # detected span stays as where the actor spoke
+            lay_out_new(new_segments)
             await replace_job_segments(db, job.id, new_segments)
             await remove_unused_auto_speakers(db, project.id)
 

@@ -16,6 +16,7 @@ from app.core.data_folder import follow_moved_data_folder
 from app.core.database import init_db
 from app.services.pipeline_common import recover_orphaned_jobs
 from app.services.builtin_voices import seed_builtin_voices
+from app.services.timeline import convert_old_jobs
 from app.api.routes import health, projects, jobs, segments, tts, voices, overlays, chat, story
 from app.api.routes import settings as settings_routes
 
@@ -46,6 +47,14 @@ async def lifespan(app: FastAPI):
         # Not fatal: the editor works without them; the next launch retries.
         logger.exception("Couldn't install the built-in voices")
     await recover_orphaned_jobs()
+    try:
+        converted = await convert_old_jobs()
+        if converted:
+            logger.info(f"Gave {converted} episode(s) the 0.3.0 timeline.")
+    except Exception:
+        # Not fatal: an episode not converted yet still plays the same in the
+        # preview and the export; the next launch retries.
+        logger.exception("Couldn't convert older episodes to the new timeline")
     yield
     logger.info("Shutting down.")
 

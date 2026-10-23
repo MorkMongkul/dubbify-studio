@@ -188,7 +188,8 @@ def job_lock(job_id: str) -> asyncio.Lock:
 
 
 async def settle_job(db: AsyncSession, job_id: str, changed_ids: Iterable[str]) -> set[str]:
-    """Settle a job's tracks after a change the caller has already committed.
+    """Settle a job's tracks after a change the caller has already committed
+    (anything not committed in this session's segments is overwritten).
     Returns the ids of the clips it moved to another track."""
     from app.models.models import Segment
 
@@ -196,8 +197,81 @@ async def settle_job(db: AsyncSession, job_id: str, changed_ids: Iterable[str]) 
     if not changed:
         return set()
     async with job_lock(job_id):
-        db.expire_all()
-        segs = (await db.execute(select(Segment).where(Segment.job_id == job_id))).scalars().all()
+        # Fresh rows (another writer may have committed since this session read
+        # them), refreshing only the segments so the caller's other objects stay usable
+        segs = (await db.execute(
+            select(Segment).where(Segment.job_id == job_id).execution_options(populate_existing=True)
+        )).scalars().all()
         moved = settle(segs, changed)
         await db.commit()
     return moved
+
+
+# ── Episodes from before 0.3.0, and freshly analysed lines ────
+
+# The old app sped a voice up to fit its line (preview and export alike) when
+# no speed was set and the voice was more than this much longer than the line
+OLD_FIT_THRESHOLD = 1.05
+# The fastest a converted voice keeps sounding: the most a clip render allows
+OLD_FIT_FASTEST = 2.0
+
+
+def convert_job(segs) -> None:
+    """Give an episode from before 0.3.0 the new timing without changing how
+    it sounds. The old span becomes where the actor spoke; a voice the old app
+    sped up to fit keeps that speed as its visible setting (up to 2×); a voice
+    shorter than its line ends where it ends; a line with no voice takes its
+    text's length."""
+    for seg in segs:
+        seg.source_start, seg.source_end = seg.start_time, seg.end_time
+        if is_voiced(seg):
+            tts = seg.tts_duration_secs
+            ratio = tts / max(MIN_CLIP_SECS, seg.end_time - seg.start_time)
+            manual = abs((seg.voice_speed or 1.0) - 1.0) > 0.001
+            seg.voice_offset = 0.0
+            seg.fit_rate = min(OLD_FIT_FASTEST, ratio) if not manual and ratio > OLD_FIT_THRESHOLD else 1.0
+            seg.end_time = seg.start_time + tts / seg.fit_rate
+            seg.voice_text = seg.khmer_text
+        else:
+            follow_text(seg)
+
+
+def _ensure_ids(segs) -> None:
+    from app.models.models import generate_uuid
+    for seg in segs:
+        if not seg.id:
+            seg.id = generate_uuid()
+
+
+def lay_out_new(segs) -> None:
+    """Freshly analysed lines (not saved yet): each is as long as its text,
+    and none overlaps another on its track."""
+    _ensure_ids(segs)
+    for seg in segs:
+        follow_text(seg)
+    settle(segs, [s.id for s in segs])
+
+
+async def convert_old_jobs() -> int:
+    """Convert every episode from before 0.3.0 (timeline_version NULL), one
+    commit per episode, so a restart part-way never converts one twice.
+    Returns how many were converted."""
+    import app.core.database as core_db
+    from app.models.models import Job, Segment
+
+    async with core_db.AsyncSessionLocal() as db:
+        job_ids = (await db.execute(select(Job.id).where(Job.timeline_version.is_(None)))).scalars().all()
+    converted = 0
+    for job_id in job_ids:
+        async with job_lock(job_id):
+            async with core_db.AsyncSessionLocal() as db:
+                job = await db.get(Job, job_id)
+                if job is None or job.timeline_version is not None:
+                    continue
+                segs = (await db.execute(select(Segment).where(Segment.job_id == job_id))).scalars().all()
+                convert_job(segs)
+                settle(segs, [s.id for s in segs])
+                job.timeline_version = 1
+                await db.commit()
+                converted += 1
+    return converted
