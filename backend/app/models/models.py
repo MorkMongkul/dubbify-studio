@@ -246,6 +246,9 @@ class Segment(Base):
     volume_db    = Column(Float, default=0.0)
     voice_filter = Column(String(50), default="")
     voice_speed  = Column(Float, default=1.0)
+    # The gain that gave the voice the original line's loudness, decided when the
+    # voice was made (voice_level.level_new_voice). NULL: made before 0.2.8, left as it was.
+    level_gain_db = Column(Float, nullable=True)
 
     # Review flags
     is_approved  = Column(Boolean, default=False)

@@ -3,8 +3,6 @@ app/api/routes/segments.py
 Segment endpoints: review, edit translations, approve lines.
 Also includes speaker management endpoints.
 """
-import asyncio
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -131,7 +129,7 @@ async def update_segment(
                 return seg
             shutil.copy2(final_path, raw_path)
 
-        # Trimmed and set to the original line's loudness first, as when the voice was made
+        # With the level decided when the voice was made (voice_level), not re-measured
         seg.tts_duration_secs = await voice_level.render_clip(seg, raw_path, Path(final_path))
 
     await db.flush()
@@ -179,6 +177,9 @@ async def approve_all_segments(job_id: str, db: AsyncSession = Depends(get_db, s
     return {"approved": len(segments), "job_id": job_id}
 
 
+AUTOFIT_SLOWEST = 0.9
+
+
 @router.post("/jobs/{job_id}/segments/autofit", status_code=status.HTTP_200_OK)
 async def autofit_segment_speeds(job_id: str, db: AsyncSession = Depends(get_db, scope="function")):
     """
@@ -213,23 +214,21 @@ async def autofit_segment_speeds(job_id: str, db: AsyncSession = Depends(get_db,
             shutil.copy2(final_path, raw_path)
 
         try:
-            # Measured without the engine's silence (a clip made before 0.2.8
-            # still has it): speeding a voice up to cover silence that's cut
-            # anyway made it rush for nothing.
-            before = sf.info(str(raw_path)).duration
-            raw_duration = await asyncio.to_thread(voice_level.trim_silence, str(raw_path))
+            raw_duration = sf.info(str(raw_path)).duration
         except Exception:
             missing += 1
             continue
         window = max(0.1, seg.end_time - seg.start_time)
-        target = max(0.5, min(2.0, raw_duration / window))
-        speed_changes = abs(target - (seg.voice_speed or 1.0)) >= 0.02
-        if not speed_changes and raw_duration >= before - 0.01:
+        # Slowed down at most to AUTOFIT_SLOWEST: voices made since 0.2.8 have
+        # their silence trimmed and are often shorter than their line, and
+        # stretching them to fill it (down to 0.65×) sounded wrong.
+        target = max(AUTOFIT_SLOWEST, min(2.0, raw_duration / window))
+
+        if abs(target - (seg.voice_speed or 1.0)) < 0.02:
             skipped += 1
             continue
 
-        if speed_changes:
-            seg.voice_speed = target
+        seg.voice_speed = target
         seg.tts_duration_secs = await voice_level.render_clip(seg, raw_path, Path(final_path))
         fitted += 1
         # Commit per clip: releases the (single, in SQLite dev) DB connection

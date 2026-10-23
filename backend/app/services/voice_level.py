@@ -14,9 +14,12 @@ Measured on a real project (6 episodes, the team's own voices and timings):
   separated vocals, so the dub sits in the music and effects as the original
   dialogue did.
 
-render_clip is the one way a segment's final clip is made from its raw voice
-(new voice, changed volume/filter/speed, Auto-fit), so all of them trim and
-match the same way.
+Both are decided once, when a voice is made (level_new_voice: the new
+recording is trimmed before it becomes the raw voice, and the gain is stored on
+the line as level_gain_db); render_clip — every later render (volume/filter/
+speed change, Auto-fit) — re-uses them. A voice made before 0.2.8 has no stored
+gain and renders exactly as it did: re-levelling and trimming it on its first
+touch put it ~10 dB and 0.6 s off its untouched neighbours.
 """
 import asyncio
 import logging
@@ -95,6 +98,11 @@ def match_gain_db(voice_path: str, vocals_path: str, start: float, end: float) -
     return round(min(gain, CEILING_DB - peak), 1)
 
 
+def peak_db(path: str) -> float:
+    data, _ = sf.read(path, dtype="float32")
+    return float(20 * np.log10(np.abs(data).max() + 1e-12)) if len(data) else -120.0
+
+
 def original_vocals(job_dir: Path) -> str | None:
     """The episode's separated vocals — None when separation failed and they're the whole mix, music included."""
     from app.services.source_separator import UNAVAILABLE_MARKER
@@ -104,12 +112,34 @@ def original_vocals(job_dir: Path) -> str | None:
 
 async def render_clip(seg, raw_path: Path, final_path: Path) -> float:
     """
-    Make the segment's final clip from its raw voice: silence trimmed, the
-    original line's loudness, then the user's own volume/filter/speed. The clip
-    lives in <job dir>/tts/. Returns the clip's duration.
+    Make the segment's final clip from its raw voice: the stored level gain plus
+    the user's own volume (never peaking above CEILING_DB), then their filter
+    and speed. A voice without a stored gain (made before 0.2.8) gets the
+    user's volume alone, as it always did. Returns the clip's duration.
     """
     from app.services.audio_extractor import apply_audio_effects
-    await asyncio.to_thread(trim_silence, str(raw_path))
+    volume = seg.volume_db or 0.0
+    if seg.level_gain_db is not None:
+        volume += seg.level_gain_db
+        try:
+            volume = min(volume, CEILING_DB - await asyncio.to_thread(peak_db, str(raw_path)))
+        except Exception as e:  # noqa: BLE001 — an unreadable clip fails in ffmpeg below, as before
+            logger.warning(f"Couldn't read the voice's peak: {e}")
+    return await apply_audio_effects(
+        input_path=str(raw_path),
+        output_path=str(final_path),
+        volume_db=round(volume, 1),
+        voice_filter=seg.voice_filter,
+        voice_speed=seg.voice_speed,
+    )
+
+
+async def level_new_voice(seg, raw_path: Path, final_path: Path) -> float:
+    """
+    A just-made voice: decide its level once — the loudness of the original line
+    where the line is now (0 when separation failed or nothing is said there) —
+    store it on the line, and render the clip. Returns the clip's duration.
+    """
     gain = 0.0
     vocals = original_vocals(Path(final_path).parent.parent)
     if vocals:
@@ -117,10 +147,5 @@ async def render_clip(seg, raw_path: Path, final_path: Path) -> float:
             gain = await asyncio.to_thread(match_gain_db, str(raw_path), vocals, seg.start_time, seg.end_time)
         except Exception as e:  # noqa: BLE001 — an unreadable stem just means "leave the level alone"
             logger.warning(f"Couldn't measure the original line's loudness: {e}")
-    return await apply_audio_effects(
-        input_path=str(raw_path),
-        output_path=str(final_path),
-        volume_db=(seg.volume_db or 0.0) + gain,
-        voice_filter=seg.voice_filter,
-        voice_speed=seg.voice_speed,
-    )
+    seg.level_gain_db = gain
+    return await render_clip(seg, raw_path, final_path)

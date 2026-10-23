@@ -108,14 +108,18 @@ def _real_tts_configured() -> bool:
     return bool(settings.VOXCPM2_API_URL or settings.VOXCPM2_HF_SPACE_FALLBACK or settings.GEMINI_API_KEY)
 
 
-async def _render_segment_audio(seg: Segment, tts_dir: Path, voice_kwargs: dict) -> tuple[str, float, str]:
+async def _render_segment_audio(seg: Segment, tts_dir: Path, voice_kwargs: dict,
+                                db: AsyncSession) -> tuple[str, float, str]:
     """
     Synthesize a segment and render its final clip; returns (final_path,
     duration, backend). The new audio is written to a temp file and only
     replaces the segment's raw clip once a real synthesis succeeded — the raw
     clip is what later volume/filter/speed changes re-render from, so a failed
     regenerate must leave it (and the final clip) exactly as they were.
-    Raises TTSUnavailable otherwise.
+    Raises TTSUnavailable otherwise. The new recording's silence around the
+    words is trimmed before it becomes the raw clip, and the line's times and
+    effects are read again afterwards: synthesis takes seconds to minutes and
+    the timeline isn't locked meanwhile.
     """
     raw_path = tts_dir / f"seg_{seg.id}_raw.wav"
     final_path = tts_dir / f"seg_{seg.id}.wav"
@@ -126,11 +130,16 @@ async def _render_segment_audio(seg: Segment, tts_dir: Path, voice_kwargs: dict)
             raise TTSUnavailable(result.get("error") or "TTS synthesis failed")
         if result.get("mock") and _real_tts_configured():
             raise TTSUnavailable("All TTS backends failed or rate-limited — wait a minute and retry")
+        try:
+            await asyncio.to_thread(voice_level.trim_silence, str(tmp_path))
+        except Exception as e:  # noqa: BLE001 — an untrimmed voice is still a voice
+            logger.warning(f"Couldn't trim the voice's silence: {e}")
         os.replace(tmp_path, raw_path)
     finally:
         tmp_path.unlink(missing_ok=True)
 
-    duration = await voice_level.render_clip(seg, raw_path, final_path)
+    await db.refresh(seg, attribute_names=["start_time", "end_time", "volume_db", "voice_filter", "voice_speed"])
+    duration = await voice_level.level_new_voice(seg, raw_path, final_path)
     return str(final_path), duration, result.get("backend", "")
 
 
@@ -193,7 +202,7 @@ async def _synthesize_segment_db(segment_id: str, db: AsyncSession) -> tuple[Seg
     await db.commit()
 
     try:
-        final_path, duration, backend = await _render_segment_audio(seg, tts_dir, voice_kwargs)
+        final_path, duration, backend = await _render_segment_audio(seg, tts_dir, voice_kwargs, db)
     except TTSUnavailable as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -804,7 +813,7 @@ async def _synthesize_all_segments(job_id: str):
                     # SQLite connection.
                     await db2.commit()
 
-                    final_path, duration, backend = await _render_segment_audio(seg, tts_dir, voice_kwargs)
+                    final_path, duration, backend = await _render_segment_audio(seg, tts_dir, voice_kwargs, db2)
                     if backend == "gemini":
                         gemini_seen.set()
                     seg.tts_audio_path    = final_path
