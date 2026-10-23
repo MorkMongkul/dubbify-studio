@@ -323,6 +323,15 @@ class LayoutResponse(BaseModel):
     segments: List[SegmentResponse]
 
 
+class SplitRequest(BaseModel):
+    at: float
+
+
+class SplitResponse(BaseModel):
+    first: SegmentResponse
+    second: SegmentResponse
+
+
 # ── Overlay schemas ─────────────────────────────────────────────
 class OverlayUpdate(BaseModel):
     x: Optional[float] = None

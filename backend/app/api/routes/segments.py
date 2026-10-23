@@ -16,7 +16,7 @@ from app.core.database import get_db
 from app.core.paths import resolve_media_path
 from app.models.models import Segment, Speaker, Job, Project, Voice
 from app.schemas.schemas import (
-    SegmentResponse, SegmentUpdate, SegmentCreate, LayoutRequest, LayoutResponse,
+    SegmentResponse, SegmentUpdate, SegmentCreate, LayoutRequest, LayoutResponse, SplitRequest, SplitResponse,
     SpeakerResponse, SpeakerUpdate, SpeakerCreate, SpeakerMerge, SpeakerMergeResponse, SpeakerUnmerge,
 )
 from app.services import story_notes, timeline, voice_level
@@ -211,6 +211,103 @@ async def update_layout(
     await timeline.settle_job(db, job_id, [c.id for c in payload.changes])
     changed = [s for s in segs if place(s) != before[s.id]]
     return LayoutResponse(segments=sorted(changed, key=lambda s: (s.start_time, s.id)))
+
+
+def _copy_line(seg: Segment) -> Segment:
+    """A new line with every field of `seg` and its own copy of the voice files
+    (voices are stored and re-rendered per line)."""
+    from app.core.paths import resolve_media_path
+    from app.models.models import generate_uuid
+    import shutil
+
+    fields = {c.key: getattr(seg, c.key) for c in Segment.__table__.columns if c.key != "id"}
+    copy = Segment(id=generate_uuid(), **fields)
+    if seg.tts_audio_path:
+        final = Path(resolve_media_path(seg.tts_audio_path))
+        if final.exists():
+            new_final = final.with_name(f"seg_{copy.id}.wav")
+            shutil.copy2(final, new_final)
+            raw = final.with_name(f"seg_{seg.id}_raw.wav")
+            if raw.exists():
+                shutil.copy2(raw, final.with_name(f"seg_{copy.id}_raw.wav"))
+            copy.tts_audio_path = str(new_final)
+    return copy
+
+
+async def _segment_or_404(db: AsyncSession, segment_id: str) -> Segment:
+    seg = (await db.execute(select(Segment).where(Segment.id == segment_id))).scalar_one_or_none()
+    if not seg:
+        raise HTTPException(status_code=404, detail="Segment not found")
+    return seg
+
+
+@router.post("/segments/{segment_id}/split", response_model=SplitResponse)
+async def split_segment(
+    segment_id: str,
+    payload: SplitRequest,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """
+    Split a clip at `at`, like CapCut: a voiced clip's halves each play their
+    own part of the one voice (the second with its own copy of the files); the
+    texts are split at the phrase break nearest to the cut; the actor's span is
+    split at the cut. A voiceless clip's halves each follow their own text.
+    """
+    seg = await _segment_or_404(db, segment_id)
+    at = payload.at
+    if not (seg.start_time + timeline.MIN_CLIP_SECS < at < seg.end_time - timeline.MIN_CLIP_SECS):
+        raise HTTPException(status_code=422, detail="Split point is too close to the clip's edge")
+
+    share = (at - seg.start_time) / (seg.end_time - seg.start_time)
+    voiced = timeline.is_voiced(seg)
+    outdated = seg.voice_text is not None and seg.voice_text != seg.khmer_text
+    second = _copy_line(seg)
+    texts = {f: timeline.split_text(getattr(seg, f) or "", share) for f in ("khmer_text", "source_text", "english_text")}
+    for field, (left, right) in texts.items():
+        setattr(seg, field, left)
+        setattr(second, field, right)
+    if voiced and seg.voice_text is not None and not outdated:
+        seg.voice_text, second.voice_text = seg.khmer_text, second.khmer_text
+
+    # Where the actor spoke, cut at the same time; a half wholly outside it has none
+    if seg.source_start is not None and seg.source_end is not None:
+        src_start, src_end = seg.source_start, seg.source_end
+        seg.source_start, seg.source_end = (src_start, min(src_end, at)) if src_start < at else (None, None)
+        second.source_start, second.source_end = (max(src_start, at), src_end) if src_end > at else (None, None)
+
+    second.start_time = at
+    if voiced:
+        second.voice_offset = timeline.offset_of(seg) + (at - seg.start_time) * timeline.rate_of(seg)
+        seg.end_time = at
+        timeline.clamp_voiced(seg)
+        timeline.clamp_voiced(second)
+    else:
+        seg.end_time = at
+        timeline.follow_text(seg)
+        timeline.follow_text(second)
+    db.add(second)
+    await db.commit()
+    await timeline.settle_job(db, seg.job_id, [seg.id, second.id])
+    await db.refresh(seg)
+    await db.refresh(second)
+    return SplitResponse(first=seg, second=second)
+
+
+@router.post("/segments/{segment_id}/duplicate", response_model=SegmentResponse, status_code=status.HTTP_201_CREATED)
+async def duplicate_segment(segment_id: str, db: AsyncSession = Depends(get_db, scope="function")):
+    """A copy of the clip — voice included, with its own files — right after it."""
+    seg = await _segment_or_404(db, segment_id)
+    copy = _copy_line(seg)
+    length = seg.end_time - seg.start_time
+    copy.start_time = seg.end_time
+    copy.end_time = seg.end_time + length
+    # The copy wasn't spoken by the actor there
+    copy.source_start = copy.source_end = None
+    db.add(copy)
+    await db.commit()
+    await timeline.settle_job(db, seg.job_id, [copy.id])
+    await db.refresh(copy)
+    return copy
 
 
 @router.delete("/segments/{segment_id}", status_code=status.HTTP_204_NO_CONTENT)

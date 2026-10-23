@@ -191,3 +191,93 @@ async def test_layout_refuses_a_line_from_another_job(client, db_sessionmaker):
                             json={"changes": [{"id": stranger, "lane_index": 3}]})
     assert resp.status_code == 404
     assert (await _row(db_sessionmaker, stranger)).lane_index == 0
+
+
+# ── Split and duplicate ───────────────────────────────────────
+
+from pathlib import Path  # noqa: E402
+
+
+async def _voiced_on_disk(db_sessionmaker, job_id, tmp_path, start, end, tts, **fields):
+    sid = await _add_segment(db_sessionmaker, job_id, start, end, **fields)
+    async with db_sessionmaker() as s:
+        seg = await s.get(Segment, sid)
+        seg.tts_audio_path = _write_clip(tmp_path, sid, tts)
+        seg.tts_duration_secs = tts
+        seg.voice_text = seg.khmer_text
+        await s.commit()
+    return sid
+
+
+@pytest.mark.asyncio
+async def test_splitting_a_voice_gives_each_half_its_own_part(client, db_sessionmaker, tmp_path):
+    job_id = await _make_job(client, db_sessionmaker)
+    sid = await _voiced_on_disk(db_sessionmaker, job_id, tmp_path, 0.0, 3.0, 3.0,
+                                khmer_text="aaaa bbbb cccc", source_start=0.0, source_end=2.5,
+                                volume_db=-3.0, voice_speed=1.1, notes="n")
+    resp = await client.post(f"/api/v1/segments/{sid}/split", json={"at": 1.0})
+    assert resp.status_code == 200
+    f, s = resp.json()["first"], resp.json()["second"]
+    assert f["id"] == sid and s["id"] != sid
+    assert (f["start_time"], f["end_time"], f["voice_offset"]) == (0.0, 1.0, 0.0)
+    assert (s["start_time"], s["end_time"], s["voice_offset"]) == (1.0, 3.0, 1.0)
+    assert s["tts_audio_path"] != f["tts_audio_path"] and Path(s["tts_audio_path"]).exists()
+    assert Path(s["tts_audio_path"]).with_name(f"seg_{s['id']}_raw.wav").exists()
+    assert (f["khmer_text"], s["khmer_text"]) == ("aaaa", "bbbb cccc")
+    assert f["voice_text"] == f["khmer_text"] and s["voice_text"] == s["khmer_text"]
+    assert (f["source_start"], f["source_end"], s["source_start"], s["source_end"]) == (0.0, 1.0, 1.0, 2.5)
+    assert (s["volume_db"], s["voice_speed"], s["notes"], s["lane_index"]) == (-3.0, 1.1, "n", f["lane_index"])
+
+
+@pytest.mark.asyncio
+async def test_splitting_an_outdated_voice_keeps_what_it_says(client, db_sessionmaker, tmp_path):
+    job_id = await _make_job(client, db_sessionmaker)
+    sid = await _voiced_on_disk(db_sessionmaker, job_id, tmp_path, 0.0, 3.0, 3.0, khmer_text="aaaa bbbb")
+    async with db_sessionmaker() as s:
+        seg = await s.get(Segment, sid)
+        seg.khmer_text = "cccc dddd"     # edited after the voice was made
+        await s.commit()
+    body = (await client.post(f"/api/v1/segments/{sid}/split", json={"at": 1.5})).json()
+    assert body["first"]["voice_text"] == "aaaa bbbb" and body["second"]["voice_text"] == "aaaa bbbb"
+
+
+@pytest.mark.asyncio
+async def test_splitting_a_voiceless_line_splits_its_text_and_lengths(client, db_sessionmaker):
+    job_id = await _make_job(client, db_sessionmaker)
+    text = "ក" * 20 + " " + "ខ" * 20     # 41 characters: 2.665 s
+    sid = await _add_segment(db_sessionmaker, job_id, 1.0, 3.665, khmer_text=text, source_text="一二三四",
+                             source_start=1.0, source_end=2.0)
+    body = (await client.post(f"/api/v1/segments/{sid}/split", json={"at": 2.0})).json()
+    f, s = body["first"], body["second"]
+    assert (f["khmer_text"], s["khmer_text"]) == ("ក" * 20, "ខ" * 20)
+    assert (f["start_time"], f["end_time"]) == (1.0, pytest.approx(2.3))
+    assert (s["start_time"], s["end_time"]) == (2.0, pytest.approx(3.3))
+    # The actor stopped at 2.0: the second half has no span of its own
+    assert (f["source_start"], f["source_end"], s["source_start"], s["source_end"]) == (1.0, 2.0, None, None)
+    # The halves overlap (each as long as its text): never on one track
+    assert f["lane_index"] != s["lane_index"]
+
+
+@pytest.mark.asyncio
+async def test_split_too_close_to_an_edge_is_refused(client, db_sessionmaker):
+    job_id = await _make_job(client, db_sessionmaker)
+    sid = await _add_segment(db_sessionmaker, job_id, 1.0, 2.0, khmer_text="")
+    assert (await client.post(f"/api/v1/segments/{sid}/split", json={"at": 1.05})).status_code == 422
+    assert (await client.post(f"/api/v1/segments/{sid}/split", json={"at": 1.95})).status_code == 422
+    assert (await client.post("/api/v1/segments/nope/split", json={"at": 1.5})).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_duplicating_copies_the_voice_and_finds_a_free_track(client, db_sessionmaker, tmp_path):
+    job_id = await _make_job(client, db_sessionmaker)
+    sid = await _voiced_on_disk(db_sessionmaker, job_id, tmp_path, 0.0, 2.0, 2.0,
+                                source_start=0.0, source_end=2.0, voice_speed=1.2)
+    await _add_segment(db_sessionmaker, job_id, 2.5, 3.0, khmer_text="")   # in the copy's way
+    resp = await client.post(f"/api/v1/segments/{sid}/duplicate")
+    assert resp.status_code == 201
+    d = resp.json()
+    assert d["id"] != sid
+    assert (d["start_time"], d["end_time"]) == (2.0, pytest.approx(4.0))
+    assert (d["source_start"], d["source_end"]) == (None, None)
+    assert d["voice_speed"] == 1.2 and d["lane_index"] == 1
+    assert Path(d["tts_audio_path"]).exists() and d["tts_audio_path"] != (await _row(db_sessionmaker, sid)).tts_audio_path
