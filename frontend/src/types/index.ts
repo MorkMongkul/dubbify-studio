@@ -266,6 +266,15 @@ export interface SegmentUpdate {
   voice_text?: string | null
 }
 
+/** One clip's new place on the timeline (PUT /jobs/{id}/segments/layout). */
+export type { LayoutChange } from '@/lib/tracks'
+
+/** POST /segments/{id}/split: the original (shortened) and the new second half. */
+export interface SplitResult {
+  first: Segment
+  second: Segment
+}
+
 export interface SegmentCreate {
   speaker_id?: string | null
   voice_id?: string | null

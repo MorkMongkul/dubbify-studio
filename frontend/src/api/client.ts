@@ -3,7 +3,7 @@
 
 import axios, { type AxiosProgressEvent } from 'axios'
 import type {
-  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, SpeakerMergeResponse, Segment, SegmentUpdate, SegmentCreate, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView,
+  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, SpeakerMergeResponse, Segment, SegmentUpdate, SegmentCreate, LayoutChange, SplitResult, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView,
 } from '@/types'
 
 const api = axios.create({
@@ -199,6 +199,16 @@ export const segments = {
   delete: (segmentId: string) =>
     api.delete(`/segments/${segmentId}`),
 
+  /** Move / trim / re-track several clips at once; returns every clip whose place changed. */
+  layout: (jobId: string, changes: LayoutChange[]) =>
+    api.put<{ segments: Segment[] }>(`/jobs/${jobId}/segments/layout`, { changes }).then((r) => r.data.segments),
+
+  split: (segmentId: string, at: number) =>
+    api.post<SplitResult>(`/segments/${segmentId}/split`, { at }).then((r) => r.data),
+
+  duplicate: (segmentId: string) =>
+    api.post<Segment>(`/segments/${segmentId}/duplicate`).then((r) => r.data),
+
   approve: (segmentId: string) =>
     api.post<Segment>(`/segments/${segmentId}/approve`).then((r) => r.data),
 
@@ -264,10 +274,10 @@ export const tts = {
 
 // ── Bulk timeline actions ───────────────────────────────────────
 export const timelineActions = {
-  // Speed every generated clip so its audio exactly fills its slot
-  // (longer → faster, shorter → slower; server clamps to 0.5–2.0×).
+  // Speed up the voices that run into the next line (at most 1.25×, never slower):
+  // how many it sped up, and how many still run into the next line.
   autofit: (jobId: string) =>
-    api.post<{ fitted: number; skipped: number; missing: number }>(
+    api.post<{ fitted: number; left: number }>(
       `/jobs/${jobId}/segments/autofit`
     ).then((r) => r.data),
 

@@ -4,7 +4,7 @@ import { VoiceTrigger } from '@/components/voices/VoiceTrigger'
 import { useRef, useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { AlignLeft, Loader2, ChevronLeft, ChevronRight, Sliders, Volume2, Type, RefreshCw, Mic, Plus, Languages, AudioLines, X } from 'lucide-react'
-import type { Segment, Speaker, Job } from '@/types'
+import type { Segment, SegmentUpdate, Speaker, Job } from '@/types'
 import { useEditorStore, useActiveSegmentId } from '@/store/editorStore'
 import { SegmentCardSkeleton } from '@/components/ui/Skeleton'
 import { Modal, InputField, Field } from '@/components/ui/Modal'
@@ -13,12 +13,13 @@ import { toast } from 'sonner'
 import { cn, formatTime, getSpeakerColor } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import { segments as segmentsApi, tts as ttsApi, type BatchSynthesisStatus } from '@/api/client'
-import { useAnalyzeJob, useJob, useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker, useTranslateMissing, useRetrySeparation } from '@/hooks/useApi'
+import { useAnalyzeJob, useJob, useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker, useTranslateMissing, useRetrySeparation, putSegments } from '@/hooks/useApi'
 import { JobProgressRing } from '@/components/progress/JobProgressRing'
 import { useDoneFlash } from '@/hooks/useDoneFlash'
 import { jobProgress } from '@/lib/jobProgress'
 import { recordSegmentChange, recordSegmentsChange, recordSegmentCreate } from '@/lib/historyHelpers'
 import { voiceUsers } from '@/lib/voiceTags'
+import { effectiveSpeed } from '@/lib/clipRules'
 
 interface TranscriptPanelProps {
   segments: Segment[]
@@ -271,41 +272,25 @@ export function TranscriptPanel({
   }
 
   // Persist a text edit to the DB on blur so it survives reload / resume.
-  // Changing the text also clears that segment's stale TTS clip (it was for the
-  // old words) so it shows Pending and can be regenerated — other segments' voices
-  // are untouched.
+  // The voice is kept: a voiced line shows it was made from older text (New
+  // voice makes it again); a line with no voice takes its new text's length,
+  // and the server may move it to another track if it now runs into the next
+  // clip — the track is part of the undo step.
   const handleTextBlur = async (segmentId: string, text: string, original: string) => {
     if (text === original) return   // nothing changed
     const seg = segments.find((s) => s.id === segmentId)
     try {
-      const updated = await segmentsApi.update(segmentId, { khmer_text: text, tts_audio_path: '' })
+      const updated = await segmentsApi.update(segmentId, { khmer_text: text })
       // Write the PATCH response straight into the cache, then drop the local
       // text override so server state owns this segment's text again — leaving
       // the override in place made it outrank anything that arrived later,
       // including the reverted text an undo had just written.
-      qc.setQueryData<Segment[]>(['segments', jobId], (old) =>
-        old ? old.map((s) => (s.id === updated.id ? updated : s)) : old
-      )
+      putSegments(qc, jobId, [updated])
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
       clearSegmentTextOverride(segmentId)
-      // An edited segment leaves batch tracking: its audio was just cleared
-      // as stale, and a batch that already finished it will never redo it —
-      // keeping it tracked left the progress spinner stuck short of complete
-      // and its "Generating…" badge hid the row's own Regenerate button.
-      const st = useEditorStore.getState()
-      if (st.batchGeneratingIds.includes(segmentId)) {
-        const rest = st.batchGeneratingIds.filter((id) => id !== segmentId)
-        useEditorStore.setState({
-          batchGeneratingIds: rest,
-          batchGeneratingJobId: rest.length ? st.batchGeneratingJobId : null,
-          batchId: rest.length ? st.batchId : null,
-        })
-      }
-      // Restores the old text and its old audio pointer — correct as long as
-      // the clip hasn't been regenerated since (that would've overwritten
-      // the file at the same path; there's no audio versioning to recover it).
       recordSegmentChange(qc, jobId, segmentId,
-        { khmer_text: original, tts_audio_path: seg?.tts_audio_path ?? '' },
-        { khmer_text: text, tts_audio_path: '' },
+        { khmer_text: original, lane_index: seg?.lane_index ?? 0 },
+        { khmer_text: text, lane_index: updated.lane_index ?? 0 },
         'Edit text')
     } catch (err) {
       toast.error('Failed to save edit')
@@ -466,7 +451,9 @@ export function TranscriptPanel({
     id: activeSeg.id,
     volume: activeSeg.volume_db ?? 0,
     filter: activeSeg.voice_filter ?? null,
-    speed: activeSeg.voice_speed ?? 1.0,
+    // The speed heard: the voice file's own speed × the clip's (kept from an
+    // older episode's fit); a change sets it as the file's speed
+    speed: Math.round(effectiveSpeed(activeSeg) * 1000) / 1000,
   } : null
   // Starts empty so the first render with a clip also syncs (the local
   // states above start at neutral defaults).
@@ -486,7 +473,7 @@ export function TranscriptPanel({
     if (activeSeg && value !== (activeSeg.volume_db ?? 0)) handleVolumeChange(activeSeg.id, value)
   }
   const commitSpeed = (value: number) => {
-    if (activeSeg && value !== (activeSeg.voice_speed ?? 1.0)) handleSpeedChange(activeSeg.id, value)
+    if (activeSeg && Math.abs(value - effectiveSpeed(activeSeg)) > 0.0005) handleSpeedChange(activeSeg.id, value)
   }
 
   // Clip effects target the WHOLE multi-selection when the edited clip is
@@ -511,12 +498,19 @@ export function TranscriptPanel({
         if (!seg) return null
         const beforeValue = field === 'volume_db' ? (seg.volume_db ?? 0)
           : field === 'voice_filter' ? (seg.voice_filter ?? '')
-          : (seg.voice_speed ?? 1.0)
-        return { id, before: { [field]: beforeValue }, after: { ...patch } }
+          : Math.round(effectiveSpeed(seg) * 1000) / 1000
+        // A speed change changes the clip's length: the server may move it to
+        // another track, and undo puts it back on its own
+        const before: SegmentUpdate = { [field]: beforeValue }
+        if (field === 'voice_speed') before.lane_index = seg.lane_index ?? 0
+        return { id, before, after: { ...patch } as SegmentUpdate }
       })
       .filter((c): c is NonNullable<typeof c> => !!c && c.before[field] !== patch[field])
     try {
-      await Promise.all(targets.map((id) => segmentsApi.update(id, patch)))
+      const updated = await Promise.all(targets.map((id) => segmentsApi.update(id, patch)))
+      if (field === 'voice_speed') {
+        for (const c of changes) c.after.lane_index = updated.find((u) => u.id === c.id)?.lane_index ?? 0
+      }
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
       if (changes.length === 1) {
         recordSegmentChange(qc, jobId, changes[0].id, changes[0].before, changes[0].after, label)

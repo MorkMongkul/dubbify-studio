@@ -7,12 +7,12 @@ import {
   MousePointer2, SplitSquareHorizontal, Copy, Trash2, Magnet, Wand2, Layers,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import type { Segment, Speaker, Job, SegmentUpdate } from '@/types'
+import type { Segment, Speaker, Job, LayoutChange } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
-import { useUpdateSegment, useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useSetBgmVolume } from '@/hooks/useApi'
+import { useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useSetBgmVolume, useLayoutSegments, useSplitSegment, useDuplicateSegment } from '@/hooks/useApi'
 import { segments as segmentsApi } from '@/api/client'
 import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, hexToRgba, cn, isJobRunning, originalVoicesReplaced } from '@/lib/utils'
-import { recordSegmentChange, recordSegmentsChange, recordSegmentDelete, recordSegmentsDelete, recordSegmentCreate, recordSegmentSplit } from '@/lib/historyHelpers'
+import { recordLayoutChange, recordSegmentDelete, recordSegmentsDelete, recordSegmentDuplicate, recordSegmentSplit } from '@/lib/historyHelpers'
 import { Tooltip } from '@/components/ui/Tooltip'
 
 const PX_PER_SEC = 100 // base pixels per second at zoom=1
@@ -84,7 +84,6 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const setActiveSegment  = useEditorStore((s) => s.setActiveSegment)
   const zoomIn            = useEditorStore((s) => s.zoomIn)
   const zoomOut           = useEditorStore((s) => s.zoomOut)
-  const updateSegmentPosition = useEditorStore((s) => s.updateSegmentPosition)
   const toggleMuteTrack   = useEditorStore((s) => s.toggleMuteTrack)
   const setSpeakerPanelWidth = useEditorStore((s) => s.setSpeakerPanelWidth)
   const setZoom           = useEditorStore((s) => s.setZoom)
@@ -98,13 +97,14 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const setSelectedSegments = useEditorStore((s) => s.setSelectedSegments)
   const toggleSelectSegment = useEditorStore((s) => s.toggleSelectSegment)
 
-  const { mutate: updateSegment, isPending: isUpdatingSegment, variables: updateVariables } = useUpdateSegment()
+  const { mutate: layoutSegments, isPending: isLayingOut, variables: layoutVariables } = useLayoutSegments()
+  const { mutate: splitSegment, isPending: isSplittingClip, variables: splitVariables } = useSplitSegment()
+  const { mutate: duplicateSegment } = useDuplicateSegment()
   const { mutate: deleteSegment } = useDeleteSegment()
   const { mutate: regenerateSegment, isPending: isRegenerating, variables: regenVariables } = useSynthesizeSegment()
   const autofitSegments = useAutofitSegments()
   const tidyLanes = useTidyLanes()
   const { mutate: setBgmVolume, isPending: isSettingBgmVolume } = useSetBgmVolume()
-  const clearSegmentPositions = useEditorStore((s) => s.clearSegmentPositions)
   const qc = useQueryClient()
 
   // BGM & SFX gain — mirrors job.bgm_volume_db while dragging, committed on
@@ -132,14 +132,10 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const handleAutofit = () => {
     if (!jobId) return
     autofitSegments.mutate(jobId, {
-      onSuccess: ({ fitted, skipped, missing }) => {
-        clearSegmentPositions() // drop stale optimistic durations
-        if (fitted === 0 && missing === 0) toast.info(`All ${skipped} clips already fit their slots`)
-        else toast.success(
-          `Fitted ${fitted} clip(s) to their slots` +
-          (skipped ? `, ${skipped} already fit` : '') +
-          (missing ? ` — ${missing} missing audio file(s) skipped` : '')
-        )
+      onSuccess: ({ fitted, left }) => {
+        if (fitted) toast.success(`Sped up ${fitted} voice${fitted === 1 ? '' : 's'}`)
+        if (left) toast.warning(`${left} voice${left === 1 ? '' : 's'} still run${left === 1 ? 's' : ''} into the next line`)
+        if (!fitted && !left) toast.info('No voice runs into the next line')
       },
       onError: (err: unknown) => {
         const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
@@ -152,7 +148,6 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     if (!jobId) return
     tidyLanes.mutate(jobId, {
       onSuccess: ({ changed, lanes }) => {
-        clearSegmentPositions() // drop stale optimistic lane positions
         toast.success(changed === 0
           ? 'Tracks already tidy'
           : `Repacked ${changed} clip(s) into ${lanes} lane(s)`)
@@ -239,22 +234,22 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
 
   // ── Stable per-segment callbacks — required for memo(InteractiveSegment)
   // to actually skip re-renders (inline closures would re-create per render).
-  const handleSegmentUpdateBackend = useCallback((id: string, startTime: number, endTime: number, laneIndex: number) => {
-    updateSegment({
-      segmentId: id,
-      data: { start_time: startTime, end_time: endTime, lane_index: laneIndex },
+  // A drag or trim: one layout request, then one undo step holding every clip
+  // whose place changed — including clips the server moved to another track.
+  const handleCommitLayout = useCallback((changes: LayoutChange[], label: string) => {
+    if (!jobId || !changes.length) return
+    const before = new Map(segmentsRef.current.map((s) => [s.id, s]))
+    const place = (s: Segment): LayoutChange => ({
+      id: s.id, start_time: s.start_time, end_time: s.end_time, lane_index: s.lane_index ?? 0, voice_offset: s.voice_offset ?? 0,
     })
-  }, [updateSegment])
-
-  const handleSegmentHistory = useCallback((id: string, before: SegmentUpdate, after: SegmentUpdate) => {
-    if (!jobId) return
-    recordSegmentChange(qc, jobId, id, before, after, 'Move clip')
-  }, [jobId, qc])
-
-  const handleSegmentsGroupHistory = useCallback((changes: { id: string; before: SegmentUpdate; after: SegmentUpdate }[]) => {
-    if (!jobId) return
-    recordSegmentsChange(qc, jobId, changes)
-  }, [jobId, qc])
+    layoutSegments({ jobId, changes }, {
+      onSuccess: (updated) => {
+        const moved = updated.filter((u) => before.has(u.id))
+        recordLayoutChange(qc, jobId, moved.map((u) => ({ id: u.id, before: place(before.get(u.id)!), after: place(u) })), label)
+      },
+      onError: () => toast.error("Couldn't move the clip"),
+    })
+  }, [jobId, layoutSegments, qc])
 
   const handleSegmentSelect = useCallback((seg: Segment) => {
     setCurrentTime(seg.start_time)
@@ -281,47 +276,27 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   }, [jobId, regenerateSegment])
 
   // ── Split ───────────────────────────────────────────────────────────────
-  // Cuts one clip into two at `atTime`: the original is shortened and a new
-  // clip takes over the tail, inheriting speaker/lane/voice/text. The original
-  // keeps its generated audio (the player's auto-fit absorbs the new length,
-  // same as trimming); the tail starts with no audio so it reads as pending.
-  const [splittingId, setSplittingId] = useState<string | null>(null)
-  const handleSplit = useCallback(async (seg: Segment, atTime: number) => {
-    if (!jobId || splittingId) return
+  // Cuts one clip into two at `atTime` on the server: a voiced clip's halves
+  // each play their own part of the one voice; the text is split at the
+  // nearest phrase break (routes/segments.py split_segment). One undo step.
+  const splittingId = isSplittingClip ? splitVariables?.segmentId ?? null : null
+  const handleSplit = useCallback((seg: Segment, atTime: number) => {
+    if (!jobId || isSplittingClip) return
     // Reached from both the blade tool and the Split button, so keep the
     // message about the cut point rather than naming one of them.
     if (atTime <= seg.start_time + MIN_CLIP_SECS || atTime >= seg.end_time - MIN_CLIP_SECS) {
       toast.error('Cut point is too close to the clip edge')
       return
     }
-    const t = Math.round(atTime * 1000) / 1000
-    const originalEnd = seg.end_time
-    setSplittingId(seg.id)
-    try {
-      await segmentsApi.update(seg.id, { end_time: t })
-      const created = await segmentsApi.create(jobId, {
-        speaker_id: seg.speaker_id ?? null,
-        voice_id: seg.voice_id ?? null,
-        lane_index: seg.lane_index ?? 0,
-        start_time: t,
-        end_time: originalEnd,
-        source_text: seg.source_text,
-        english_text: seg.english_text,
-        khmer_text: seg.khmer_text,
-        notes: seg.notes,
-      })
-      // Keep the optimistic position store in step with the shortened original
-      updateSegmentPosition(seg.id, seg.start_time, t, seg.lane_index ?? 0)
-      await qc.invalidateQueries({ queryKey: ['segments', jobId] })
-      recordSegmentSplit(qc, jobId, seg.id, originalEnd, t, created)
-      setActiveSegment(created.id)
-      toast.success('Clip split — edit each part, then generate voice')
-    } catch {
-      toast.error('Failed to split clip')
-    } finally {
-      setSplittingId(null)
-    }
-  }, [jobId, qc, splittingId, updateSegmentPosition, setActiveSegment])
+    const at = Math.round(atTime * 1000) / 1000
+    splitSegment({ segmentId: seg.id, at, jobId }, {
+      onSuccess: (result) => {
+        recordSegmentSplit(qc, jobId, seg, result, at)
+        setActiveSegment(result.second.id)
+      },
+      onError: () => toast.error('Failed to split clip'),
+    })
+  }, [jobId, qc, splitSegment, isSplittingClip, setActiveSegment])
 
   // Split whatever clip the playhead is currently over (active clip first)
   const handleSplitAtPlayhead = useCallback(() => {
@@ -338,35 +313,18 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   }, [activeSegmentId, handleSplit])
 
   // ── Duplicate ───────────────────────────────────────────────────────────
-  const handleDuplicate = useCallback(async () => {
+  // A copy right after the clip, with its own copy of the voice (server side).
+  const handleDuplicate = useCallback(() => {
     if (!jobId || !activeSegmentId) return
-    const seg = segmentsRef.current.find((s) => s.id === activeSegmentId)
-    if (!seg) return
-    const lane = seg.lane_index ?? 0
-    const length = seg.end_time - seg.start_time
-    // Drop the copy after the original, pushed clear of anything in the way
-    const neighbours = segmentsRef.current.filter((s) => s.id !== seg.id && (s.lane_index ?? 0) === lane)
-    const start = resolveDragOverlap(seg.end_time, length, neighbours)
-    try {
-      const created = await segmentsApi.create(jobId, {
-        speaker_id: seg.speaker_id ?? null,
-        voice_id: seg.voice_id ?? null,
-        lane_index: lane,
-        start_time: Math.round(start * 1000) / 1000,
-        end_time: Math.round((start + length) * 1000) / 1000,
-        source_text: seg.source_text,
-        english_text: seg.english_text,
-        khmer_text: seg.khmer_text,
-        notes: seg.notes,
-      })
-      await qc.invalidateQueries({ queryKey: ['segments', jobId] })
-      recordSegmentCreate(qc, jobId, created, 'Duplicate clip')
-      setActiveSegment(created.id)
-      toast.success('Clip duplicated')
-    } catch {
-      toast.error('Failed to duplicate clip')
-    }
-  }, [jobId, activeSegmentId, qc, setActiveSegment])
+    const sourceId = activeSegmentId
+    duplicateSegment({ segmentId: sourceId, jobId }, {
+      onSuccess: (created) => {
+        recordSegmentDuplicate(qc, jobId, created, sourceId)
+        setActiveSegment(created.id)
+      },
+      onError: () => toast.error('Failed to duplicate clip'),
+    })
+  }, [jobId, activeSegmentId, qc, duplicateSegment, setActiveSegment])
 
   // ── Tool shortcuts (V select · C blade · S split · ⌘D duplicate) ────────
   useEffect(() => {
@@ -1166,14 +1124,11 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                           PX_PER_SEC={PX_PER_SEC}
                           scrollRef={scrollRef}
                           lanesRef={lanesRef}
-                          updateSegmentPosition={updateSegmentPosition}
-                          onUpdateBackend={handleSegmentUpdateBackend}
-                          onRecordHistory={handleSegmentHistory}
-                          onRecordGroupHistory={handleSegmentsGroupHistory}
+                          onCommitLayout={handleCommitLayout}
                           onSelect={handleSegmentSelect}
                           onDelete={handleSegmentDelete}
                           onRegenerate={jobId ? handleSegmentRegenerate : undefined}
-                          isPersisting={isUpdatingSegment && updateVariables?.segmentId === seg.id}
+                          isPersisting={isLayingOut && !!layoutVariables?.changes.some((c) => c.id === seg.id)}
                           isRegenerating={isRegenerating && regenVariables?.segmentId === seg.id}
                           isSplitting={splittingId === seg.id}
                           mutedTrackIds={mutedTrackIds}
@@ -1266,18 +1221,8 @@ interface InteractiveSegmentProps {
   PX_PER_SEC: number
   scrollRef: React.RefObject<HTMLDivElement | null>
   lanesRef: React.RefObject<HTMLDivElement | null>
-  updateSegmentPosition: (
-    id: string,
-    start_time: number,
-    end_time: number,
-    lane_index: number,
-    tts_duration_secs?: number,
-    tts_audio_path?: string
-  ) => void
-  onUpdateBackend: (id: string, startTime: number, endTime: number, laneIndex: number) => void
-  onRecordHistory: (id: string, before: SegmentUpdate, after: SegmentUpdate) => void
-  /** One undo entry for a whole group drag (see recordSegmentsChange). */
-  onRecordGroupHistory: (changes: { id: string; before: SegmentUpdate; after: SegmentUpdate }[]) => void
+  /** One layout request + one undo step for the gesture (TimelineEditor.handleCommitLayout). */
+  onCommitLayout: (changes: LayoutChange[], label: string) => void
   onSelect: (seg: Segment) => void
   onDelete: (id: string) => void
   onRegenerate?: (id: string) => void
@@ -1298,7 +1243,7 @@ interface InteractiveSegmentProps {
 // difference between smooth and stuttering timeline interaction.
 const InteractiveSegment = memo(function InteractiveSegment({
   seg, color, isActive, isSelected, onToggleSelect, isApproved, zoom, duration, laneIndices, allSegments, PX_PER_SEC, scrollRef, lanesRef,
-  updateSegmentPosition, onUpdateBackend, onRecordHistory, onRecordGroupHistory, onSelect, onDelete, onRegenerate,
+  onCommitLayout, onSelect, onDelete, onRegenerate,
   isPersisting, isRegenerating, isSplitting,
   mutedTrackIds, soloedTrackIds, volume,
   activeTool, snapEnabled, onSplit,
@@ -1385,12 +1330,7 @@ const InteractiveSegment = memo(function InteractiveSegment({
     const startLeft = parseFloat(element.style.left) || timeToPixels(seg.start_time, zoom, PX_PER_SEC)
     const startWidth = parseFloat(element.style.width) || timeToPixels(seg.end_time - seg.start_time, zoom, PX_PER_SEC)
 
-    // Snapshot for undo — the values before this gesture started.
-    const beforeGesture: SegmentUpdate = {
-      start_time: seg.start_time,
-      end_time: seg.end_time,
-      lane_index: seg.lane_index ?? 0,
-    }
+    const beforeGesture = { start_time: seg.start_time, end_time: seg.end_time, lane_index: seg.lane_index ?? 0 }
 
     const maxTimelineWidth = timeToPixels(duration || 60, zoom, PX_PER_SEC)
 
@@ -1578,23 +1518,14 @@ const InteractiveSegment = memo(function InteractiveSegment({
       newStartTime = Math.round(newStartTime * 1000) / 1000
       newEndTime = Math.round(newEndTime * 1000) / 1000
 
-      // Position/lane changes persist immediately — trimming or moving a
-      // segment never touches its audio (matches real NLE trim behavior;
-      // VideoPlayer's playback-rate auto-fit absorbs any duration mismatch).
-      updateSegmentPosition(seg.id, newStartTime, newEndTime, finalLaneIndex)
-      onUpdateBackend(seg.id, newStartTime, newEndTime, finalLaneIndex)
-
-      const afterGesture: SegmentUpdate = { start_time: newStartTime, end_time: newEndTime, lane_index: finalLaneIndex }
-      const changed = afterGesture.start_time !== beforeGesture.start_time
-        || afterGesture.end_time !== beforeGesture.end_time
-        || afterGesture.lane_index !== beforeGesture.lane_index
-
+      const changed = newStartTime !== beforeGesture.start_time
+        || newEndTime !== beforeGesture.end_time
+        || finalLaneIndex !== beforeGesture.lane_index
+      if (!changed) return
+      const changes: LayoutChange[] = [{ id: seg.id, start_time: newStartTime, end_time: newEndTime, lane_index: finalLaneIndex }]
       if (isGroupDrag) {
-        // Shift every other selected clip by the delta the grabbed clip
-        // actually committed to, and record the whole move as ONE undo entry.
-        if (!changed) return
-        const deltaSecs = newStartTime - (beforeGesture.start_time ?? seg.start_time)
-        const changes = [{ id: seg.id, before: beforeGesture, after: afterGesture }]
+        // Every other selected clip moves by the delta the grabbed clip committed to
+        const deltaSecs = newStartTime - beforeGesture.start_time
         for (const mate of groupMates) {
           const mateDuration = mate.end_time - mate.start_time
           const mateLane = mate.lane_index ?? 0
@@ -1604,19 +1535,10 @@ const InteractiveSegment = memo(function InteractiveSegment({
           let mateStart = Math.max(0, mate.start_time + deltaSecs)
           mateStart = resolveDragOverlap(mateStart, mateDuration, mateNeighbors)
           mateStart = Math.round(mateStart * 1000) / 1000
-          const mateEnd = Math.round((mateStart + mateDuration) * 1000) / 1000
-          updateSegmentPosition(mate.id, mateStart, mateEnd, mateLane)
-          onUpdateBackend(mate.id, mateStart, mateEnd, mateLane)
-          changes.push({
-            id: mate.id,
-            before: { start_time: mate.start_time, end_time: mate.end_time, lane_index: mateLane },
-            after: { start_time: mateStart, end_time: mateEnd, lane_index: mateLane },
-          })
+          changes.push({ id: mate.id, start_time: mateStart, end_time: Math.round((mateStart + mateDuration) * 1000) / 1000, lane_index: mateLane })
         }
-        onRecordGroupHistory(changes)
-      } else if (changed) {
-        onRecordHistory(seg.id, beforeGesture, afterGesture)
       }
+      onCommitLayout(changes, isGroupDrag ? `Move ${changes.length} clips` : actionType === 'drag' ? 'Move clip' : 'Trim clip')
     }
 
     window.addEventListener('pointermove', handlePointerMove)

@@ -48,6 +48,7 @@ import { JobProgressRing } from '@/components/progress/JobProgressRing'
 import { useDoneFlash } from '@/hooks/useDoneFlash'
 import { LANGUAGE_OPTIONS } from '@/types'
 import { isJobRunning, cn } from '@/lib/utils'
+import { mergeOverlay } from '@/lib/segmentOverlay'
 import { UPLOADING_TITLE, jobProgress, uploadPercent } from '@/lib/jobProgress'
 import { chooseVideoSavePath, isDesktop } from '@/lib/desktop'
 import { useHistoryStore } from '@/store/historyStore'
@@ -234,52 +235,12 @@ export default function EditorPage() {
     navigate(`/projects/${projectId}/jobs/${target.id}`, { replace: true })
   }, [projectId, jobId, projectJobs, loadingJobs, navigate])
 
-  // Merge optimistic segment position overrides.
-  // For tts_audio_path: always prefer the server value if it exists — the local
-  // override is only for the mock-simulation placeholder and must never hide a
-  // real synthesised path that came back from the API.
-  // Memoized so child trees (timeline, transcript, player) keep stable segment
-  // identities between unrelated re-renders — a fresh array of fresh objects
-  // every render defeats React.memo everywhere downstream.
-  const displaySegs = useMemo(() => segs.map(s => {
-    const pos = segmentPositions[s.id]
-    if (!pos) return s
-    return {
-      ...s,
-      ...pos,
-      tts_audio_path: s.tts_audio_path || pos.tts_audio_path || '',
-      tts_duration_secs: s.tts_audio_path ? s.tts_duration_secs : (pos.tts_duration_secs ?? s.tts_duration_secs),
-    }
-  }), [segs, segmentPositions])
-
-  // Sync segmentPositions whenever server data changes:
-  //   • New segments get an initial entry (timing + speaker only)
-  //   • Existing entries get their tts_audio_path/duration updated when synthesis completes
-  useEffect(() => {
-    if (segs.length === 0) return
-    const current = useEditorStore.getState().segmentPositions
-    let updated = false
-    const next = { ...current }
-    segs.forEach(s => {
-      const existing = current[s.id]
-      if (!existing) {
-        // First time we see this segment
-        next[s.id] = {
-          start_time: s.start_time,
-          end_time: s.end_time,
-          lane_index: s.lane_index ?? 0,
-          tts_duration_secs: s.tts_duration_secs,
-          tts_audio_path: s.tts_audio_path,
-        }
-        updated = true
-      } else if (s.tts_audio_path && existing.tts_audio_path !== s.tts_audio_path) {
-        // Synthesis completed — propagate the real audio path into positions
-        next[s.id] = { ...existing, tts_audio_path: s.tts_audio_path, tts_duration_secs: s.tts_duration_secs }
-        updated = true
-      }
-    })
-    if (updated) useEditorStore.setState({ segmentPositions: next })
-  }, [segs])
+  // The server's segments with the edits still in flight laid over them
+  // (a drop or trim waiting for the server, text being typed) — the voice
+  // always comes from the server. Memoized so child trees (timeline,
+  // transcript, player) keep stable segment identities between unrelated
+  // re-renders: an unchanged segment is the server's own object.
+  const displaySegs = useMemo(() => mergeOverlay(segs, segmentPositions), [segs, segmentPositions])
 
   // ── Mutations ─────────────────────────────────────────────────────────────
   const { mutate: analyze,   isPending: analyzing  } = useAnalyzeJob()

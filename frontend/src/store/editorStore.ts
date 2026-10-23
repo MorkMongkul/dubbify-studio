@@ -4,6 +4,8 @@
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import type { JobAction } from '@/lib/jobProgress'
+import type { SegmentOverlay } from '@/lib/segmentOverlay'
+import type { LayoutChange } from '@/lib/tracks'
 
 // Which panel the left icon rail has open in the dynamic dock. Settings is a
 // window of its own (settingsOpen), not a panel.
@@ -66,26 +68,16 @@ interface EditorStore {
   inspectorMode: 'global_synthesis' | 'audio_clip_settings' | 'subtitle_settings'
   focusedTimelineItemId: string | null
 
-  // Optimistic positions
-  segmentPositions: Record<string, {
-    start_time: number
-    end_time: number
-    lane_index: number
-    tts_duration_secs?: number
-    tts_audio_path?: string
-    khmer_text?: string
-  }>
-  updateSegmentPosition: (
-    id: string,
-    start_time: number,
-    end_time: number,
-    lane_index: number,
-    tts_duration_secs?: number,
-    tts_audio_path?: string
-  ) => void
+  // Edits still in flight, laid over the server's segments (lib/segmentOverlay):
+  // a drop or trim waiting for the server, text typed but not saved. Each entry
+  // is dropped once the server answers — server state owns the segment again.
+  segmentPositions: Record<string, SegmentOverlay>
+  /** Show a drop / trim at once, ahead of the server. */
+  setPendingLayout: (changes: LayoutChange[]) => void
+  /** The server answered (or failed): its segments show again. Typed text stays. */
+  clearPendingLayout: (ids: string[]) => void
   updateSegmentText: (id: string, text: string) => void
   clearSegmentTextOverride: (id: string) => void
-  clearSegmentPositions: () => void
 
   // Mute & Solo States
   mutedTrackIds: Record<string, boolean>
@@ -273,34 +265,29 @@ export const useEditorStore = create<EditorStore>()(
     setInspectorMode: (mode) => set({ inspectorMode: mode }),
     setFocusedTimelineItemId: (id) => set({ focusedTimelineItemId: id }),
 
-    updateSegmentPosition: (id, start_time, end_time, lane_index, tts_duration_secs, tts_audio_path) =>
-      set((s) => ({
-        segmentPositions: {
-          ...s.segmentPositions,
-          [id]: {
-            ...s.segmentPositions[id],
-            start_time,
-            end_time,
-            lane_index,
-            ...(tts_duration_secs !== undefined ? { tts_duration_secs } : {}),
-            ...(tts_audio_path !== undefined ? { tts_audio_path } : {}),
-          },
-        },
-      })),
-    updateSegmentText: (id, text) =>
+    setPendingLayout: (changes) =>
       set((s) => {
-        const existing = s.segmentPositions[id] || {}
-        return {
-          segmentPositions: {
-            ...s.segmentPositions,
-            [id]: {
-              ...existing,
-              khmer_text: text,
-              tts_audio_path: "", // Revert status to Pending on text change
-            },
-          },
-        }
+        const next = { ...s.segmentPositions }
+        for (const { id, ...fields } of changes) next[id] = { ...next[id], ...fields }
+        return { segmentPositions: next }
       }),
+    clearPendingLayout: (ids) =>
+      set((s) => {
+        let changed = false
+        const next = { ...s.segmentPositions }
+        for (const id of ids) {
+          const existing = next[id]
+          if (!existing) continue
+          changed = true
+          if (existing.khmer_text === undefined) delete next[id]
+          else next[id] = { khmer_text: existing.khmer_text }
+        }
+        return changed ? { segmentPositions: next } : s
+      }),
+    updateSegmentText: (id, text) =>
+      set((s) => ({
+        segmentPositions: { ...s.segmentPositions, [id]: { ...s.segmentPositions[id], khmer_text: text } },
+      })),
     // Drop the local text override once the edit is persisted, handing the
     // segment's text back to server state. Without this the override outlives
     // the edit and keeps winning in EditorPage's merge — so undoing a text
@@ -311,9 +298,10 @@ export const useEditorStore = create<EditorStore>()(
         if (!existing || existing.khmer_text === undefined) return s
         const next = { ...existing }
         delete next.khmer_text
-        return { segmentPositions: { ...s.segmentPositions, [id]: next } }
+        const all = { ...s.segmentPositions, [id]: next }
+        if (Object.keys(next).length === 0) delete all[id]
+        return { segmentPositions: all }
       }),
-    clearSegmentPositions: () => set({ segmentPositions: {} }),
 
     toggleMuteTrack: (speakerId) => {
       const key = speakerId ?? '__none__'
