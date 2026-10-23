@@ -134,6 +134,10 @@ async def _render_segment_audio(seg: Segment, tts_dir: Path, voice_kwargs: dict,
             await asyncio.to_thread(voice_level.trim_silence, str(tmp_path))
         except Exception as e:  # noqa: BLE001 — an untrimmed voice is still a voice
             logger.warning(f"Couldn't trim the voice's silence: {e}")
+        # An engine can answer "done" with an empty or unreadable file: that's a
+        # failure, not a clip — and the line's previous voice stays as it was.
+        if not tmp_path.exists() or tmp_path.stat().st_size == 0 or await _audio_seconds(tmp_path) <= 0:
+            raise TTSUnavailable("The voice came back empty — try again in a minute")
         os.replace(tmp_path, raw_path)
     finally:
         tmp_path.unlink(missing_ok=True)
@@ -141,6 +145,15 @@ async def _render_segment_audio(seg: Segment, tts_dir: Path, voice_kwargs: dict,
     await db.refresh(seg, attribute_names=["start_time", "end_time", "volume_db", "voice_filter", "voice_speed"])
     duration = await voice_level.level_new_voice(seg, raw_path, final_path)
     return str(final_path), duration, result.get("backend", "")
+
+
+async def _audio_seconds(path: Path) -> float:
+    """How long an audio file of any format plays (0 when it can't be read)."""
+    from app.services.audio_extractor import get_video_duration
+    try:
+        return await get_video_duration(str(path))
+    except Exception:  # noqa: BLE001 — unreadable counts as empty
+        return 0.0
 
 
 ROOM_GAP = 0.1   # seconds left free before the next line

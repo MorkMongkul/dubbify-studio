@@ -249,3 +249,55 @@ async def test_auto_fit_slows_a_voice_down_only_a_little(client, db_sessionmaker
     job_id = (await _segment(db_sessionmaker, seg_id)).job_id
     assert (await client.post(f"/api/v1/jobs/{job_id}/segments/autofit")).status_code == 200
     assert (await _segment(db_sessionmaker, seg_id)).voice_speed == pytest.approx(0.9, abs=0.01)
+
+
+# ── Voices the engine sends as MP3 ────────────────────────────────────────────
+# The free HF Space fallback (openbmb/VoxCPM-Demo) answers with MP3, saved under
+# the clip's .wav name. 0.2.8 rewrote it in place as WAV with the MP3's own
+# encoding; the write failed after opening the file, which emptied it — the
+# line counted as generated, with a 0-byte clip and no waveform.
+
+def _mp3(tmp_path, *parts) -> bytes:
+    import subprocess
+    from app.core.binaries import ffmpeg
+    wav = _write(tmp_path / "src.wav", *parts)
+    mp3 = tmp_path / "src.mp3"
+    subprocess.run([ffmpeg(), "-v", "error", "-y", "-i", wav, "-c:a", "libmp3lame", str(mp3)], check=True)
+    return mp3.read_bytes()
+
+
+def test_trimming_an_mp3_voice_makes_it_a_wav_and_never_empties_it(tmp_path):
+    voice = tmp_path / "seg_x.wav"
+    voice.write_bytes(_mp3(tmp_path, _silence(0.6), _tone(1.0, -20), _silence(0.3)))
+    assert voice_level.trim_silence(str(voice)) == pytest.approx(1.1, abs=0.1)
+    assert sf.info(str(voice)).format == "WAV" and sf.info(str(voice)).duration == pytest.approx(1.1, abs=0.1)
+
+
+@pytest.mark.asyncio
+async def test_a_voice_sent_as_mp3_is_kept(client, db_sessionmaker, monkeypatch, voice_env):
+    job_dir, (seg_id,) = await _episode(client, db_sessionmaker, voice_env, [(1.0, 3.0)])
+    audio = _mp3(voice_env, _silence(0.6), _tone(1.5, -20), _silence(0.3))
+
+    async def space(text: str, output_path: str = "", **kwargs) -> dict:
+        open(output_path, "wb").write(audio)
+        return {"success": True, "audio_path": output_path, "duration_secs": 2.4, "error": "", "backend": "voxcpm_hf_space"}
+
+    monkeypatch.setattr(tts_routes.tts_client, "synthesize", space)
+    assert (await client.post(f"/api/v1/tts/synthesize/segment/{seg_id}")).status_code == 200
+    seg = await _segment(db_sessionmaker, seg_id)
+    assert seg.tts_duration_secs == pytest.approx(1.6, abs=0.1)
+    assert sf.info(seg.tts_audio_path).duration == pytest.approx(1.6, abs=0.1)
+
+
+@pytest.mark.asyncio
+async def test_a_voice_that_comes_back_empty_is_a_failure_not_a_clip(client, db_sessionmaker, monkeypatch, voice_env):
+    job_dir, (seg_id,) = await _episode(client, db_sessionmaker, voice_env, [(1.0, 3.0)])
+
+    async def empty(text: str, output_path: str = "", **kwargs) -> dict:
+        open(output_path, "wb").close()
+        return {"success": True, "audio_path": output_path, "duration_secs": 1.8, "error": "", "backend": "voxcpm_hf_space"}
+
+    monkeypatch.setattr(tts_routes.tts_client, "synthesize", empty)
+    assert (await client.post(f"/api/v1/tts/synthesize/segment/{seg_id}")).status_code == 503
+    seg = await _segment(db_sessionmaker, seg_id)
+    assert seg.tts_audio_path == "" and seg.tts_duration_secs == 0

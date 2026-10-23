@@ -23,6 +23,7 @@ touch put it ~10 dB and 0.6 s off its untouched neighbours.
 """
 import asyncio
 import logging
+import os
 from pathlib import Path
 
 import numpy as np
@@ -65,18 +66,32 @@ def voiced_level_db(samples: np.ndarray, rate: int) -> float:
 
 
 def trim_silence(path: str) -> float:
-    """Cut the silence before and after the words, keeping KEEP seconds; rewrites the file. Returns its duration."""
+    """
+    Cut the silence before and after the words, keeping KEEP seconds, and leave
+    a WAV file. Returns its duration. The new audio goes to a separate file and
+    replaces the old one only once it's written: the free HF Space sends MP3
+    under the clip's .wav name, and rewriting that in place as WAV with the
+    MP3's own encoding failed after opening the file — which emptied it.
+    """
     info = sf.info(path)
     data, rate = sf.read(path, dtype="float32", always_2d=True)
     levels = _frame_db(_mono(data), rate, FRAME)
     voiced = np.where(levels > SILENCE_DB)[0]
-    if len(voiced) == 0:
-        return len(data) / rate                   # no words: leave it as it is
-    n = int(FRAME * rate)
-    start = max(0, voiced[0] * n - int(KEEP * rate))
-    end = min(len(data), (voiced[-1] + 1) * n + int(KEEP * rate))
-    if start > 0 or end < len(data):
-        sf.write(path, data[start:end], rate, subtype=info.subtype)
+    start, end = 0, len(data)
+    if len(voiced):                               # no words: keep it all
+        n = int(FRAME * rate)
+        start = max(0, voiced[0] * n - int(KEEP * rate))
+        end = min(len(data), (voiced[-1] + 1) * n + int(KEEP * rate))
+    if (start, end) == (0, len(data)) and info.format == "WAV":
+        return len(data) / rate
+    subtype = info.subtype if info.format == "WAV" else "PCM_16"
+    tmp = f"{path}.trimming.wav"
+    try:
+        sf.write(tmp, data[start:end], rate, format="WAV", subtype=subtype)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
     return (end - start) / rate
 
 
