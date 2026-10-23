@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
-  audibleAt, effectiveSpeed, estimateSecs, isVoiceOutdated, isVoiced, maxEnd, overrunSpans, trimEnd, trimStart,
+  audibleAt, clampFades, fadeGainAt, fractionToVolume, volumeToFraction, effectiveSpeed, estimateSecs, isVoiceOutdated, isVoiced, maxEnd, overrunSpans, trimEnd, trimStart,
   voiceAt, waveformSlice,
 } from '../src/lib/clipRules.ts'
 import type { Segment } from '../src/types/index.ts'
@@ -12,6 +12,7 @@ let n = 0
 type Opts = {
   start?: number; end?: number; tts?: number; offset?: number; fit?: number; vs?: number
   source?: [number, number]; text?: string; voiceText?: string | null; lane?: number
+  fadeIn?: number; fadeOut?: number; volume?: number
 }
 function seg(o: Opts): Segment {
   n += 1
@@ -21,9 +22,10 @@ function seg(o: Opts): Segment {
     start_time: o.start ?? 0, end_time: o.end ?? (o.start ?? 0) + 1,
     source_text: '', english_text: '', khmer_text: o.text ?? '',
     tts_audio_path: tts ? '/x.wav' : '', tts_audio_url: tts ? '/uploads/x.wav' : null, tts_duration_secs: tts,
-    is_approved: false, notes: '', volume_db: 0, voice_filter: '', voice_speed: o.vs ?? 1,
+    is_approved: false, notes: '', volume_db: o.volume ?? 0, voice_filter: '', voice_speed: o.vs ?? 1,
     source_start: o.source?.[0] ?? null, source_end: o.source?.[1] ?? null,
     voice_offset: o.offset ?? 0, fit_rate: o.fit ?? 1, voice_text: o.voiceText ?? null,
+    fade_in_secs: o.fadeIn ?? 0, fade_out_secs: o.fadeOut ?? 0,
   }
 }
 
@@ -117,4 +119,35 @@ test('red spans skip overlaps the original had', () => {
 test('the waveform shows only the part of the voice the clip plays', () => {
   assert.deepEqual(waveformSlice(seg({ start: 1, end: 2, tts: 4, offset: 1, fit: 2 })), { from: 0.25, to: 0.75 })
   assert.deepEqual(waveformSlice(seg({ start: 0, end: 2, tts: 2 })), { from: 0, to: 1 })
+})
+
+// ── 0.3.1: fades and the volume line ──────────────────────────────────────────
+
+test('the sound constants match the backend', () => {
+  const py = readFileSync(new URL('../../backend/app/services/timeline.py', import.meta.url), 'utf8')
+  assert.match(py, /VOLUME_MIN_DB = -20\.0\b/)
+  assert.match(py, /VOLUME_MAX_DB = 10\.0\b/)
+})
+
+test('fade gain is linear on the clip as trimmed', () => {
+  const s = seg({ start: 1, end: 3, tts: 3, fadeIn: 0.5, fadeOut: 1 })
+  assert.deepEqual([0.9, 1, 1.25, 1.5, 2, 2.5, 3].map((t) => fadeGainAt(s, t)), [0, 0, 0.5, 1, 1, 0.5, 0])
+  assert.equal(fadeGainAt(seg({ start: 1, end: 3, tts: 3 }), 1), 1)
+})
+
+test('a dragged fade stops where the other one starts', () => {
+  const s = seg({ start: 0, end: 1, tts: 1, fadeIn: 0.2, fadeOut: 0.3 })
+  assert.deepEqual(clampFades(s, 0.9, 0.3), { fade_in_secs: 0.7, fade_out_secs: 0.3 })
+  assert.deepEqual(clampFades(s, 0.2, 2), { fade_in_secs: 0.2, fade_out_secs: 0.8 })
+  assert.deepEqual(clampFades(s, -1, 0.3), { fade_in_secs: 0, fade_out_secs: 0.3 })
+  assert.deepEqual(clampFades(seg({ start: 0, end: 1, tts: 1 }), 0.8, 0.8), { fade_in_secs: 0.5, fade_out_secs: 0.5 })
+})
+
+test('the volume line maps the panel range top to bottom', () => {
+  assert.equal(volumeToFraction(10), 1)
+  assert.equal(volumeToFraction(-20), 0)
+  assert.equal(volumeToFraction(0), 2 / 3)
+  assert.equal(volumeToFraction(40), 1)
+  for (const db of [-20, -7, 0, 10]) assert.equal(fractionToVolume(volumeToFraction(db)), db)
+  assert.equal(fractionToVolume(1.5), 10)
 })

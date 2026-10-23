@@ -117,3 +117,49 @@ export function waveformSlice(seg: Voiced): { from: number; to: number } {
   const offset = offsetOf(seg)
   return { from: clamp(offset / tts), to: clamp((offset + (seg.end_time - seg.start_time) * rateOf(seg)) / tts) }
 }
+
+// ── 0.3.1: fades and the volume line ──────────────────────────────────────────
+
+/** The volume a clip can be given — the transcript panel's range (timeline.VOLUME_MIN_DB/MAX_DB). */
+export const VOLUME_MIN_DB = -20
+export const VOLUME_MAX_DB = 10
+
+type Faded = Pick<Segment, 'start_time' | 'end_time' | 'fade_in_secs' | 'fade_out_secs'>
+
+/** The clip's fade gain at timeline time `t` (linear, like the export's afade). */
+export function fadeGainAt(seg: Faded, t: number): number {
+  if (t < seg.start_time || t >= seg.end_time) return 0
+  const fadeIn = seg.fade_in_secs ?? 0
+  const fadeOut = seg.fade_out_secs ?? 0
+  let gain = 1
+  if (fadeIn > 0) gain = Math.min(gain, (t - seg.start_time) / fadeIn)
+  if (fadeOut > 0) gain = Math.min(gain, (seg.end_time - t) / fadeOut)
+  return Math.max(0, round6(gain))
+}
+
+/** New fades for a clip: never negative; the one being dragged stops where the other starts. */
+export function clampFades(seg: Faded, fadeIn: number, fadeOut: number): { fade_in_secs: number; fade_out_secs: number } {
+  const length = Math.max(0, seg.end_time - seg.start_time)
+  const r3 = (x: number) => Math.round(x * 1000) / 1000
+  let fi = Math.max(0, Math.min(length, fadeIn))
+  let fo = Math.max(0, Math.min(length, fadeOut))
+  if (fi + fo > length + EPS) {
+    const inMoved = Math.abs(fi - (seg.fade_in_secs ?? 0)) > 1e-9
+    const outMoved = Math.abs(fo - (seg.fade_out_secs ?? 0)) > 1e-9
+    if (inMoved && !outMoved) fi = length - fo
+    else if (outMoved && !inMoved) fo = length - fi
+    else { const k = length / (fi + fo); fi *= k; fo *= k }
+  }
+  return { fade_in_secs: r3(fi), fade_out_secs: r3(fo) }
+}
+
+/** Where the volume line sits in its band: 0 = the quietest (bottom), 1 = the loudest (top). */
+export function volumeToFraction(db: number): number {
+  return Math.max(0, Math.min(1, (db - VOLUME_MIN_DB) / (VOLUME_MAX_DB - VOLUME_MIN_DB)))
+}
+
+/** The volume (whole dB) for a place on the line. */
+export function fractionToVolume(fraction: number): number {
+  const f = Math.max(0, Math.min(1, fraction))
+  return Math.round(VOLUME_MIN_DB + f * (VOLUME_MAX_DB - VOLUME_MIN_DB))
+}
