@@ -49,7 +49,7 @@ function MenuList({ x, y, items, onClose, nested = false }: ContextMenuProps & {
       role="menu"
       data-context-menu
       className={cn(
-        'fixed z-[1000] min-w-[200px] rounded-lg border border-white/10 bg-ink-900/98 py-1 shadow-2xl backdrop-blur-md',
+        'fixed z-[1000] min-w-[200px] rounded-lg border border-white/10 bg-ink-900 py-1 shadow-2xl',
         nested && 'z-[1001]',
       )}
       style={{ left: pos.left, top: pos.top }}
@@ -90,8 +90,9 @@ function MenuList({ x, y, items, onClose, nested = false }: ContextMenuProps & {
       })}
       {open && (() => {
         const item = items[open.index]
+        // Its own portal: inside this menu, `position: fixed` could be relative to it
         return item !== 'separator' && item.items
-          ? <MenuList x={open.x} y={open.y} items={item.items} onClose={onClose} nested />
+          ? createPortal(<MenuList x={open.x} y={open.y} items={item.items} onClose={onClose} nested />, document.body)
           : null
       })()}
     </div>
