@@ -73,3 +73,69 @@ async def test_deleting_an_episode_or_project_removes_its_pieces(client, db_sess
     assert (await client.delete(f"/api/v1/projects/{project_id}")).status_code in (200, 204)
     async with db_sessionmaker() as s:
         assert (await s.execute(select(StemPiece))).scalars().all() == []
+
+
+# ── Task 2: the piece rules ───────────────────────────────────
+
+from types import SimpleNamespace  # noqa: E402
+
+from app.services.stem_pieces import MIN_PIECE_SECS, normalize, piece_gain_at, pieces_volume_expr  # noqa: E402
+
+# (t, gain) for pieces [0,2] at −6 dB with a 0.5 s fade-out and [3,4] at 0 dB with a 0.5 s fade-in —
+# the same table is in frontend/tests/stemPieces.test.ts
+PIECE_TABLE = [(0.0, 0.5012), (1.0, 0.5012), (1.75, 0.2506), (2.0, 0.0), (2.5, 0.0), (3.0, 0.0), (3.25, 0.5), (3.9, 1.0)]
+
+
+def _p(start, end, vol=0.0, fi=0.0, fo=0.0, on=False):
+    return SimpleNamespace(start_time=start, end_time=end, volume_db=vol, fade_in_secs=fi, fade_out_secs=fo, in_export=on)
+
+
+def test_pieces_are_kept_inside_their_neighbours():
+    out = normalize("voices", [
+        {"start_time": 5.0, "end_time": 8.0},
+        {"start_time": -1.0, "end_time": 3.0, "volume_db": 40, "fade_in_secs": 3.0, "fade_out_secs": 3.0},
+        {"start_time": 2.0, "end_time": 6.0},     # overlaps both: cut at the one before, never moved
+        {"start_time": 19.0, "end_time": 25.0},
+    ], duration=20.0)
+    assert [(p["start_time"], p["end_time"]) for p in out] == [(0.0, 3.0), (3.0, 6.0), (6.0, 8.0), (19.0, 20.0)]
+    assert out[0]["volume_db"] == 10.0
+    assert out[0]["fade_in_secs"] + out[0]["fade_out_secs"] <= 3.0 + 1e-9
+
+
+def test_a_piece_shorter_than_the_minimum_is_dropped():
+    assert MIN_PIECE_SECS == 0.1
+    out = normalize("music", [{"start_time": 1.0, "end_time": 1.05}, {"start_time": 4.0, "end_time": 3.0},
+                              {"start_time": 2.0, "end_time": 3.0, "in_export": False}], duration=10.0)
+    assert [(p["start_time"], p["end_time"], p["in_export"]) for p in out] == [(2.0, 3.0, True)]
+
+
+def test_piece_gain_matches_the_shared_table():
+    pieces = [_p(0.0, 2.0, vol=-6.0, fo=0.5), _p(3.0, 4.0, fi=0.5)]
+    for t, g in PIECE_TABLE:
+        assert piece_gain_at(pieces, t) == pytest.approx(g, abs=1e-4), t
+
+
+def test_piece_expression_evaluates_like_piece_gain_at():
+    pieces = [_p(0.0, 2.0, vol=-6.0, fo=0.5), _p(3.0, 4.0, fi=0.5, fo=0.25), _p(5.0, 7.0, vol=3.0, on=True)]
+    expr = pieces_volume_expr(pieces, duration=10.0)
+    env = {"gte": lambda a, b: float(a >= b), "lt": lambda a, b: float(a < b), "min": min, "__builtins__": {}}
+    for i in range(0, 1000):
+        t = i / 100
+        assert eval(expr, {**env, "t": t}) == pytest.approx(piece_gain_at(pieces, t), abs=1e-4), t
+    only = pieces_volume_expr(pieces, duration=10.0, export_only=True)
+    assert eval(only, {**env, "t": 1.0}) == 0 and eval(only, {**env, "t": 6.0}) == pytest.approx(10 ** (3 / 20), abs=1e-4)
+
+
+def test_untouched_pieces_need_no_expression():
+    assert pieces_volume_expr([_p(0.0, 20.0)], duration=20.0) is None
+    assert pieces_volume_expr([_p(0.0, 20.0, on=False)], duration=20.0, export_only=True) is None
+    assert pieces_volume_expr([], duration=20.0) == "0"     # every piece deleted: silence
+    assert pieces_volume_expr([_p(0.0, 20.0, vol=-2.0)], duration=20.0) is not None
+
+
+@pytest.mark.asyncio
+async def test_put_clamps_what_it_stores(client, db_sessionmaker):
+    job_id = await _job_with_duration(client, db_sessionmaker, 10.0)
+    pieces = (await client.put(f"/api/v1/jobs/{job_id}/stem-pieces/music", json={"pieces": [
+        {"start_time": 8.0, "end_time": 12.0}, {"start_time": 0.0, "end_time": 9.0, "in_export": False}]})).json()
+    assert [(p["start_time"], p["end_time"], p["in_export"]) for p in pieces] == [(0.0, 9.0, True), (9.0, 10.0, True)]
