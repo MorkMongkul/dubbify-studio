@@ -16,10 +16,10 @@ from app.core.database import get_db
 from app.core.paths import resolve_media_path
 from app.models.models import Segment, Speaker, Job, Project, Voice
 from app.schemas.schemas import (
-    SegmentResponse, SegmentUpdate, SegmentCreate,
+    SegmentResponse, SegmentUpdate, SegmentCreate, LayoutRequest, LayoutResponse,
     SpeakerResponse, SpeakerUpdate, SpeakerCreate, SpeakerMerge, SpeakerMergeResponse, SpeakerUnmerge,
 )
-from app.services import story_notes, voice_level
+from app.services import story_notes, timeline, voice_level
 
 router = APIRouter(tags=["Segments & Speakers"])
 
@@ -78,6 +78,27 @@ async def _clip_path_in_session(db: AsyncSession, seg: Segment, path: str) -> st
     return str(resolved)
 
 
+def _apply_timing(seg: Segment, sent: set[str], moved_from: float | None = None) -> None:
+    """
+    The timeline's rules after an edit (app/services/timeline.py). A voiced
+    clip stays inside its voice: an edge cuts sound, never changes the speed;
+    a clip moved by its start alone keeps its length. A voiceless line is as
+    long as its text takes to say (an end sent for it is ignored), unless it
+    has no text. `sent`: the fields the client sent; `moved_from`: the start
+    before the edit.
+    """
+    if timeline.is_voiced(seg):
+        if "start_time" in sent and not ({"end_time", "voice_offset"} & sent) and moved_from is not None:
+            seg.end_time += seg.start_time - moved_from
+        timeline.clamp_voiced(seg)
+    elif not timeline.follow_text(seg) and seg.end_time < seg.start_time + timeline.MIN_CLIP_SECS:
+        seg.end_time = seg.start_time + timeline.MIN_CLIP_SECS
+
+
+# Fields whose change can make a clip overlap another on its track
+_LAYOUT_FIELDS = {"start_time", "end_time", "lane_index", "voice_offset", "khmer_text", "voice_speed", "tts_audio_path"}
+
+
 @router.patch("/segments/{segment_id}", response_model=SegmentResponse)
 async def update_segment(
     segment_id: str,
@@ -85,8 +106,11 @@ async def update_segment(
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """
-    Update a segment's text or approval status.
-    Used by the script editor — editors can fix translation errors.
+    Update a segment's text, timing, effects or approval.
+
+    Editing the Khmer text never touches the voice (the clip shows it was made
+    from older text). A clip that ends up overlapping another on its track
+    moves to the nearest track where it fits — never in time.
     """
     from pathlib import Path
     import shutil
@@ -99,18 +123,29 @@ async def update_segment(
     # Capture old parameters to check for changes
     old_volume = seg.volume_db
     old_filter = seg.voice_filter
-    old_speed = seg.voice_speed
+    old_speed = seg.voice_speed or 1.0
+    old_start = seg.start_time
 
     update_data = payload.model_dump(exclude_unset=True)
     if update_data.get("tts_audio_path"):
         update_data["tts_audio_path"] = await _clip_path_in_session(db, seg, update_data["tts_audio_path"])
     for field, value in update_data.items():
         setattr(seg, field, value)
+    if update_data.get("tts_audio_path") == "":
+        # The voice is gone: so is the part of it the clip played
+        seg.voice_offset, seg.fit_rate, seg.voice_text = 0.0, 1.0, None
+
+    new_speed = seg.voice_speed or 1.0
+    speed_changed = "voice_speed" in update_data and abs(new_speed - old_speed) > 1e-6
+    if speed_changed and timeline.is_voiced(seg):
+        # Keep the same words cut at the new speed (the file is re-rendered below)
+        seg.voice_speed = old_speed
+        timeline.rescale_for_speed(seg, new_speed)
 
     effects_changed = (
         seg.volume_db != old_volume or
         seg.voice_filter != old_filter or
-        seg.voice_speed != old_speed
+        speed_changed
     )
 
     if effects_changed and seg.tts_audio_path:
@@ -132,10 +167,50 @@ async def update_segment(
         # With the level decided when the voice was made (voice_level), not re-measured
         seg.tts_duration_secs = await voice_level.render_clip(seg, raw_path, Path(final_path))
 
+    _apply_timing(seg, set(update_data), moved_from=old_start)
+
     await db.flush()
-    await db.refresh(seg)
     await db.commit()
+    if _LAYOUT_FIELDS & set(update_data):
+        await timeline.settle_job(db, seg.job_id, [seg.id])
+    await db.refresh(seg)
     return seg
+
+
+@router.put("/jobs/{job_id}/segments/layout", response_model=LayoutResponse)
+async def update_layout(
+    job_id: str,
+    payload: LayoutRequest,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """
+    Move, trim and re-track several clips at once (a drag, a group move, an
+    undo): every change is applied before the tracks are settled, so clips can
+    swap places. Returns every clip whose place changed, including clips the
+    server moved to another track.
+    """
+    segs = (await db.execute(select(Segment).where(Segment.job_id == job_id))).scalars().all()
+    by_id = {s.id: s for s in segs}
+    missing = [c.id for c in payload.changes if c.id not in by_id]
+    if missing:
+        raise HTTPException(status_code=404, detail="Segment not found in this session")
+
+    def place(s: Segment) -> tuple:
+        return (s.start_time, s.end_time, s.lane_index or 0, timeline.offset_of(s))
+
+    before = {s.id: place(s) for s in segs}
+    for change in payload.changes:
+        seg = by_id[change.id]
+        sent = change.model_dump(exclude_unset=True, exclude={"id"})
+        old_start = seg.start_time
+        for field, value in sent.items():
+            if value is not None:
+                setattr(seg, field, value)
+        _apply_timing(seg, {k for k, v in sent.items() if v is not None}, moved_from=old_start)
+    await db.commit()
+    await timeline.settle_job(db, job_id, [c.id for c in payload.changes])
+    changed = [s for s in segs if place(s) != before[s.id]]
+    return LayoutResponse(segments=sorted(changed, key=lambda s: (s.start_time, s.id)))
 
 
 @router.delete("/segments/{segment_id}", status_code=status.HTTP_204_NO_CONTENT)

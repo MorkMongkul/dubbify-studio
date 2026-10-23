@@ -306,6 +306,23 @@ class SegmentResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class LayoutChange(BaseModel):
+    """One clip's new place on the timeline (only the fields that change)."""
+    id: str
+    start_time: Optional[float] = Field(None, ge=0)
+    end_time: Optional[float] = Field(None, ge=0)
+    lane_index: Optional[int] = Field(None, ge=0)
+    voice_offset: Optional[float] = None
+
+
+class LayoutRequest(BaseModel):
+    changes: List[LayoutChange]
+
+
+class LayoutResponse(BaseModel):
+    segments: List[SegmentResponse]
+
+
 # ── Overlay schemas ─────────────────────────────────────────────
 class OverlayUpdate(BaseModel):
     x: Optional[float] = None
