@@ -10,6 +10,11 @@ export const MIN_PIECE_SECS = 0.1
 const r3 = (x: number) => Math.round(x * 1000) / 1000
 const byStart = (a: StemPiece, b: StemPiece) => a.start_time - b.start_time
 
+/** An id for a new piece (the server keeps the ids it's sent). */
+export function newPieceId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `p-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
 /** The piece playing at `t`, or null in a gap. */
 export function pieceAt(pieces: StemPiece[], t: number): StemPiece | null {
   return pieces.find((p) => p.start_time <= t && t < p.end_time) ?? null

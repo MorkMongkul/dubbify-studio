@@ -6,18 +6,20 @@ import {
   ZoomIn, ZoomOut, Maximize2, Loader2, Scissors, X, RefreshCw,
   MousePointer2, SplitSquareHorizontal, Trash2, Magnet, Wand2, Layers, ChevronDown, Undo2, Redo2,
   ArrowLeftToLine, ArrowRightToLine, Gauge, AudioLines, Music, Volume2, VolumeX, Headphones, HeadphoneOff,
-  ArrowDownWideNarrow, type LucideIcon,
+  ArrowDownWideNarrow, Star, type LucideIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import type { Segment, SegmentUpdate, Speaker, Job, LayoutChange } from '@/types'
+import type { Segment, SegmentUpdate, Speaker, Job, LayoutChange, Stem, StemPiece } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
-import { useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useSetBgmVolume, useLayoutSegments, useSplitSegment, useDuplicateSegment, useSetDucking, useStemPieces, putSegments } from '@/hooks/useApi'
+import { useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useSetBgmVolume, useLayoutSegments, useSplitSegment, useDuplicateSegment, useSetDucking, useStemPieces, useSetStemPieces, putSegments } from '@/hooks/useApi'
 import { useScrubAudio } from '@/hooks/useScrubAudio'
 import { segments as segmentsApi } from '@/api/client'
 import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, cn, isJobRunning, originalVoicesReplaced } from '@/lib/utils'
-import { recordDuckingChange, recordLayoutChange, recordSegmentChange, recordSegmentDelete, recordSegmentsChange, recordSegmentsDelete, recordSegmentDuplicate, recordSegmentSplit } from '@/lib/historyHelpers'
+import { recordDuckingChange, recordLayoutChange, recordPiecesChange, recordSegmentChange, recordSegmentDelete, recordSegmentsChange, recordSegmentsDelete, recordSegmentDuplicate, recordSegmentSplit } from '@/lib/historyHelpers'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { InteractiveSegment, LANE_HEIGHT } from './TimelineClip'
+import { StemPieces } from './StemPieces'
+import { deletePiece, newPieceId, setPiece, splitPiece } from '@/lib/stemPieces'
 import { clipAtPlayhead, trackRows } from '@/lib/tracks'
 import { effectiveSpeed, isVoiced, overrunSpans, trimEnd, trimStart } from '@/lib/clipRules'
 import { isTypingTarget } from '@/lib/transport'
@@ -148,6 +150,8 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const tidyLanes = useTidyLanes()
   const { mutate: setBgmVolume, isPending: isSettingBgmVolume } = useSetBgmVolume()
   const qc = useQueryClient()
+  // The music's and the original voices' pieces (0.3.2)
+  const { data: stemPieceLists } = useStemPieces(jobId)
 
   // BGM & SFX gain — mirrors job.bgm_volume_db while dragging, committed on
   // release (see handleVolumeChange). Re-synced whenever the confirmed
@@ -327,6 +331,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   }, [jobId, layoutSegments, qc])
 
   const handleSegmentSelect = useCallback((seg: Segment) => {
+    useEditorStore.getState().setSelectedPiece(null)
     setCurrentTime(seg.start_time)
     setActiveSegment(seg.id)
     setInspectorMode('audio_clip_settings')
@@ -462,6 +467,41 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     }
   }, [jobId, qc])
 
+  // ── The music and the original voices in pieces (0.3.2) ────────────────
+  const selectedPiece = useEditorStore((s) => s.selectedPiece)
+  const { mutate: setStemPieces } = useSetStemPieces()
+  const commitPieces = useCallback((stem: Stem, after: StemPiece[], label: string) => {
+    if (!jobId || !stemPieceLists) return
+    const before = stemPieceLists[stem]
+    setStemPieces({ jobId, stem, pieces: after }, {
+      onSuccess: (stored) => recordPiecesChange(qc, jobId, stem, before, stored, label),
+      onError: () => toast.error(`Couldn't save: ${label.toLowerCase()}`),
+    })
+  }, [jobId, stemPieceLists, setStemPieces, qc])
+  const selectPiece = useCallback((stem: Stem, id: string) => {
+    useEditorStore.setState({ selectedPiece: { stem, id }, activeSegmentId: null, selectedSegmentIds: [] })
+  }, [])
+  const [pieceMenu, setPieceMenu] = useState<{ stem: Stem; piece: StemPiece; x: number; y: number; at: number } | null>(null)
+  const closePieceMenu = useCallback(() => setPieceMenu(null), [])
+  const pieceMenuItems = (menu: { stem: Stem; piece: StemPiece; at: number }): MenuItem[] => {
+    const list = stemPieceLists?.[menu.stem] ?? []
+    const items: MenuItem[] = [
+      { icon: SplitSquareHorizontal, label: 'Split', shortcut: 'S', onSelect: () => {
+        const next = splitPiece(list, menu.piece.id, menu.at, newPieceId())
+        if (next !== list) commitPieces(menu.stem, next, 'Split')
+      } },
+    ]
+    if (menu.stem === 'voices') {
+      items.push('separator', {
+        icon: Star, label: 'Keep in export', checked: menu.piece.in_export,
+        onSelect: () => commitPieces(menu.stem, setPiece(list, menu.piece.id, { in_export: !menu.piece.in_export }),
+          menu.piece.in_export ? 'Leave out of export' : 'Keep in export'),
+      })
+    }
+    items.push('separator', { icon: Trash2, label: 'Delete', shortcut: '⌫', onSelect: () => commitPieces(menu.stem, deletePiece(list, menu.piece.id), 'Delete') })
+    return items
+  }
+
   // ── Right-click on a clip ───────────────────────────────────────────────
   const [clipMenu, setClipMenu] = useState<{ seg: Segment; x: number; y: number; at: number } | null>(null)
   const closeClipMenu = useCallback(() => setClipMenu(null), [])
@@ -515,6 +555,24 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
       if (isTypingTarget(e.target) || (e.target as HTMLElement)?.tagName === 'AUDIO') return
       if (useEditorStore.getState().settingsOpen) return
       const key = e.key.toLowerCase()
+      // A selected piece of the music / original voices: S, ⌘B split it at the playhead; ⌫ deletes it
+      const sp = useEditorStore.getState().selectedPiece
+      const spList = sp && stemPieceLists?.[sp.stem]
+      if (sp && spList && spList.some((x) => x.id === sp.id)) {
+        if ((key === 's' && !(e.metaKey || e.ctrlKey || e.altKey)) || ((e.metaKey || e.ctrlKey) && key === 'b')) {
+          e.preventDefault()
+          const next = splitPiece(spList, sp.id, useEditorStore.getState().currentTime, newPieceId())
+          if (next !== spList) commitPieces(sp.stem, next, 'Split')
+          else toast.error('Move the playhead inside the piece to split it')
+          return
+        }
+        if (e.key === 'Delete' || e.key === 'Backspace') {
+          e.preventDefault()
+          commitPieces(sp.stem, deletePiece(spList, sp.id), 'Delete')
+          useEditorStore.getState().setSelectedPiece(null)
+          return
+        }
+      }
       if ((e.metaKey || e.ctrlKey) && key === 'd') { e.preventDefault(); handleDuplicate(); return }
       // ⌘B / Ctrl+B — the split shortcut CapCut users already have in muscle memory
       if ((e.metaKey || e.ctrlKey) && key === 'b') { e.preventDefault(); handleSplitAtPlayhead(); return }
@@ -527,7 +585,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [setActiveTool, handleSplitAtPlayhead, handleDuplicate, handleTrimAtPlayhead])
+  }, [setActiveTool, handleSplitAtPlayhead, handleDuplicate, handleTrimAtPlayhead, stemPieceLists, commitPieces])
 
   // ── Imperative playhead ────────────────────────────────────────────────
   // currentTime changes 4×/s during playback and 60+×/s while scrubbing —
@@ -585,7 +643,6 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     ? `/uploads/${projectId}/${jobId}/no_vocals.m4a?v=${job?.bgm_volume_db ?? 0}-${job?.stems_version ?? 0}`
     : null
   const voicesUrl = musicUrl && musicUrl.replace('/no_vocals.m4a?v=', '/vocals.m4a?v=')
-  const { data: stemPieceLists } = useStemPieces(jobId)
   const scrubSnippet = useScrubAudio({ segmentsRef, musicUrl, duckMusic: !!job?.duck_music, voicesUrl, pieces: stemPieceLists })
   const scrubTo = useCallback((t: number) => {
     const clamped = Math.max(0, Math.min(duration, t))
@@ -1097,6 +1154,16 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                         pxPerSec={PX_PER_SEC * zoom}
                       />
                     )}
+                    {stemPieceLists && stemPieceLists.music.length > 0 && (
+                      <StemPieces
+                        stem="music" pieces={stemPieceLists.music} duration={duration} zoom={zoom} pxPerSec={PX_PER_SEC}
+                        activeTool={activeTool} color="#38bdf8"
+                        selectedId={selectedPiece?.stem === 'music' ? selectedPiece.id : null}
+                        onSelect={(id) => selectPiece('music', id)}
+                        onCommit={(list, label) => commitPieces('music', list, label)}
+                        onContextMenu={(piece, x, y, at) => setPieceMenu({ stem: 'music', piece, x, y, at })}
+                      />
+                    )}
                   </div>
                 )}
               </div>
@@ -1199,6 +1266,16 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                     )}
                   </div>
                 )}
+                {!isStage1Processing && stemPieceLists && stemPieceLists.voices.length > 0 && (
+                  <StemPieces
+                    stem="voices" pieces={stemPieceLists.voices} duration={duration} zoom={zoom} pxPerSec={PX_PER_SEC}
+                    activeTool={activeTool} color="#34d399"
+                    selectedId={selectedPiece?.stem === 'voices' ? selectedPiece.id : null}
+                    onSelect={(id) => selectPiece('voices', id)}
+                    onCommit={(list, label) => commitPieces('voices', list, label)}
+                    onContextMenu={(piece, x, y, at) => setPieceMenu({ stem: 'voices', piece, x, y, at })}
+                  />
+                )}
               </div>
             </div>
 
@@ -1295,6 +1372,9 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
           </div>
         </div>
 
+        {pieceMenu && (
+          <ContextMenu x={pieceMenu.x} y={pieceMenu.y} items={pieceMenuItems(pieceMenu)} onClose={closePieceMenu} />
+        )}
         {clipMenu && (
           <ContextMenu x={clipMenu.x} y={clipMenu.y} items={clipMenuItems(clipMenu)} onClose={closeClipMenu} />
         )}
