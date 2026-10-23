@@ -284,6 +284,9 @@ async def split_segment(
         second.source_start, second.source_end = (max(src_start, at), src_end) if src_end > at else (None, None)
 
     second.start_time = at
+    # Each half keeps its outer fade
+    seg.fade_out_secs = 0.0
+    second.fade_in_secs = 0.0
     if voiced:
         second.voice_offset = timeline.offset_of(seg) + (at - seg.start_time) * timeline.rate_of(seg)
         seg.end_time = at

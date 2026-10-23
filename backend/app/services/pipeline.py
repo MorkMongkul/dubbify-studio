@@ -251,6 +251,8 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
                 )
             if translation_report.warning():
                 warnings.append(translation_report.warning())
+            if job.duck_music is None:
+                job.duck_music = True   # analysed from 0.3.1 on: the music dips under the voices
             await _update_job(db, job, JobStatus.COMPLETED, 100, " ".join(warnings))
             logger.info(
                 f"Analysis complete for job {job_id[:8]} — {len(diarized)} segments, "

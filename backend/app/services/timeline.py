@@ -33,6 +33,12 @@ MIN_CLIP_SECS = 0.1
 # Auto-fit speeds a voice up at most to this (a natural-sounding cap)
 AUTOFIT_FASTEST = 1.25
 EPS = 0.001
+# 0.3.1: the music & effects dip this much under the voices, with ramps this long
+DUCK_DB = -8.0
+DUCK_RAMP_SECS = 0.2
+# The volume a clip can be given (the transcript panel's and the volume line's range)
+VOLUME_MIN_DB = -20.0
+VOLUME_MAX_DB = 10.0
 
 # Where a phrase may be broken when a line is split
 _BREAKS = set(" ។៕!?,.…，。！？、")
@@ -71,6 +77,7 @@ def clamp_voiced(seg) -> None:
     rate = rate_of(seg)
     seg.voice_offset = max(0.0, min(offset_of(seg), tts - MIN_CLIP_SECS * rate))
     seg.end_time = max(seg.start_time + MIN_CLIP_SECS, min(seg.end_time, max_end(seg)))
+    clamp_fades(seg)
 
 
 def follow_text(seg) -> bool:
@@ -82,7 +89,81 @@ def follow_text(seg) -> bool:
     if abs(end - seg.end_time) <= EPS:
         return False
     seg.end_time = end
+    clamp_fades(seg)
     return True
+
+
+# ── Fades (0.3.1) ──────────────────────────────────────────────
+
+def fades_of(seg) -> tuple[float, float]:
+    """The clip's fade-in and fade-out, in seconds of timeline (NULL: none)."""
+    return (getattr(seg, "fade_in_secs", None) or 0.0, getattr(seg, "fade_out_secs", None) or 0.0)
+
+
+def clamp_fades(seg) -> None:
+    """Fades are never negative and never longer, together, than the clip:
+    when they are, both shrink by the same factor."""
+    fade_in, fade_out = (max(0.0, f) for f in fades_of(seg))
+    length = max(0.0, seg.end_time - seg.start_time)
+    if fade_in + fade_out > length + EPS:
+        k = length / (fade_in + fade_out)
+        fade_in, fade_out = fade_in * k, fade_out * k
+    seg.fade_in_secs, seg.fade_out_secs = round(fade_in, 3), round(fade_out, 3)
+
+
+def fade_gain_at(seg, t: float) -> float:
+    """The clip's fade gain at timeline time `t` (linear, like ffmpeg's afade)."""
+    if t < seg.start_time or t >= seg.end_time:
+        return 0.0
+    fade_in, fade_out = fades_of(seg)
+    gain = 1.0
+    if fade_in > 0:
+        gain = min(gain, (t - seg.start_time) / fade_in)
+    if fade_out > 0:
+        gain = min(gain, (seg.end_time - t) / fade_out)
+    return max(0.0, gain)
+
+
+# ── The music dips under the voices (0.3.1) ────────────────────
+
+def duck_spans(segs) -> list[tuple[float, float]]:
+    """Where voices play, merged when two are closer than two ramps (so the
+    music doesn't come up for an instant between them)."""
+    spans: list[list[float]] = []
+    for a, b in sorted((s.start_time, s.end_time) for s in segs if is_voiced(s)):
+        if spans and a - spans[-1][1] < 2 * DUCK_RAMP_SECS:
+            spans[-1][1] = max(spans[-1][1], b)
+        else:
+            spans.append([a, b])
+    return [(round(a, 3), round(b, 3)) for a, b in spans]
+
+
+def _duck_floor() -> float:
+    return 10 ** (DUCK_DB / 20)
+
+
+def duck_gain_at(spans, t: float) -> float:
+    """The music's gain at `t`: down by DUCK_DB under a voice, ramping over
+    DUCK_RAMP_SECS before it starts and after it ends."""
+    r = DUCK_RAMP_SECS
+    depth = 0.0
+    for a, b in spans:
+        up = min(1.0, max(0.0, (t - (a - r)) / r))
+        down = min(1.0, max(0.0, ((b + r) - t) / r))
+        depth = max(depth, up * down)
+    return 1 - (1 - _duck_floor()) * depth
+
+
+def duck_volume_expr(spans) -> str:
+    """duck_gain_at as an ffmpeg `volume` expression over `t` (the spans are
+    merged, so their ramps never overlap and a sum is their max)."""
+    if not spans:
+        return "1"
+    r = DUCK_RAMP_SECS
+    terms = "+".join(
+        f"clip((t-{a - r:.3f})/{r},0,1)*clip(({b + r:.3f}-t)/{r},0,1)" for a, b in spans
+    )
+    return f"1-{1 - _duck_floor():.6f}*({terms})"
 
 
 def actor_span(seg) -> tuple[float, float]:
@@ -151,6 +232,10 @@ def rescale_for_speed(seg, new_speed: float) -> None:
     re-renders the file, sets tts_duration_secs, then clamp_voiced."""
     old_vs = seg.voice_speed or 1.0
     old_total = total_speed(seg)
+    # Fades stay on the same words
+    fade_in, fade_out = fades_of(seg)
+    seg.fade_in_secs = round(fade_in * old_total / new_speed, 3)
+    seg.fade_out_secs = round(fade_out * old_total / new_speed, 3)
     seg.voice_offset = offset_of(seg) * old_vs / new_speed
     seg.end_time = seg.start_time + (seg.end_time - seg.start_time) * old_total / new_speed
     seg.voice_speed = new_speed
