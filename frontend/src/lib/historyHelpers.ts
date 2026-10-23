@@ -11,6 +11,7 @@ import type { LayoutChange, Stem, StemPiece, Segment, SegmentCreate, SegmentUpda
 import { invalidateSpeakerLines, putSegments } from '@/hooks/useApi'
 import { useHistoryStore } from '@/store/historyStore'
 import { splitUndoPatch } from '@/lib/undoPatches'
+import type { StemPieceLists } from '@/lib/stemPieces'
 
 export function recordSegmentChange(
   qc: QueryClient,
@@ -236,7 +237,7 @@ export function recordPiecesChange(
 ) {
   const send = async (pieces: StemPiece[]) => {
     const stored = await stemPiecesApi.put(jobId, stem, pieces)
-    qc.setQueryData<Record<Stem, StemPiece[]>>(['stem-pieces', jobId], (old) => old && { ...old, [stem]: stored })
+    qc.setQueryData<StemPieceLists>(['stem-pieces', jobId], (old) => old && { ...old, [stem]: stored })
   }
   useHistoryStore.getState().push({ label, undo: () => send(before), redo: () => send(after) })
 }

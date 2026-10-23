@@ -107,15 +107,17 @@ def pieces_volume_expr(pieces, duration: float, export_only: bool = False) -> st
 
 
 async def pieces_of(db: AsyncSession, job) -> list:
-    """A job's pieces; a stem with none gets its one whole piece (once the
-    video's length is known)."""
+    """A job's pieces. The first time (once the video's length is known) each
+    stem gets its one whole piece; a stem emptied after that stays empty."""
     from app.models.models import StemPiece
 
     rows = (await db.execute(
         select(StemPiece).where(StemPiece.job_id == job.id).order_by(StemPiece.start_time)
     )).scalars().all()
     missing = [stem for stem in STEMS if not any(p.stem == stem for p in rows)]
-    if missing and (job.duration_secs or 0) > 0:
+    if not job.stem_pieces_made and (job.duration_secs or 0) > 0:
+        # Once only: after that, a stem with no pieces is one the user emptied
+        job.stem_pieces_made = True
         for stem in missing:
             db.add(StemPiece(job_id=job.id, stem=stem, start_time=0.0, end_time=float(job.duration_secs),
                              volume_db=0.0, fade_in_secs=0.0, fade_out_secs=0.0, in_export=stem == "music"))

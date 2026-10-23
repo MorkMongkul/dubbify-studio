@@ -34,7 +34,8 @@ async def test_an_episode_starts_with_one_whole_piece_per_stem(client, db_sessio
 @pytest.mark.asyncio
 async def test_no_pieces_before_the_video_length_is_known(client, db_sessionmaker):
     job_id = await _job_with_duration(client, db_sessionmaker, duration=0.0)
-    assert (await client.get(f"/api/v1/jobs/{job_id}/stem-pieces")).json() == {"music": [], "voices": []}
+    body = (await client.get(f"/api/v1/jobs/{job_id}/stem-pieces")).json()
+    assert (body["music"], body["voices"]) == ([], [])
 
 
 @pytest.mark.asyncio
@@ -139,3 +140,22 @@ async def test_put_clamps_what_it_stores(client, db_sessionmaker):
     pieces = (await client.put(f"/api/v1/jobs/{job_id}/stem-pieces/music", json={"pieces": [
         {"start_time": 8.0, "end_time": 12.0}, {"start_time": 0.0, "end_time": 9.0, "in_export": False}]})).json()
     assert [(p["start_time"], p["end_time"], p["in_export"]) for p in pieces] == [(0.0, 9.0, True), (9.0, 10.0, True)]
+
+
+# ── Review fixes ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_a_stem_emptied_by_the_user_stays_silent(client, db_sessionmaker):
+    job_id = await _job_with_duration(client, db_sessionmaker)
+    first = (await client.get(f"/api/v1/jobs/{job_id}/stem-pieces")).json()
+    assert first["made"] is True
+    assert (await client.put(f"/api/v1/jobs/{job_id}/stem-pieces/music", json={"pieces": []})).json() == []
+    assert (await client.put(f"/api/v1/jobs/{job_id}/stem-pieces/voices", json={"pieces": []})).json() == []
+    again = (await client.get(f"/api/v1/jobs/{job_id}/stem-pieces")).json()
+    assert (again["music"], again["voices"], again["made"]) == ([], [], True)
+
+
+@pytest.mark.asyncio
+async def test_an_episode_without_a_length_has_no_pieces_yet(client, db_sessionmaker):
+    job_id = await _job_with_duration(client, db_sessionmaker, duration=0.0)
+    assert (await client.get(f"/api/v1/jobs/{job_id}/stem-pieces")).json()["made"] is False

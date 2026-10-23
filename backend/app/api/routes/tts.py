@@ -613,7 +613,9 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
         )).scalars().all()
         music_pieces = [p for p in pieces if p.stem == "music"]
         voices_pieces = [p for p in pieces if p.stem == "voices"]
-        music_expr = stem_pieces.pieces_volume_expr(music_pieces, job.duration_secs or 0.0) if music_pieces else None
+        # Music the user emptied is silence; an episode never given pieces plays whole
+        music_expr = stem_pieces.pieces_volume_expr(music_pieces, job.duration_secs or 0.0) \
+            if music_pieces or job.stem_pieces_made else None
         voices_expr = stem_pieces.pieces_volume_expr(voices_pieces, job.duration_secs or 0.0, export_only=True)
         # The music dips where the voices play (off for episodes analysed before 0.3.1)
         duck_expr = timeline.duck_volume_expr(timeline.duck_spans(

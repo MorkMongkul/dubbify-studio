@@ -74,3 +74,35 @@ export function deletePiece(pieces: StemPiece[], id: string): StemPiece[] {
 export function setPiece(pieces: StemPiece[], id: string, fields: Partial<Pick<StemPiece, 'volume_db' | 'fade_in_secs' | 'fade_out_secs' | 'in_export'>>): StemPiece[] {
   return pieces.map((x) => (x.id === id ? fitFades({ ...x, ...fields }) : x))
 }
+
+/** Both stems' pieces as the server keeps them; `made`: the pieces were given (else each stem plays whole). */
+export type StemPieceLists = { music: StemPiece[]; voices: StemPiece[]; made: boolean }
+
+/**
+ * A stem's level at `t` (before the editor volume and the music's dip): its
+ * pieces' gain — 0 between them, and 0 everywhere for a stem the user
+ * emptied. Pieces not given yet: the music plays whole. The original voices,
+ * when their track is muted, play only the pieces switched into the export
+ * (the export does).
+ */
+export function stemLevelAt(lists: StemPieceLists | null | undefined, stem: 'music' | 'voices', t: number, voicesMuted: boolean): number {
+  if (!lists?.made) return stem === 'voices' && voicesMuted ? 0 : 1
+  if (stem === 'music') return pieceGainAt(lists.music, t)
+  return pieceGainAt(voicesMuted ? lists.voices.filter((p) => p.in_export) : lists.voices, t)
+}
+
+/** What S, ⌘B and ⌫ act on: the selected piece (when it still exists), else the clips. */
+export function keysActOn(selected: { stem: 'music' | 'voices'; id: string } | null, lists: StemPieceLists | null | undefined): 'piece' | 'clips' {
+  return selected && lists?.[selected.stem].some((p) => p.id === selected.id) ? 'piece' : 'clips'
+}
+
+/** Play an element at `level`: through its gain node (which can go above 1), else its own volume (which stops at 1). */
+export function setLevel(el: { volume: number }, gain: { gain: { value: number } } | null, level: number): void {
+  const l = Math.max(0, level)
+  if (gain) {
+    if (el.volume !== 1) el.volume = 1
+    gain.gain.value = l
+  } else {
+    el.volume = Math.min(1, l)
+  }
+}

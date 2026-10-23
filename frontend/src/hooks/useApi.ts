@@ -7,6 +7,7 @@ import { projects, jobs, speakers, segments, tts, health, voices, overlays, over
 import type { VoiceCreateInput } from '@/api/client'
 import { useEditorStore } from '@/store/editorStore'
 import { standInMessage, withTurn } from '@/lib/chatMessages'
+import type { StemPieceLists } from '@/lib/stemPieces'
 import type {
   Segment, LayoutChange, Stem, StemPiece, ProjectCreate, ProjectUpdate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice, OverlayUpdate, AppSettingsUpdate, GeminiModelSetting,
   ChatLineRef, ChatMessage, StoryEdit,
@@ -371,10 +372,10 @@ export function useSetStemPieces() {
     mutationFn: ({ jobId, stem, pieces }: { jobId: string; stem: Stem; pieces: StemPiece[] }) =>
       stemPieces.put(jobId, stem, pieces),
     onMutate: ({ jobId, stem, pieces }) => {
-      qc.setQueryData<Record<Stem, StemPiece[]>>(['stem-pieces', jobId], (old) => old && { ...old, [stem]: pieces })
+      qc.setQueryData<StemPieceLists>(['stem-pieces', jobId], (old) => old && { ...old, [stem]: pieces })
     },
     onSuccess: (stored, { jobId, stem }) => {
-      qc.setQueryData<Record<Stem, StemPiece[]>>(['stem-pieces', jobId], (old) => old && { ...old, [stem]: stored })
+      qc.setQueryData<StemPieceLists>(['stem-pieces', jobId], (old) => old && { ...old, [stem]: stored })
     },
     onError: (_, { jobId }) => qc.invalidateQueries({ queryKey: ['stem-pieces', jobId] }),
   })

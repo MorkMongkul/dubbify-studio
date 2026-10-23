@@ -411,3 +411,9 @@ async def test_edited_pieces_reach_the_export(monkeypatch, client, db_sessionmak
                              voices=[{"start_time": 1.0, "end_time": 2.0, "in_export": True}])
     assert seen["music_expr"].startswith("gte(t,0.000)")
     assert seen["voices_expr"].startswith("gte(t,1.000)") and seen["voices_path"].endswith("vocals.wav")
+
+
+@pytest.mark.asyncio
+async def test_music_emptied_by_the_user_is_silent_in_the_export(monkeypatch, client, db_sessionmaker, tmp_path):
+    seen = await _export_job(monkeypatch, client, db_sessionmaker, tmp_path, duck_music=None, with_pieces=True, music=[])
+    assert seen["music_expr"] == "0"

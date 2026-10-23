@@ -52,6 +52,34 @@ function newPlayer(url: string): Player {
   }
 }
 
+/**
+ * A media element routed through the voices' AudioContext, so it can be heard
+ * above its file's own level (the music and original voices pieces' volume
+ * lines). Once per element; null when Web Audio isn't available.
+ */
+const routed = new WeakMap<HTMLMediaElement, GainNode | null>()
+export function gainFor(el: HTMLMediaElement): GainNode | null {
+  if (routed.has(el)) return routed.get(el)!
+  const ctx = voiceAudioContext()
+  let gain: GainNode | null = null
+  if (ctx) {
+    try {
+      gain = ctx.createGain()
+      ctx.createMediaElementSource(el).connect(gain)
+      gain.connect(ctx.destination)
+    } catch {
+      gain = null
+    }
+  }
+  routed.set(el, gain)
+  return gain
+}
+
+/** Wake the AudioContext once playback starts (browsers start it suspended). */
+export function resumeAudio(): void {
+  if (voiceContext?.state === 'suspended') voiceContext.resume().catch(() => {})
+}
+
 /** Set what a voice is heard at: the editor volume × its fade × a volume line being dragged. */
 function setLevel(p: Player, level: number) {
   if (p.gain) {

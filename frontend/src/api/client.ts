@@ -5,6 +5,7 @@ import axios, { type AxiosProgressEvent } from 'axios'
 import type {
   Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, SpeakerMergeResponse, Segment, SegmentUpdate, SegmentCreate, LayoutChange, SplitResult, Stem, StemPiece, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView,
 } from '@/types'
+import type { StemPieceLists } from '@/lib/stemPieces'
 
 const api = axios.create({
   baseURL: '/api/v1',
@@ -227,7 +228,7 @@ export const segments = {
 export const stemPieces = {
   /** Both stems' pieces; a stem nobody cut is one whole piece. */
   list: (jobId: string) =>
-    api.get<Record<Stem, StemPiece[]>>(`/jobs/${jobId}/stem-pieces`).then((r) => r.data),
+    api.get<StemPieceLists>(`/jobs/${jobId}/stem-pieces`).then((r) => r.data),
   /** Replace a stem's pieces (an edit or an undo); returns what was stored. */
   put: (jobId: string, stem: Stem, pieces: StemPiece[]) =>
     api.put<StemPiece[]>(`/jobs/${jobId}/stem-pieces/${stem}`, { pieces }).then((r) => r.data),

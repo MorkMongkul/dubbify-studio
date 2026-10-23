@@ -19,7 +19,7 @@ import { recordDuckingChange, recordLayoutChange, recordPiecesChange, recordSegm
 import { Tooltip } from '@/components/ui/Tooltip'
 import { InteractiveSegment, LANE_HEIGHT } from './TimelineClip'
 import { StemPieces } from './StemPieces'
-import { deletePiece, newPieceId, setPiece, splitPiece } from '@/lib/stemPieces'
+import { deletePiece, keysActOn, newPieceId, setPiece, splitPiece } from '@/lib/stemPieces'
 import { clipAtPlayhead, trackRows } from '@/lib/tracks'
 import { effectiveSpeed, isVoiced, overrunSpans, trimEnd, trimStart } from '@/lib/clipRules'
 import { isTypingTarget } from '@/lib/transport'
@@ -247,6 +247,8 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   // button. Returns whether anything was deleted.
   const deleteSelection = useCallback((): boolean => {
     if (!jobId) return false
+    // A selected piece of the music / original voices takes ⌫ (the shortcuts below)
+    if (keysActOn(useEditorStore.getState().selectedPiece, stemPieceLists) === 'piece') return false
     const ids = useEditorStore.getState().selectedSegmentIds
     if (ids.length > 0) {
       const targets = segments.filter((s) => ids.includes(s.id))
@@ -268,7 +270,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     if (seg) recordSegmentDelete(qc, jobId, seg)
     setActiveSegment(null)
     return true
-  }, [activeSegmentId, jobId, deleteSegment, setActiveSegment, segments, qc])
+  }, [activeSegmentId, jobId, deleteSegment, setActiveSegment, segments, qc, stemPieceLists])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -561,7 +563,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
       // A selected piece of the music / original voices: S, ⌘B split it at the playhead; ⌫ deletes it
       const sp = useEditorStore.getState().selectedPiece
       const spList = sp && stemPieceLists?.[sp.stem]
-      if (sp && spList && spList.some((x) => x.id === sp.id)) {
+      if (sp && spList && keysActOn(sp, stemPieceLists) === 'piece') {
         if ((key === 's' && !(e.metaKey || e.ctrlKey || e.altKey)) || ((e.metaKey || e.ctrlKey) && key === 'b')) {
           e.preventDefault()
           const next = splitPiece(spList, sp.id, useEditorStore.getState().currentTime, newPieceId())
@@ -1187,7 +1189,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                         pxPerSec={PX_PER_SEC * zoom}
                       />
                     )}
-                    {stemPieceLists && stemPieceLists.music.length > 0 && (
+                    {stemPieceLists?.made && (
                       <StemPieces
                         stem="music" pieces={stemPieceLists.music} duration={duration} zoom={zoom} pxPerSec={PX_PER_SEC}
                         activeTool={activeTool} color="#38bdf8"
@@ -1299,7 +1301,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                     )}
                   </div>
                 )}
-                {!isStage1Processing && stemPieceLists && stemPieceLists.voices.length > 0 && (
+                {!isStage1Processing && stemPieceLists?.made && (
                   <StemPieces
                     stem="voices" pieces={stemPieceLists.voices} duration={duration} zoom={zoom} pxPerSec={PX_PER_SEC}
                     activeTool={activeTool} color="#34d399"

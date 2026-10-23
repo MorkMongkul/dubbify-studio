@@ -283,7 +283,8 @@ export const useEditorStore = create<EditorStore>()(
           : Array.from(new Set([...s.selectedSegmentIds, ...ids]))
       }
     }),
-    setSelectedSegments: (ids) => set({ selectedSegmentIds: ids }),
+    // Selecting clips takes the editing keys back from a selected piece
+    setSelectedSegments: (ids) => set(ids.length ? { selectedSegmentIds: ids, selectedPiece: null } : { selectedSegmentIds: ids }),
     setInspectorMode: (mode) => set({ inspectorMode: mode }),
     setFocusedTimelineItemId: (id) => set({ focusedTimelineItemId: id }),
 

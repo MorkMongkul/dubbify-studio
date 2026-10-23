@@ -5,10 +5,10 @@
 // voices when ducking is on. At most one snippet every SNIPPET_EVERY_MS.
 
 import { useCallback, useEffect, useRef, type RefObject } from 'react'
-import type { Segment, Stem, StemPiece } from '@/types'
+import type { Segment } from '@/types'
 import { audibleAt, fadeGainAt, voiceUrl } from '@/lib/clipRules'
 import { duckGainAt, duckSpans } from '@/lib/ducking'
-import { pieceGainAt } from '@/lib/stemPieces'
+import { stemLevelAt, type StemPieceLists } from '@/lib/stemPieces'
 import { useEditorStore } from '@/store/editorStore'
 
 const SNIPPET_MS = 120
@@ -22,7 +22,7 @@ interface Options {
   /** The original voices stem's playback URL, for its pieces switched into the export. */
   voicesUrl?: string | null
   /** The stems' pieces (0.3.2); null/undefined: each stem is one whole piece. */
-  pieces?: Record<Stem, StemPiece[]> | null
+  pieces?: StemPieceLists | null
 }
 
 export function useScrubAudio({ segmentsRef, musicUrl, duckMusic, voicesUrl, pieces }: Options): (t: number) => void {
@@ -73,17 +73,16 @@ export function useScrubAudio({ segmentsRef, musicUrl, duckMusic, voicesUrl, pie
       const a = audio(musicUrl)
       a.currentTime = t
       a.playbackRate = 1
-      const pieceGain = pieces && (pieces.music.length || pieces.voices.length) ? pieceGainAt(pieces.music, t) : 1
-      a.volume = Math.max(0, Math.min(1, volume * pieceGain * (duckMusic ? duckGainAt(duckSpans(segs), t) : 1)))
+      a.volume = Math.max(0, Math.min(1, volume * stemLevelAt(pieces, 'music', t, true) * (duckMusic ? duckGainAt(duckSpans(segs), t) : 1)))
       playing.current.push(a)
     }
     // The actors' own voices only where a piece is switched into the export
-    const exported = pieces?.voices.filter((p) => p.in_export) ?? []
-    if (voicesUrl && exported.length && pieceGainAt(exported, t) > 0) {
+    const voicesLevel = stemLevelAt(pieces, 'voices', t, true)
+    if (voicesUrl && voicesLevel > 0) {
       const a = audio(voicesUrl)
       a.currentTime = t
       a.playbackRate = 1
-      a.volume = Math.max(0, Math.min(1, volume * pieceGainAt(exported, t)))
+      a.volume = Math.max(0, Math.min(1, volume * voicesLevel))
       playing.current.push(a)
     }
     for (const a of playing.current) a.play().catch(() => {})

@@ -372,6 +372,13 @@ class StemPiecesUpdate(BaseModel):
     pieces: List[StemPieceIn]
 
 
+class StemPieceLists(BaseModel):
+    music: List["StemPieceResponse"]
+    voices: List["StemPieceResponse"]
+    # The pieces were given (false: no video length yet — each stem plays whole)
+    made: bool
+
+
 class StemPieceResponse(BaseModel):
     id: str
     stem: str

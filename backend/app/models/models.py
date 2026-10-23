@@ -187,6 +187,9 @@ class Job(Base):
     # The music & effects dip under the voices (timeline.duck_spans). NULL =
     # analysed before 0.3.1: off, so its export doesn't change; analysis sets it.
     duck_music = Column(Boolean, nullable=True)
+    # The music and the original voices were given their pieces (0.3.2): from
+    # then on a stem with no pieces is one the user emptied — silence.
+    stem_pieces_made = Column(Boolean, nullable=True)
 
     project  = relationship("Project", back_populates="jobs")
     segments = relationship("Segment", back_populates="job", cascade="all, delete",

@@ -797,6 +797,8 @@ export function TranscriptPanel({
                       isSelected && "bg-ink-900"
                     )}
                     onClick={() => {
+                      // Choosing a line: the editing keys act on lines again, not a music piece
+                      useEditorStore.getState().setSelectedPiece(null)
                       setActiveSegment(seg.id)
                       setCurrentTime(seg.start_time)
                     }}

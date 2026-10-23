@@ -52,3 +52,39 @@ test('deleting a piece leaves a gap; a setting changes one piece', () => {
   assert.deepEqual([set[1].in_export, set[1].volume_db, set[1].start_time], [false, 4, 3])
   assert.equal(set[0], pieces[0])
 })
+
+// ── Review fixes ──────────────────────────────────────────────────────────────
+import { keysActOn, setLevel, stemLevelAt } from '../src/lib/stemPieces.ts'
+
+test('a stem the user emptied is silent; one never given pieces plays whole', () => {
+  const emptied = { music: [], voices: [p('v', 0, 5, { stem: 'voices', in_export: false })], made: true }
+  assert.equal(stemLevelAt(emptied, 'music', 2, false), 0)
+  const allEmptied = { music: [], voices: [], made: true }
+  assert.equal(stemLevelAt(allEmptied, 'music', 2, false), 0)
+  assert.equal(stemLevelAt(allEmptied, 'voices', 2, false), 0)
+  const notYet = { music: [], voices: [], made: false }
+  assert.equal(stemLevelAt(notYet, 'music', 2, false), 1)
+  assert.equal(stemLevelAt(undefined, 'music', 2, false), 1)
+  // the original voices: muted plays only the pieces in the export
+  const voices = { music: [], voices: [p('a', 0, 2, { stem: 'voices' }), p('b', 2, 4, { stem: 'voices', in_export: false })], made: true }
+  assert.equal(stemLevelAt(voices, 'voices', 3, true), 0)
+  assert.equal(stemLevelAt(voices, 'voices', 3, false), 1)
+  assert.equal(stemLevelAt(undefined, 'voices', 3, true), 0)
+})
+
+test('with a piece selected, the editing keys act on the piece only', () => {
+  const lists = { music: [p('m', 0, 5)], voices: [], made: true }
+  assert.equal(keysActOn({ stem: 'music', id: 'm' }, lists), 'piece')
+  assert.equal(keysActOn({ stem: 'music', id: 'gone' }, lists), 'clips')
+  assert.equal(keysActOn(null, lists), 'clips')
+})
+
+test('a level above 1 goes to the gain node, not the element (an element stops at 1)', () => {
+  const el = { volume: 0.5 }
+  const gain = { gain: { value: 1 } }
+  setLevel(el, gain, 2)
+  assert.deepEqual([el.volume, gain.gain.value], [1, 2])
+  const bare = { volume: 0.5 }
+  setLevel(bare, null, 2)
+  assert.equal(bare.volume, 1)
+})
