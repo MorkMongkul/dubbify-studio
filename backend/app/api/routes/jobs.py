@@ -19,7 +19,7 @@ from app.core.database import get_db
 from app.core.config import settings
 from app.models.models import Job, Project, JobStatus, Segment, StemPiece
 from app.schemas.schemas import JobResponse, PipelineStartResponse, BgmVolumeUpdate, JobTitleUpdate, JobFinishedUpdate, JobDuckingUpdate
-from app.services import story_learning
+from app.services import picture_strip, story_learning
 from app.services.pipeline import (
     needs_translation, run_analysis_pipeline, run_pipeline, run_separation_retry, run_speaker_detection,
     run_translation,
@@ -248,6 +248,35 @@ async def get_job(job_id: str, db: AsyncSession = Depends(get_db, scope="functio
 
 # Jobs whose missing frame rate was already looked for since the app started
 _frame_rate_tried: set[str] = set()
+
+
+@router.get("/{job_id}/frames")
+async def get_frames(job_id: str, background_tasks: BackgroundTasks,
+                     db: AsyncSession = Depends(get_db, scope="function")):
+    """
+    The picture strip: frame URLs, one every `interval` seconds from 0. Not
+    ready yet: it's made in the background (once per job per app run) and the
+    answer comes at once.
+    """
+    job = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    folder = Path(settings.UPLOAD_DIR) / job.project_id / job_id / "frames"
+    state = picture_strip.frames_state(folder)
+    if state:
+        base = f"/uploads/{job.project_id}/{job_id}/frames"
+        return {"ready": True, "interval": state["interval"],
+                "urls": [f"{base}/f_{i:05d}.jpg" for i in range(1, state["count"] + 1)]}
+    interval = picture_strip.frame_interval(job.duration_secs or 0.0)
+    video = resolve_existing(job.video_path)
+    if video and job_id not in _frames_started:
+        _frames_started.add(job_id)
+        background_tasks.add_task(picture_strip.make_frames_quietly, str(video), folder, interval)
+    return {"ready": False, "interval": interval, "urls": []}
+
+
+# Jobs whose picture strip was started since the app started
+_frames_started: set[str] = set()
 
 
 @router.get("/{job_id}/subtitle-tracks")
