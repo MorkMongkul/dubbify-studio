@@ -14,6 +14,7 @@ import { segments as segmentsApi } from '@/api/client'
 import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, hexToRgba, cn, isJobRunning, originalVoicesReplaced } from '@/lib/utils'
 import { recordLayoutChange, recordSegmentDelete, recordSegmentsDelete, recordSegmentDuplicate, recordSegmentSplit } from '@/lib/historyHelpers'
 import { Tooltip } from '@/components/ui/Tooltip'
+import { previewClip } from '@/hooks/useVoicePlayback'
 
 const PX_PER_SEC = 100 // base pixels per second at zoom=1
 const LANE_HEIGHT = 64  // clip row height — also the divisor for drop-target lane math
@@ -1291,27 +1292,11 @@ const InteractiveSegment = memo(function InteractiveSegment({
     ? `${seg.tts_audio_url}?v=${seg.tts_duration_secs ?? 0}`
     : undefined
 
-  // Native Browser Audio Playback — real audio only, no mock/simulation fallback
+  // Double-click: hear this clip's window alone — what the export plays for it
   const playAudio = () => {
-    if (!seg.tts_audio_url) return
-    const path = versionedAudioPath!
-    const finalUrl = path.startsWith('/') ? path : `/${path}`
-    const audio = new Audio(finalUrl)
-
     const key = seg.speaker_id ?? '__none__'
-    const isMuted = mutedTrackIds[key]
     const hasSolo = Object.values(soloedTrackIds).some(Boolean)
-    const isSoloed = soloedTrackIds[key]
-
-    if (isMuted || (hasSolo && !isSoloed)) {
-      audio.volume = 0
-      console.log(`[Audio Playback] SILENCED segment ${seg.id} on track ${key} (Muted: ${isMuted}, Soloed: ${isSoloed})`)
-    } else {
-      audio.volume = volume
-      console.log(`[Audio Playback] PLAYING segment ${seg.id} on track ${key} at volume ${volume}`)
-    }
-
-    audio.play().catch((e) => console.warn('Audio playback failed', e))
+    previewClip(seg, mutedTrackIds[key] || (hasSolo && !soloedTrackIds[key]) ? 0 : volume)
   }
 
   const handlePointerDown = (

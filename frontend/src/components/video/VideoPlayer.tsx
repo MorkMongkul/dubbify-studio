@@ -5,6 +5,7 @@ import type { Segment, Speaker, Overlay } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { formatTime, cn, originalVoicesReplaced } from '@/lib/utils'
 import { OverlayCanvas } from './OverlayCanvas'
+import { useVoicePlayback } from '@/hooks/useVoicePlayback'
 
 interface VideoPlayerProps {
   videoUrl?: string
@@ -38,10 +39,6 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
   const [videoPixelWidth, setVideoPixelWidth] = useState(0)
   const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
-  // TTS segment playback — one dubbed clip plays at a time in sync with the video
-  const ttsAudioRef      = useRef<HTMLAudioElement | null>(null)
-  const ttsActiveSegId   = useRef<string | null>(null)
-
   // Per-field selectors — this component legitimately re-renders on playhead
   // ticks (progress bar/time display), but it must not also re-render on every
   // unrelated store change (selection, zoom, panel sizes, …).
@@ -64,11 +61,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
   const setPlaybackRate = useEditorStore((s) => s.setPlaybackRate)
 
   // Stable refs so event callbacks always see the latest values
-  const isPlayingRef    = useRef(isPlaying)
-  const volumeRef       = useRef(volume)
   const mutedRef        = useRef(mutedTrackIds)
-  useEffect(() => { isPlayingRef.current    = isPlaying },    [isPlaying])
-  useEffect(() => { volumeRef.current       = volume },       [volume])
   useEffect(() => { mutedRef.current        = mutedTrackIds }, [mutedTrackIds])
 
   const segmentsRef = useRef(segments)
@@ -76,63 +69,8 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     segmentsRef.current = segments
   }, [segments])
 
-  // ── TTS helpers ───────────────────────────────────────────────────────
-  const stopTTS = useCallback(() => {
-    if (ttsAudioRef.current) {
-      ttsAudioRef.current.pause()
-      ttsAudioRef.current.src = ''
-      ttsAudioRef.current = null
-    }
-    ttsActiveSegId.current = null
-  }, [])
-
-  const startTTS = useCallback((seg: Segment, videoTime: number) => {
-    stopTTS()
-    const path = seg.tts_audio_url
-    if (!path) return
-    // Cache-bust: the backend overwrites the same file path on every
-    // re-synthesis, so a version query param is required to avoid the
-    // browser serving a stale cached response for a segment's audio.
-    const versioned = `${path}?v=${seg.tts_duration_secs ?? 0}`
-    const url  = versioned.startsWith('/') ? versioned : `/${versioned}`
-    const audio = new Audio(url)
-    const offset = Math.max(0, videoTime - seg.start_time)
-    if (offset > 0.05) audio.currentTime = offset
-
-    const videoRate = videoRef.current?.playbackRate ?? 1
-    let rate = videoRate
-
-    // If the user explicitly set a speed for this clip (Voice Speed slider,
-    // baked into the file via ffmpeg atempo on the backend), respect it as-is
-    // — don't let the auto-fit logic below silently re-speed it to chase the
-    // segment window, which would undo the user's own choice.
-    const hasManualSpeed = typeof seg.voice_speed === 'number' && Math.abs(seg.voice_speed - 1.0) > 0.001
-
-    if (!hasManualSpeed) {
-      // Auto-fit: speed up the clip so it finishes within the segment window.
-      // This keeps dubbed voices in sync with lip movements regardless of how
-      // long Gemini took to say the line — but only applies when the user
-      // hasn't already made an explicit speed choice for this segment.
-      const segDuration = Math.max(0.1, seg.end_time - seg.start_time)
-      const ttsDuration = seg.tts_duration_secs ?? 0
-      if (ttsDuration > 0) {
-        // fitRate > 1  → clip is longer than the slot, speed it up
-        // fitRate < 1  → clip is shorter, let it play naturally (don't slow down)
-        const fitRate = ttsDuration / segDuration
-        if (fitRate > 1.05) {
-          rate = Math.min(3.5, fitRate * videoRate)
-        }
-      }
-    }
-    audio.playbackRate = rate
-
-    const key   = seg.speaker_id ?? '__none__'
-    const muted = mutedRef.current[key]
-    audio.volume = muted ? 0 : volumeRef.current
-    if (isPlayingRef.current) audio.play().catch(() => {})
-    ttsAudioRef.current    = audio
-    ttsActiveSegId.current = seg.id
-  }, [stopTTS])
+  // The dubbed voices: every clip under the playhead plays its window, as in the export
+  useVoicePlayback({ videoRef, segmentsRef, isPlaying, playbackRate, volume, mutedRef, videoUrl })
 
   // Navigate to active segment start
   const goToSegmentStart = useCallback(() => {
@@ -151,7 +89,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     }
   }, [activeSegmentId, setCurrentTime])
 
-  // Sync video → store + drive TTS playback
+  // Sync video → store (the voices follow it in useVoicePlayback)
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
@@ -161,22 +99,6 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       setCurrentTime(t)
       const active = segmentsRef.current.find((s) => t >= s.start_time && t < s.end_time)
       setActiveSegment(active?.id ?? null)
-
-      if (active?.tts_audio_url) {
-        if (active.id !== ttsActiveSegId.current) {
-          // Entered a new dubbed segment — start its TTS audio
-          startTTS(active, t)
-        }
-        // Keep TTS mute/volume in sync with the current store state
-        if (ttsAudioRef.current) {
-          const key   = active.speaker_id ?? '__none__'
-          const muted = mutedRef.current[key]
-          ttsAudioRef.current.volume = muted ? 0 : volumeRef.current
-        }
-      } else {
-        // Left a dubbed segment (or gap between segments)
-        if (ttsActiveSegId.current) stopTTS()
-      }
     }
 
     const onLoadedMetadata = () => {
@@ -186,20 +108,9 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
         setVideoPixelWidth(video.videoWidth)
       }
     }
-    const onPlay  = () => { setPlaying(true);  ttsAudioRef.current?.play().catch(() => {}) }
-    const onPause = () => { setPlaying(false); ttsAudioRef.current?.pause() }
-    const onEnded = () => { setPlaying(false); setCurrentTime(0); stopTTS() }
-    const onSeeked = () => {
-      // After seeking, resync TTS to the new position
-      const t      = video.currentTime
-      const active = segmentsRef.current.find((s) => t >= s.start_time && t < s.end_time)
-      if (active?.tts_audio_url) {
-        startTTS(active, t)
-        if (!isPlayingRef.current) ttsAudioRef.current?.pause()
-      } else {
-        stopTTS()
-      }
-    }
+    const onPlay  = () => setPlaying(true)
+    const onPause = () => setPlaying(false)
+    const onEnded = () => { setPlaying(false); setCurrentTime(0) }
 
     if (video.duration) setDuration(video.duration)
 
@@ -208,17 +119,14 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     video.addEventListener('play',          onPlay)
     video.addEventListener('pause',         onPause)
     video.addEventListener('ended',         onEnded)
-    video.addEventListener('seeked',        onSeeked)
     return () => {
       video.removeEventListener('timeupdate',    onTimeUpdate)
       video.removeEventListener('loadedmetadata',onLoadedMetadata)
       video.removeEventListener('play',          onPlay)
       video.removeEventListener('pause',         onPause)
       video.removeEventListener('ended',         onEnded)
-      video.removeEventListener('seeked',        onSeeked)
-      stopTTS()
     }
-  }, [videoUrl, setCurrentTime, setDuration, setPlaying, setActiveSegment, startTTS, stopTTS])
+  }, [videoUrl, setCurrentTime, setDuration, setPlaying, setActiveSegment])
 
   // Store → video (play/pause)
   useEffect(() => {
@@ -264,7 +172,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     'synthesizing', 'mixing', 'completed',
   ].includes(jobStatus)
 
-  // Volume & Mute — BGM, Vocals, and active TTS clip
+  // Volume & Mute — BGM and Vocals (the voices: useVoicePlayback)
   useEffect(() => {
     const video = videoRef.current
     const bgm = bgmAudioRef.current
@@ -279,12 +187,6 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       if (bgm) bgm.volume = 0
       if (vocals) vocals.volume = 0
     }
-    // Keep active TTS clip in sync with volume/mute changes
-    if (ttsAudioRef.current && ttsActiveSegId.current) {
-      const seg = segmentsRef.current.find(s => s.id === ttsActiveSegId.current)
-      const key = seg?.speaker_id ?? '__none__'
-      ttsAudioRef.current.volume = mutedTrackIds[key] ? 0 : volume
-    }
   }, [volume, mutedTrackIds, jobStatus, hasStemAudio])
 
   // Playback rate
@@ -292,7 +194,6 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     if (videoRef.current) videoRef.current.playbackRate = playbackRate
     if (bgmAudioRef.current) bgmAudioRef.current.playbackRate = playbackRate
     if (vocalsAudioRef.current) vocalsAudioRef.current.playbackRate = playbackRate
-    if (ttsAudioRef.current) ttsAudioRef.current.playbackRate = playbackRate
   }, [playbackRate, jobStatus])
 
   // Synchronize separate audio tracks (BGM & Vocals) with the main video tag
