@@ -49,6 +49,7 @@ import { useDoneFlash } from '@/hooks/useDoneFlash'
 import { LANGUAGE_OPTIONS } from '@/types'
 import { isJobRunning, cn } from '@/lib/utils'
 import { mergeOverlay } from '@/lib/segmentOverlay'
+import { redoWithToast, undoWithToast } from '@/lib/undoActions'
 import { UPLOADING_TITLE, jobProgress, uploadPercent } from '@/lib/jobProgress'
 import { chooseVideoSavePath, isDesktop } from '@/lib/desktop'
 import { useHistoryStore } from '@/store/historyStore'
@@ -145,17 +146,9 @@ export default function EditorPage() {
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'AUDIO' || (e.target as HTMLElement)?.isContentEditable) return
       e.preventDefault()
-      const { past, future, undo, redo } = useHistoryStore.getState()
       if (e.repeat) return   // holding the key down must not fire a burst of steps
-      const failed = (verb: string, label: string) => (err: unknown) =>
-        toast.error(`Couldn't ${verb} "${label}" — ${(err as Error)?.message || 'request failed'}. It was removed from history.`)
-      if (key === 'y' || (key === 'z' && e.shiftKey)) {
-        const label = future[future.length - 1]?.label
-        if (label) redo().then(() => toast.message(`Redid: ${label}`), failed('redo', label))
-      } else {
-        const label = past[past.length - 1]?.label
-        if (label) undo().then(() => toast.message(`Undid: ${label}`), failed('undo', label))
-      }
+      if (key === 'y' || (key === 'z' && e.shiftKey)) redoWithToast()
+      else undoWithToast()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -797,7 +790,7 @@ export default function EditorPage() {
                   // No fixed aspect-ratio wrapper here: VideoPlayer sizes itself
                   // to the clip's real dimensions (landscape or portrait/Reel),
                   // bounded by the available pane space via max-w/max-h.
-                  <VideoPlayer videoUrl={videoUrl} segments={displaySegs} speakers={spks} className="max-w-full max-h-full" jobId={jobId} projectId={projectId} jobStatus={job.status} overlays={jobOverlays} bgmVolumeDb={job.bgm_volume_db} stemsVersion={job.stems_version} />
+                  <VideoPlayer videoUrl={videoUrl} segments={displaySegs} speakers={spks} className="max-w-full max-h-full" jobId={jobId} projectId={projectId} jobStatus={job.status} overlays={jobOverlays} bgmVolumeDb={job.bgm_volume_db} stemsVersion={job.stems_version} frameRate={job.frame_rate} />
                 ) : jobId && job && !videoUrl ? (
                   <div className="flex flex-col items-center gap-4 text-center max-w-xs">
                     <Loader2 size={20} className="animate-spin text-brand-300" />

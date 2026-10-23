@@ -200,6 +200,30 @@ async def extract_audio(video_path: str, output_dir: str) -> str:
     return str(audio_path)
 
 
+def frame_rate_of(probe: dict) -> float | None:
+    """The video stream's frame rate from ffprobe's JSON (one ← / → step in the editor), or None."""
+    video = next((st for st in probe.get("streams", []) if st.get("codec_type") == "video"), None)
+    if not video:
+        return None
+    for key in ("r_frame_rate", "avg_frame_rate"):
+        try:
+            num, _, den = str(video.get(key) or "").partition("/")
+            rate = float(num) / float(den or 1)
+        except (ValueError, ZeroDivisionError):
+            continue
+        if 1 <= rate <= 240:
+            return round(rate, 3)
+    return None
+
+
+async def video_frame_rate(video_path: str) -> float | None:
+    """The video's frame rate, or None when it can't be read."""
+    try:
+        return frame_rate_of(await probe_video(video_path))
+    except Exception:  # noqa: BLE001 — a missing frame rate just means 1/30 s steps
+        return None
+
+
 async def get_video_duration(video_path: str) -> float:
     """
     Get video duration in seconds using ffprobe.

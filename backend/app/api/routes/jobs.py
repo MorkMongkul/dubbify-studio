@@ -27,7 +27,7 @@ from app.services.pipeline import (
 from app.services.pipeline_common import vocals_path_for
 from app.core.paths import resolve_existing
 from app.services.subtitle_pipeline import run_subtitle_pipeline, run_subtitle_analysis_pipeline
-from app.services.audio_extractor import extract_subtitle, list_subtitle_tracks
+from app.services.audio_extractor import extract_subtitle, frame_rate_of, list_subtitle_tracks, probe_video
 from app.api.routes.overlays import apply_default_overlay_template
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
@@ -233,7 +233,21 @@ async def get_job(job_id: str, db: AsyncSession = Depends(get_db, scope="functio
     job = result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    if job.frame_rate is None and job.id not in _frame_rate_tried:
+        # Episodes from before 0.3.0: read it once (this route is polled)
+        _frame_rate_tried.add(job.id)
+        video = resolve_existing(job.video_path)
+        if video:
+            try:
+                job.frame_rate = frame_rate_of(await probe_video(str(video)))
+                await db.commit()
+            except Exception as e:  # noqa: BLE001 — the editor steps 1/30 s without it
+                logger.warning(f"Couldn't read the frame rate of job {job_id[:8]}: {e}")
     return job
+
+
+# Jobs whose missing frame rate was already looked for since the app started
+_frame_rate_tried: set[str] = set()
 
 
 @router.get("/{job_id}/subtitle-tracks")

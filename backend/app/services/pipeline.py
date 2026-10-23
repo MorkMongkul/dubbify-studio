@@ -20,7 +20,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.models.models import Job, Project, Segment, Speaker, JobStatus
-from app.services.audio_extractor import extract_audio, get_video_duration
+from app.services.audio_extractor import extract_audio, get_video_duration, video_frame_rate
 from app.services.source_separator import render_bgm_volume, separate_vocals_bgm
 from app.services.asr import VOICES, labels_for_spans, transcribe_audio
 from app.services.translator import translate_batch_with_report
@@ -70,6 +70,7 @@ async def run_pipeline(job_id: str) -> None:
             except Exception as e:
                 logger.warning(f"Could not get video duration: {e}")
                 job.duration_secs = 0.0
+            job.frame_rate = await video_frame_rate(job.video_path)
 
             audio_path = await extract_audio(job.video_path, output_dir=str(job_dir))
             job.audio_path = audio_path

@@ -4,22 +4,59 @@ import { useQueryClient } from '@tanstack/react-query'
 import WaveSurfer from 'wavesurfer.js'
 import {
   ZoomIn, ZoomOut, Maximize2, Loader2, Scissors, X, RefreshCw,
-  MousePointer2, SplitSquareHorizontal, Copy, Trash2, Magnet, Wand2, Layers,
+  MousePointer2, SplitSquareHorizontal, Trash2, Magnet, Wand2, Layers, ChevronDown, Undo2, Redo2,
+  ArrowLeftToLine, ArrowRightToLine, Gauge, AudioLines, Music, Volume2, VolumeX, type LucideIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Segment, Speaker, Job, LayoutChange } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
-import { useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useSetBgmVolume, useLayoutSegments, useSplitSegment, useDuplicateSegment } from '@/hooks/useApi'
+import { useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useSetBgmVolume, useLayoutSegments, useSplitSegment, useDuplicateSegment, putSegments } from '@/hooks/useApi'
 import { segments as segmentsApi } from '@/api/client'
 import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, cn, isJobRunning, originalVoicesReplaced } from '@/lib/utils'
-import { recordLayoutChange, recordSegmentDelete, recordSegmentsDelete, recordSegmentDuplicate, recordSegmentSplit } from '@/lib/historyHelpers'
+import { recordLayoutChange, recordSegmentChange, recordSegmentDelete, recordSegmentsChange, recordSegmentsDelete, recordSegmentDuplicate, recordSegmentSplit } from '@/lib/historyHelpers'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { InteractiveSegment, LANE_HEIGHT } from './TimelineClip'
-import { trackRows } from '@/lib/tracks'
-import { overrunSpans } from '@/lib/clipRules'
+import { clipAtPlayhead, trackRows } from '@/lib/tracks'
+import { effectiveSpeed, isVoiced, overrunSpans, trimEnd, trimStart } from '@/lib/clipRules'
+import { isTypingTarget } from '@/lib/transport'
+import { redoWithToast, undoWithToast } from '@/lib/undoActions'
+import { useHistoryStore } from '@/store/historyStore'
+import { ContextMenu, type MenuItem } from '@/components/ui/ContextMenu'
 
 const PX_PER_SEC = 100 // base pixels per second at zoom=1
 const STEM_HEIGHT = 64  // BGM / Vocals stem rows
+// The speeds the right-click menu offers
+const SPEEDS = [0.8, 0.9, 1.0, 1.1, 1.2, 1.25, 1.5]
+
+// A toolbar button: an icon, its name and shortcut in the tooltip
+function ToolButton({ label, icon: Icon, onClick, disabled, pressed, danger, busy }: {
+  label: string
+  icon: LucideIcon
+  onClick: () => void
+  disabled?: boolean
+  pressed?: boolean
+  danger?: boolean
+  busy?: boolean
+}) {
+  return (
+    <Tooltip content={label} side="bottom">
+      <button
+        onClick={onClick}
+        disabled={disabled}
+        aria-label={label}
+        aria-pressed={pressed}
+        className={cn(
+          'h-7 w-7 rounded-md flex items-center justify-center transition-colors disabled:opacity-25 disabled:hover:bg-transparent',
+          pressed ? 'bg-brand/20 text-brand-200'
+            : danger ? 'text-white/50 hover:text-red-400 hover:bg-red-500/15'
+            : 'text-white/50 hover:text-white hover:bg-white/8',
+        )}
+      >
+        {busy ? <Loader2 size={14} className="animate-spin" /> : <Icon size={14} />}
+      </button>
+    </Tooltip>
+  )
+}
 const MIN_CLIP_SECS = 0.1
 
 // Format playhead time down to fractions of a second: e.g., 0:01.23
@@ -131,13 +168,29 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     })
   }, [jobId, job?.bgm_volume_db, setBgmVolume])
 
+  // Auto-fit: one undo step puts every voice back at the speed (and on the
+  // track) it had — the server re-renders them from their raw voices.
   const handleAutofit = () => {
     if (!jobId) return
+    const before = new Map(segmentsRef.current.map((s) => [s.id, s]))
     autofitSegments.mutate(jobId, {
-      onSuccess: ({ fitted, left }) => {
+      onSuccess: async ({ fitted, left }) => {
         if (fitted) toast.success(`Sped up ${fitted} voice${fitted === 1 ? '' : 's'}`)
         if (left) toast.warning(`${left} voice${left === 1 ? '' : 's'} still run${left === 1 ? 's' : ''} into the next line`)
         if (!fitted && !left) toast.info('No voice runs into the next line')
+        if (!fitted) return
+        const after = await segmentsApi.listByJob(jobId)
+        const speedOf = (s: Segment) => Math.round(effectiveSpeed(s) * 1000) / 1000
+        const changes = after.flatMap((s) => {
+          const was = before.get(s.id)
+          if (!was || (speedOf(was) === speedOf(s) && (was.lane_index ?? 0) === (s.lane_index ?? 0))) return []
+          return [{
+            id: s.id,
+            before: { voice_speed: speedOf(was), lane_index: was.lane_index ?? 0 },
+            after: { voice_speed: speedOf(s), lane_index: s.lane_index ?? 0 },
+          }]
+        })
+        if (changes.length) recordSegmentsChange(qc, jobId, changes, 'Auto-fit')
       },
       onError: (err: unknown) => {
         const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
@@ -146,13 +199,21 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     })
   }
 
+  // Tidy: one undo step puts every clip back on its track
   const handleTidyLanes = () => {
     if (!jobId) return
+    const before = new Map(segmentsRef.current.map((s) => [s.id, s.lane_index ?? 0]))
     tidyLanes.mutate(jobId, {
-      onSuccess: ({ changed, lanes }) => {
+      onSuccess: async ({ changed, lanes }) => {
         toast.success(changed === 0
           ? 'Tracks already tidy'
-          : `Repacked ${changed} clip(s) into ${lanes} lane(s)`)
+          : `Repacked ${changed} clip(s) into ${lanes} track(s)`)
+        if (!changed) return
+        const after = await segmentsApi.listByJob(jobId)
+        recordLayoutChange(qc, jobId, after
+          .filter((s) => before.has(s.id) && before.get(s.id) !== (s.lane_index ?? 0))
+          .map((s) => ({ id: s.id, before: { id: s.id, lane_index: before.get(s.id)! }, after: { id: s.id, lane_index: s.lane_index ?? 0 } })),
+          'Tidy tracks')
       },
       onError: () => toast.error('Tidy failed'),
     })
@@ -189,8 +250,8 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Delete' && e.key !== 'Backspace') return
-      const tag = (e.target as HTMLElement).tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'AUDIO' || (e.target as HTMLElement).isContentEditable) return
+      if (isTypingTarget(e.target) || (e.target as HTMLElement)?.tagName === 'AUDIO') return
+      if (useEditorStore.getState().settingsOpen) return
       if (deleteSelection()) e.preventDefault()
     }
     window.addEventListener('keydown', onKey)
@@ -327,11 +388,106 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     })
   }, [jobId, activeSegmentId, qc, duplicateSegment, setActiveSegment])
 
+  // ── Trim at the playhead (Q / W, the toolbar, the right-click menu) ────
+  // Cuts sound from the voice's start / end like dragging the edge; a clip
+  // with no voice follows its text and has nothing to cut.
+  const trimAt = useCallback((seg: Segment, t: number, side: 'start' | 'end') => {
+    if (!isVoiced(seg)) {
+      toast.info('Make a voice first — this line follows its text')
+      return
+    }
+    if (side === 'start') {
+      const r = trimStart(seg, t)
+      if (Math.abs(r.start_time - seg.start_time) > 1e-6) {
+        handleCommitLayout([{ id: seg.id, start_time: r.start_time, voice_offset: r.voice_offset }], 'Trim start')
+      }
+    } else {
+      const r = trimEnd(seg, t)
+      if (Math.abs(r.end_time - seg.end_time) > 1e-6) handleCommitLayout([{ id: seg.id, ...r }], 'Trim end')
+    }
+  }, [handleCommitLayout])
+
+  const handleTrimAtPlayhead = useCallback((side: 'start' | 'end') => {
+    const t = useEditorStore.getState().currentTime
+    const placed = clipAtPlayhead(segmentsRef.current, t, useEditorStore.getState().activeSegmentId)
+    const seg = placed && segmentsRef.current.find((s) => s.id === placed.id)
+    if (!seg) {
+      toast.error('Move the playhead over a clip to trim it')
+      return
+    }
+    trimAt(seg, t, side)
+  }, [trimAt])
+
+  // A speed for the clip's voice (the right-click menu): its length follows
+  const handleSetSpeed = useCallback(async (seg: Segment, speed: number) => {
+    if (!jobId) return
+    const was = Math.round(effectiveSpeed(seg) * 1000) / 1000
+    if (Math.abs(was - speed) < 0.0005) return
+    try {
+      const updated = await segmentsApi.update(seg.id, { voice_speed: speed })
+      putSegments(qc, jobId, [updated])
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      recordSegmentChange(qc, jobId, seg.id,
+        { voice_speed: was, lane_index: seg.lane_index ?? 0 },
+        { voice_speed: speed, lane_index: updated.lane_index ?? 0 },
+        'Change voice speed')
+    } catch {
+      toast.error('Failed to update voice speed')
+    }
+  }, [jobId, qc])
+
+  // ── Right-click on a clip ───────────────────────────────────────────────
+  const [clipMenu, setClipMenu] = useState<{ seg: Segment; x: number; y: number; at: number } | null>(null)
+  const closeClipMenu = useCallback(() => setClipMenu(null), [])
+  const handleClipContextMenu = useCallback((seg: Segment, x: number, y: number) => {
+    // Select it, as a left click would
+    setActiveSegment(seg.id)
+    setInspectorMode('audio_clip_settings')
+    setFocusedTimelineItemId(seg.id)
+    // The playhead when it's over the clip, else where the clip was clicked
+    const t = useEditorStore.getState().currentTime
+    const content = scrollRef.current
+    const clicked = content
+      ? pixelsToTime(x - content.getBoundingClientRect().left + content.scrollLeft - speakerPanelWidth, zoom, PX_PER_SEC)
+      : t
+    const at = t > seg.start_time && t < seg.end_time ? t : clicked
+    setClipMenu({ seg, x, y, at })
+  }, [setActiveSegment, setInspectorMode, setFocusedTimelineItemId, speakerPanelWidth, zoom])
+
+  const clipMenuItems = (menu: { seg: Segment; at: number }): MenuItem[] => {
+    const { seg, at } = menu
+    const voiced = isVoiced(seg)
+    const current = Math.round(effectiveSpeed(seg) * 100) / 100
+    return [
+      { icon: SplitSquareHorizontal, label: 'Split', shortcut: 'S', onSelect: () => handleSplit(seg, at) },
+      { icon: ArrowLeftToLine, label: 'Trim start', shortcut: 'Q', disabled: !voiced, onSelect: () => trimAt(seg, at, 'start') },
+      { icon: ArrowRightToLine, label: 'Trim end', shortcut: 'W', disabled: !voiced, onSelect: () => trimAt(seg, at, 'end') },
+      'separator',
+      { icon: AudioLines, label: 'New voice', disabled: !jobId || !(seg.khmer_text ?? '').trim(), onSelect: () => handleSegmentRegenerate(seg.id) },
+      {
+        icon: Gauge, label: 'Speed', disabled: !voiced,
+        items: SPEEDS.map((v) => ({
+          icon: Gauge, label: `${v}×`, checked: Math.abs(current - v) < 0.005, onSelect: () => handleSetSpeed(seg, v),
+        })),
+      },
+      'separator',
+      { icon: Trash2, label: 'Delete', shortcut: '⌫', onSelect: () => handleSegmentDelete(seg.id) },
+    ]
+  }
+
+  // The tool picker under the select tool's button
+  const [toolMenu, setToolMenu] = useState<{ x: number; y: number } | null>(null)
+  const closeToolMenu = useCallback(() => setToolMenu(null), [])
+
+  // Undo / redo buttons follow the history
+  const canUndo = useHistoryStore((s) => s.past.length > 0)
+  const canRedo = useHistoryStore((s) => s.future.length > 0)
+
   // ── Tool shortcuts (V select · C blade · S split · ⌘D duplicate) ────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'AUDIO' || (e.target as HTMLElement)?.isContentEditable) return
+      if (isTypingTarget(e.target) || (e.target as HTMLElement)?.tagName === 'AUDIO') return
+      if (useEditorStore.getState().settingsOpen) return
       const key = e.key.toLowerCase()
       if ((e.metaKey || e.ctrlKey) && key === 'd') { e.preventDefault(); handleDuplicate(); return }
       // ⌘B / Ctrl+B — the split shortcut CapCut users already have in muscle memory
@@ -340,10 +496,12 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
       if (key === 'v') setActiveTool('select')
       else if (key === 'c') setActiveTool('blade')
       else if (key === 's') { e.preventDefault(); handleSplitAtPlayhead() }
+      else if (key === 'q') { e.preventDefault(); handleTrimAtPlayhead('start') }
+      else if (key === 'w') { e.preventDefault(); handleTrimAtPlayhead('end') }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [setActiveTool, handleSplitAtPlayhead, handleDuplicate])
+  }, [setActiveTool, handleSplitAtPlayhead, handleDuplicate, handleTrimAtPlayhead])
 
   // ── Imperative playhead ────────────────────────────────────────────────
   // currentTime changes 4×/s during playback and 60+×/s while scrubbing —
@@ -606,113 +764,54 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
         '--speaker-width': `${speakerPanelWidth}px`,
       } as React.CSSProperties}
     >
-      {/* Toolbar */}
+      {/* Toolbar — icons only; each tool's name and shortcut in its tooltip */}
       <div className="flex items-center justify-between gap-3 px-3 border-b border-white/[0.06] shrink-0 bg-ink-900 select-none w-full relative h-11">
         {/* Left: editing tools */}
-        <div className="flex items-center gap-1.5 z-10">
-          {/* Tool mode — segmented control */}
-          <div className="flex items-center gap-0.5 rounded-lg bg-ink-950/60 border border-white/[0.07] p-0.5">
-            <Tooltip content="Select — drag clips · drag empty space to box-select (V)" side="bottom">
-              <button
-                onClick={() => setActiveTool('select')}
-                aria-pressed={activeTool === 'select'}
-                className={cn(
-                  'h-7 w-8 rounded-md flex items-center justify-center transition-colors',
-                  activeTool === 'select' ? 'bg-brand/25 text-brand-200' : 'text-white/40 hover:text-white hover:bg-white/5'
-                )}
-              >
-                <MousePointer2 size={14} />
-              </button>
-            </Tooltip>
-            <Tooltip content="Blade tool — click a clip to cut it (C)" side="bottom">
-              <button
-                onClick={() => setActiveTool('blade')}
-                aria-pressed={activeTool === 'blade'}
-                className={cn(
-                  'h-7 w-8 rounded-md flex items-center justify-center transition-colors',
-                  activeTool === 'blade' ? 'bg-brand/25 text-brand-200' : 'text-white/40 hover:text-white hover:bg-white/5'
-                )}
-              >
-                <Scissors size={14} />
-              </button>
-            </Tooltip>
-          </div>
-
-          <div className="w-px h-5 bg-white/[0.08] mx-0.5" />
-
-          {/* Clip actions — operate on the selected clip */}
-          <Tooltip content="Split at playhead (S or ⌘B)" side="bottom">
+        <div className="flex items-center gap-1 z-10">
+          <Tooltip content={activeTool === 'select' ? 'Select (V)' : 'Blade (C)'} side="bottom">
             <button
-              onClick={handleSplitAtPlayhead}
-              className="h-7 px-2 rounded-md flex items-center gap-1.5 text-white/50 hover:text-white hover:bg-white/8 transition-colors text-[11.5px] font-medium"
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect()
+                setToolMenu({ x: r.left, y: r.bottom + 4 })
+              }}
+              aria-label="Tool"
+              className="h-7 pl-2 pr-1 rounded-md flex items-center gap-0.5 bg-brand/20 text-brand-200 hover:bg-brand/30 transition-colors"
             >
-              <SplitSquareHorizontal size={14} /> Split
+              {activeTool === 'select' ? <MousePointer2 size={14} /> : <Scissors size={14} />}
+              <ChevronDown size={11} className="opacity-70" />
             </button>
           </Tooltip>
-          <Tooltip content="Duplicate clip (⌘D)" side="bottom">
-            <button
-              onClick={handleDuplicate}
-              disabled={!activeSegmentId}
-              className="h-7 w-7 rounded-md flex items-center justify-center text-white/50 hover:text-white hover:bg-white/8 disabled:opacity-25 disabled:hover:bg-transparent transition-colors"
-            >
-              <Copy size={13} />
-            </button>
-          </Tooltip>
-          <Tooltip content="Delete selection (Del)" side="bottom">
-            <button
-              onClick={deleteSelection}
-              disabled={!activeSegmentId && selectedSegmentIds.length === 0}
-              className="h-7 w-7 rounded-md flex items-center justify-center text-white/50 hover:text-red-400 hover:bg-red-500/15 disabled:opacity-25 disabled:hover:bg-transparent disabled:hover:text-white/50 transition-colors"
-            >
-              <Trash2 size={13} />
-            </button>
-          </Tooltip>
+          {toolMenu && (
+            <ContextMenu x={toolMenu.x} y={toolMenu.y} onClose={closeToolMenu} items={[
+              { icon: MousePointer2, label: 'Select', shortcut: 'V', checked: activeTool === 'select', onSelect: () => setActiveTool('select') },
+              { icon: Scissors, label: 'Blade', shortcut: 'C', checked: activeTool === 'blade', onSelect: () => setActiveTool('blade') },
+            ]} />
+          )}
+          <ToolButton label="Undo (⌘Z)" icon={Undo2} onClick={() => { undoWithToast() }} disabled={!canUndo} />
+          <ToolButton label="Redo (⇧⌘Z)" icon={Redo2} onClick={() => { redoWithToast() }} disabled={!canRedo} />
 
-          <div className="w-px h-5 bg-white/[0.08] mx-0.5" />
+          <div className="w-px h-5 bg-white/[0.08] mx-1" />
 
-          <Tooltip content={snapEnabled ? 'Snapping on — edges stick to clips & playhead' : 'Snapping off'} side="bottom">
-            <button
-              onClick={toggleSnap}
-              aria-pressed={snapEnabled}
-              className={cn(
-                'h-7 w-7 rounded-md flex items-center justify-center transition-colors',
-                snapEnabled ? 'bg-brand/20 text-brand-200' : 'text-white/40 hover:text-white hover:bg-white/8'
-              )}
-            >
-              <Magnet size={13} />
-            </button>
-          </Tooltip>
+          <ToolButton label="Split (S)" icon={SplitSquareHorizontal} onClick={handleSplitAtPlayhead} />
+          <ToolButton label="Trim start (Q)" icon={ArrowLeftToLine} onClick={() => handleTrimAtPlayhead('start')} />
+          <ToolButton label="Trim end (W)" icon={ArrowRightToLine} onClick={() => handleTrimAtPlayhead('end')} />
+          <ToolButton label="Delete (⌫)" icon={Trash2} onClick={deleteSelection} danger
+            disabled={!activeSegmentId && selectedSegmentIds.length === 0} />
 
-          <div className="w-px h-5 bg-white/[0.08] mx-0.5" />
+          <div className="w-px h-5 bg-white/[0.08] mx-1" />
 
-          <Tooltip content="Auto-fit voices — speed every clip so its audio exactly fills its slot (long lines faster, short lines slower)" side="bottom">
-            <button
-              onClick={handleAutofit}
-              disabled={!jobId || autofitSegments.isPending}
-              className="h-7 px-2 rounded-md flex items-center gap-1.5 text-white/50 hover:text-white hover:bg-white/8 disabled:opacity-25 transition-colors text-[11.5px] font-medium"
-            >
-              {autofitSegments.isPending ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
-              Auto-fit
-            </button>
-          </Tooltip>
-          <Tooltip content="Tidy tracks — pack scattered clips back into the fewest lanes (only true overlaps stay on separate lanes)" side="bottom">
-            <button
-              onClick={handleTidyLanes}
-              disabled={!jobId || tidyLanes.isPending}
-              className="h-7 px-2 rounded-md flex items-center gap-1.5 text-white/50 hover:text-white hover:bg-white/8 disabled:opacity-25 transition-colors text-[11.5px] font-medium"
-            >
-              {tidyLanes.isPending ? <Loader2 size={13} className="animate-spin" /> : <Layers size={13} />}
-              Tidy
-            </button>
-          </Tooltip>
+          <ToolButton label="Auto-fit: speed up voices that run into the next line" icon={Wand2}
+            busy={autofitSegments.isPending} onClick={handleAutofit} disabled={!jobId || autofitSegments.isPending} />
+          <ToolButton label="Tidy tracks" icon={Layers}
+            busy={tidyLanes.isPending} onClick={handleTidyLanes} disabled={!jobId || tidyLanes.isPending} />
 
           {/* Multi-selection count — marquee/Shift+click feed the same
               selection the transcript's batch toolbar acts on */}
           {selectedSegmentIds.length > 0 && (
             <>
-              <div className="w-px h-5 bg-white/[0.08] mx-0.5" />
-              <span className="text-[10.5px] font-semibold text-brand-300 tabular-nums select-none">
-                {selectedSegmentIds.length} selected
+              <div className="w-px h-5 bg-white/[0.08] mx-1" />
+              <span className="text-[11px] font-semibold text-brand-300 tabular-nums select-none" title="Selected">
+                {selectedSegmentIds.length}
               </span>
               <Tooltip content="Clear selection" side="bottom">
                 <button
@@ -727,13 +826,13 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
           )}
         </div>
 
-        {/* Center: label (hidden on narrow toolbars so tools never collide) */}
-        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 hidden 2xl:flex items-center gap-1 pointer-events-none">
-          <span className="text-[10px] font-semibold uppercase tracking-widest text-ink-600 select-none">Timeline</span>
-        </div>
+        {/* Right: snapping, zoom */}
+        <div className="flex items-center justify-end gap-1 z-10">
+          <ToolButton label="Snapping" icon={Magnet} onClick={toggleSnap} pressed={snapEnabled} />
+          <ToolButton label="Zoom to fit" icon={Maximize2} onClick={handleZoomToFit} />
 
-        {/* Right: Zoom Controls */}
-        <div className="flex items-center justify-end gap-1.5 z-10">
+          <div className="w-px h-5 bg-white/[0.08] mx-0.5" />
+
           <Tooltip content="Zoom out" side="bottom">
             <button
               className="h-7 w-7 rounded-md flex items-center justify-center text-text-muted hover:text-text-primary hover:bg-white/8 transition-colors"
@@ -796,16 +895,6 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
             </button>
           </Tooltip>
 
-          <div className="w-px h-5 bg-white/[0.08] mx-0.5" />
-
-          <Tooltip content="Zoom to fit" side="bottom">
-            <button
-              className="h-7 w-7 rounded-md flex items-center justify-center text-text-muted hover:text-text-primary hover:bg-white/8 transition-colors"
-              onClick={handleZoomToFit}
-            >
-              <Maximize2 size={13} />
-            </button>
-          </Tooltip>
         </div>
       </div>
 
@@ -890,56 +979,46 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
               className="relative border-b border-timeline-grid bg-ink-900/30"
               style={{ height: STEM_HEIGHT }}
             >
-              {/* Track label (sticky left) */}
+              {/* Music & effects header: its icon, mute, volume */}
               <div
-                className="sticky left-0 z-10 h-full flex flex-col justify-center gap-1 px-2.5 py-1.5 shrink-0 bg-ink-900/95 backdrop-blur-sm border-r border-white/[0.06]"
+                className="sticky left-0 z-10 h-full flex items-center gap-1.5 px-2.5 shrink-0 bg-ink-900/95 backdrop-blur-sm border-r border-white/[0.06]"
                 style={{ float: 'left', width: 'var(--speaker-width)' }}
               >
-                <div className="flex items-center gap-2">
-                  <div
-                    className="h-2.5 w-2.5 rounded-full shrink-0 bg-sky-500"
-                  />
-                  <span className="text-[13px] text-white/70 truncate grow min-w-0 pr-1 font-semibold">
-                    BGM &amp; SFX
-                  </span>
-
-                  {/* Mute Track Control */}
-                  <div className="flex items-center gap-0.5 ml-auto shrink-0">
-                    <button
-                      onClick={() => toggleMuteTrack('__bgm__')}
-                      className={cn(
-                        "h-6 w-6 rounded-md text-[11px] font-bold flex items-center justify-center border transition-all select-none",
-                        mutedTrackIds['__bgm__']
-                          ? "bg-amber-500/20 text-amber-500 border-amber-500/30 hover:bg-amber-500/30"
-                          : "bg-transparent text-white/35 border-transparent hover:bg-white/8 hover:text-white/70"
-                      )}
-                      title="Mute Background Music"
-                    >
-                      M
-                    </button>
-                  </div>
-                </div>
-
-                {/* Volume Control — re-encodes the BGM stem server-side, so the
-                    slider stages locally and only commits (PATCH) on release. */}
-                <div className="flex items-center gap-1.5 pl-0.5">
-                  <input
-                    type="range"
-                    min={-24}
-                    max={12}
-                    step={1}
-                    value={bgmVolume}
-                    disabled={!jobId || isSettingBgmVolume}
-                    onChange={(e) => setBgmVolumeLocal(Number(e.target.value))}
-                    onMouseUp={() => handleBgmVolumeCommit(bgmVolume)}
-                    onTouchEnd={() => handleBgmVolumeCommit(bgmVolume)}
-                    title="BGM & SFX volume"
-                    className="flex-1 accent-sky-500 bg-ink-800 rounded-lg cursor-pointer h-1 min-w-0 disabled:opacity-40 disabled:cursor-not-allowed"
-                  />
-                  <span className="text-[9px] font-mono text-white/40 shrink-0 w-9 text-right tabular-nums">
-                    {isSettingBgmVolume ? '…' : `${bgmVolume > 0 ? '+' : ''}${bgmVolume}dB`}
-                  </span>
-                </div>
+                <Tooltip content="Music & effects" side="right">
+                  <Music size={15} className="text-sky-400 shrink-0" />
+                </Tooltip>
+                <Tooltip content={mutedTrackIds['__bgm__'] ? 'Unmute' : 'Mute'} side="bottom">
+                  <button
+                    onClick={() => toggleMuteTrack('__bgm__')}
+                    aria-label={mutedTrackIds['__bgm__'] ? 'Unmute music' : 'Mute music'}
+                    aria-pressed={!!mutedTrackIds['__bgm__']}
+                    className={cn(
+                      'h-6 w-6 rounded-md flex items-center justify-center transition-colors shrink-0',
+                      mutedTrackIds['__bgm__'] ? 'bg-amber-500/20 text-amber-400' : 'text-white/45 hover:text-white hover:bg-white/8',
+                    )}
+                  >
+                    {mutedTrackIds['__bgm__'] ? <VolumeX size={13} /> : <Volume2 size={13} />}
+                  </button>
+                </Tooltip>
+                {/* Volume — re-encodes the music stem server-side, so the slider
+                    stages locally and only commits (PATCH) on release. */}
+                <input
+                  type="range"
+                  min={-24}
+                  max={12}
+                  step={1}
+                  value={bgmVolume}
+                  disabled={!jobId || isSettingBgmVolume}
+                  onChange={(e) => setBgmVolumeLocal(Number(e.target.value))}
+                  onMouseUp={() => handleBgmVolumeCommit(bgmVolume)}
+                  onTouchEnd={() => handleBgmVolumeCommit(bgmVolume)}
+                  title="Volume"
+                  aria-label="Music volume"
+                  className="flex-1 accent-sky-500 bg-ink-800 rounded-lg cursor-pointer h-1 min-w-0 disabled:opacity-40 disabled:cursor-not-allowed"
+                />
+                <span className="text-[9px] font-mono text-white/40 shrink-0 w-9 text-right tabular-nums">
+                  {isSettingBgmVolume ? '…' : `${bgmVolume > 0 ? '+' : ''}${bgmVolume}dB`}
+                </span>
               </div>
 
               {/* BGM audio block */}
@@ -974,42 +1053,35 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
               className="relative border-b border-timeline-grid bg-ink-900/30"
               style={{ height: STEM_HEIGHT }}
             >
-              {/* Track label — Analyze button lives here (sticky, always visible) */}
+              {/* Original voices header — Analyze lives here (sticky, always visible) */}
               <div
-                className="sticky left-0 z-10 h-full flex items-center px-2.5 gap-2 shrink-0 bg-ink-900/95 backdrop-blur-sm border-r border-white/[0.06]"
+                className="sticky left-0 z-10 h-full flex items-center px-2.5 gap-1.5 shrink-0 bg-ink-900/95 backdrop-blur-sm border-r border-white/[0.06]"
                 style={{ float: 'left', width: 'var(--speaker-width)' }}
               >
-                <div className={cn(
-                  "h-2.5 w-2.5 rounded-full shrink-0",
-                  isStage1Processing ? "bg-emerald-500/30 animate-pulse"
-                    : vocalsReplaced   ? "bg-ink-600"
-                    : "bg-emerald-500"
-                )} />
-                <div className="flex flex-col min-w-0 grow pr-1">
-                  <span className="text-[13px] text-white/70 truncate font-semibold leading-tight">
-                    {vocalsReplaced ? 'Orig. Vocals' : 'Vocals'}
-                  </span>
-                  {vocalsReplaced && (
-                    <span className="text-[10px] text-ink-500 truncate leading-tight">Not in the export</span>
-                  )}
-                </div>
+                <Tooltip content={vocalsReplaced ? 'Original voices — not in the export' : 'Original voices'} side="right">
+                  <AudioLines size={15} className={cn(
+                    'shrink-0',
+                    isStage1Processing ? 'text-emerald-500/40 animate-pulse' : vocalsReplaced ? 'text-ink-500' : 'text-emerald-400',
+                  )} />
+                </Tooltip>
                 <div className="flex items-center gap-1 ml-auto shrink-0">
-                  {/* M button — always visible when stems exist so user can toggle at any time */}
+                  {/* Mute — always there once stems exist, to compare with the dub */}
                   {!isStage1Processing && (
-                    <button
-                      onClick={() => useEditorStore.setState((s) => ({
-                        mutedTrackIds: { ...s.mutedTrackIds, __vocals__: !vocalsMuted },
-                      }))}
-                      className={cn(
-                        "h-6 w-6 rounded-md text-[11px] font-bold flex items-center justify-center border transition-all select-none",
-                        vocalsMuted
-                          ? "bg-amber-500/20 text-amber-500 border-amber-500/30 hover:bg-amber-500/30"
-                          : "bg-transparent text-white/35 border-transparent hover:bg-white/8 hover:text-white/70"
-                      )}
-                      title={vocalsMuted ? "Unmute the original voices" : "Mute the original voices"}
-                    >
-                      M
-                    </button>
+                    <Tooltip content={vocalsMuted ? 'Unmute' : 'Mute'} side="bottom">
+                      <button
+                        onClick={() => useEditorStore.setState((s) => ({
+                          mutedTrackIds: { ...s.mutedTrackIds, __vocals__: !vocalsMuted },
+                        }))}
+                        aria-label={vocalsMuted ? 'Unmute the original voices' : 'Mute the original voices'}
+                        aria-pressed={vocalsMuted}
+                        className={cn(
+                          'h-6 w-6 rounded-md flex items-center justify-center transition-colors',
+                          vocalsMuted ? 'bg-amber-500/20 text-amber-400' : 'text-white/45 hover:text-white hover:bg-white/8',
+                        )}
+                      >
+                        {vocalsMuted ? <VolumeX size={13} /> : <Volume2 size={13} />}
+                      </button>
+                    </Tooltip>
                   )}
                   {/* Analyze button + optional max-speakers cap — shown at stems_ready */}
                   {isStemsReady && onAnalyze && (
@@ -1132,6 +1204,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                           insertLineRef={insertLineRef}
                           overruns={overruns[seg.id]}
                           onCommitLayout={handleCommitLayout}
+                          onContextMenu={handleClipContextMenu}
                           onSelect={handleSegmentSelect}
                           onDelete={handleSegmentDelete}
                           onRegenerate={jobId ? handleSegmentRegenerate : undefined}
@@ -1168,6 +1241,10 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
             )}
           </div>
         </div>
+
+        {clipMenu && (
+          <ContextMenu x={clipMenu.x} y={clipMenu.y} items={clipMenuItems(clipMenu)} onClose={closeClipMenu} />
+        )}
 
         {/* Vertical Splitter Handle for Speaker Panel Width */}
         <div

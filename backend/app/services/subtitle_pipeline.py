@@ -19,7 +19,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.models.models import Job, Project, Segment, JobStatus
-from app.services.audio_extractor import extract_audio, get_video_duration
+from app.services.audio_extractor import extract_audio, get_video_duration, video_frame_rate
 from app.services.source_separator import separate_vocals_bgm
 from app.services.subtitle_parser import parse_subtitle_file
 from app.services.asr import DEFAULT_SPEAKER, label_speech
@@ -79,6 +79,7 @@ async def run_subtitle_pipeline(job_id: str, subtitle_path: str) -> None:
                 job.duration_secs = await get_video_duration(job.video_path)
             except Exception as e:
                 logger.warning(f"Could not get video duration: {e}")
+            job.frame_rate = await video_frame_rate(job.video_path)
 
             audio_path = await extract_audio(job.video_path, output_dir=str(job_dir))
             job.audio_path = audio_path

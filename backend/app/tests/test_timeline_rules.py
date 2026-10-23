@@ -226,3 +226,44 @@ async def test_settle_job_never_leaves_overlaps_when_run_concurrently(client, db
         for b in rows[i + 1:]:
             if a.lane_index == b.lane_index:
                 assert not overlaps(a, b), (a.start_time, b.start_time, a.lane_index)
+
+
+# ── Task 12: the video's frame rate (one ← / → step) ─────────
+
+def test_frame_rate_is_read_from_the_video():
+    from app.services.audio_extractor import frame_rate_of
+    assert frame_rate_of({"streams": [{"codec_type": "audio"}, {"codec_type": "video", "r_frame_rate": "30000/1001"}]}) \
+        == pytest.approx(29.97, abs=0.01)
+    assert frame_rate_of({"streams": [{"codec_type": "video", "avg_frame_rate": "25/1", "r_frame_rate": "0/0"}]}) == 25.0
+    assert frame_rate_of({"streams": [{"codec_type": "audio"}]}) is None
+    assert frame_rate_of({}) is None
+    assert frame_rate_of({"streams": [{"codec_type": "video", "r_frame_rate": "nonsense"}]}) is None
+
+
+@pytest.mark.asyncio
+async def test_opening_an_episode_fills_a_missing_frame_rate_once(client, db_sessionmaker, monkeypatch, tmp_path):
+    from app.api.routes import jobs as jobs_routes
+    job_id = await _make_job(client, db_sessionmaker)
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x")
+    async with db_sessionmaker() as s:
+        (await s.get(Job, job_id)).video_path = str(video)
+        await s.commit()
+    calls = []
+
+    async def fake_probe(path):
+        calls.append(path)
+        return {"streams": [{"codec_type": "video", "r_frame_rate": "24/1"}]}
+
+    monkeypatch.setattr(jobs_routes, "probe_video", fake_probe)
+    assert (await client.get(f"/api/v1/jobs/{job_id}")).json()["frame_rate"] == 24.0
+    assert (await client.get(f"/api/v1/jobs/{job_id}")).json()["frame_rate"] == 24.0
+    assert len(calls) == 1
+
+    async def broken_probe(path):
+        raise RuntimeError("ffprobe failed")
+
+    other = await _make_job(client, db_sessionmaker)
+    monkeypatch.setattr(jobs_routes, "probe_video", broken_probe)
+    resp = await client.get(f"/api/v1/jobs/{other}")
+    assert resp.status_code == 200 and resp.json()["frame_rate"] is None

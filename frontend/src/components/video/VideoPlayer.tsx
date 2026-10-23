@@ -6,6 +6,7 @@ import { useEditorStore } from '@/store/editorStore'
 import { formatTime, cn, originalVoicesReplaced } from '@/lib/utils'
 import { OverlayCanvas } from './OverlayCanvas'
 import { useVoicePlayback } from '@/hooks/useVoicePlayback'
+import { frameSecs, isTypingTarget, nextEdge, shuttle } from '@/lib/transport'
 
 interface VideoPlayerProps {
   videoUrl?: string
@@ -19,9 +20,11 @@ interface VideoPlayerProps {
   bgmVolumeDb?: number
   // Changes when the music/voices tracks are made again (Try again)
   stemsVersion?: number
+  /** The video's frame rate: one ← / → step (else 1/30 s). */
+  frameRate?: number | null
 }
 
-export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus, overlays, bgmVolumeDb, stemsVersion }: VideoPlayerProps) {
+export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus, overlays, bgmVolumeDb, stemsVersion, frameRate }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const bgmAudioRef = useRef<HTMLAudioElement>(null)
   const vocalsAudioRef = useRef<HTMLAudioElement>(null)
@@ -71,6 +74,70 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
 
   // The dubbed voices: every clip under the playhead plays its window, as in the export
   useVoicePlayback({ videoRef, segmentsRef, isPlaying, playbackRate, volume, mutedRef, videoUrl })
+
+  // ── Transport keys ────────────────────────────────────────────────────
+  // J / K / L: back, stop, forward (again: 2×, then 4×). The window can't
+  // play video backward, so J steps back in short jumps with the video paused.
+  // ← / →: one frame. ↑ / ↓: the previous / next clip edge. Never while typing.
+  const shuttleRef = useRef(0)
+  const backTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const stopBackStep = useCallback(() => {
+    if (backTimerRef.current) { clearInterval(backTimerRef.current); backTimerRef.current = null }
+  }, [])
+  // Playing again (Space, the play button) ends a J
+  useEffect(() => {
+    if (isPlaying) { stopBackStep(); if (shuttleRef.current < 0) shuttleRef.current = 0 }
+  }, [isPlaying, stopBackStep])
+  useEffect(() => stopBackStep, [stopBackStep])
+
+  useEffect(() => {
+    const seekTo = (t: number) => {
+      const video = videoRef.current
+      if (!video) return
+      const clamped = Math.max(0, Math.min(video.duration || t, t))
+      video.currentTime = clamped
+      setCurrentTime(clamped)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return
+      if (useEditorStore.getState().settingsOpen) return
+      const video = videoRef.current
+      if (!video) return
+      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key
+      if (key === 'j' || key === 'k' || key === 'l') {
+        e.preventDefault()
+        const rate = shuttle(shuttleRef.current, key)
+        shuttleRef.current = rate
+        stopBackStep()
+        if (rate > 0) {
+          setPlaybackRate(rate)
+          setPlaying(true)
+        } else {
+          setPlaying(false)
+          setPlaybackRate(1)
+          if (rate < 0) {
+            backTimerRef.current = setInterval(() => {
+              const v = videoRef.current
+              if (!v || v.currentTime <= 0) { stopBackStep(); return }
+              seekTo(v.currentTime - 0.05 * Math.abs(shuttleRef.current))
+            }, 50)
+          }
+        }
+      } else if (key === 'ArrowLeft' || key === 'ArrowRight') {
+        e.preventDefault()
+        stopBackStep()
+        shuttleRef.current = 0
+        setPlaying(false)
+        seekTo(video.currentTime + (key === 'ArrowRight' ? 1 : -1) * frameSecs(frameRate))
+      } else if (key === 'ArrowUp' || key === 'ArrowDown') {
+        e.preventDefault()
+        const edge = nextEdge(segmentsRef.current, video.currentTime, key === 'ArrowDown' ? 1 : -1)
+        if (edge != null) seekTo(edge)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [frameRate, setCurrentTime, setPlaying, setPlaybackRate, stopBackStep])
 
   // Navigate to active segment start
   const goToSegmentStart = useCallback(() => {
@@ -431,7 +498,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
                   className="h-6 px-1.5 rounded bg-black/40 text-[10px] font-mono font-bold text-white/70 hover:text-white border border-white/10 focus:outline-none cursor-pointer transition-all"
                   title="Playback speed"
                 >
-                  {[0.5, 0.75, 1, 1.25, 1.5, 2].map(r => (
+                  {[0.5, 0.75, 1, 1.25, 1.5, 2, 4].map(r => (
                     <option key={r} value={r}>{r}×</option>
                   ))}
                 </select>
