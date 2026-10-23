@@ -149,3 +149,79 @@ def test_the_exported_voice_is_as_loud_as_in_the_preview(tmp_path):
                                       capture_output=True, text=True).stderr.split("mean_volume:")[1].split("dB")[0])
     for side in (0, 1):
         assert rms(out, side) == pytest.approx(clip_level, abs=1.0)
+
+
+# ── 0.3.0: the export plays each clip's window, as the preview does ───────────
+
+def _clip_with_lead(path, lead: float, tone: float, rate: int = 48000):
+    import numpy as np
+    import soundfile as sf
+    t = np.arange(int(rate * tone)) / rate
+    sf.write(str(path), np.concatenate([np.zeros(int(rate * lead), dtype=np.float32),
+                                        (0.3 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)]), rate)
+    return str(path)
+
+
+def _rms_db(samples) -> float:
+    import numpy as np
+    return float(20 * np.log10(np.sqrt(np.mean(np.square(samples))) + 1e-12))
+
+
+@pytest.mark.skipif(not find("ffmpeg"), reason="needs ffmpeg")
+def test_export_plays_only_the_clips_window(tmp_path):
+    import soundfile as sf
+    clip = _clip_with_lead(tmp_path / "clip.wav", 0.5, 1.5)
+    parts = asyncio.run(ax.build_dub_parts(
+        [{"start_time": 3.0, "audio_path": clip, "duration": 2.0, "offset": 0.5, "length": 1.0, "fit_rate": 1.0}],
+        tmp_path / "work"))
+    (part, offset), = parts
+    assert offset == 3.0
+    data, rate = sf.read(part, dtype="float32")
+    assert len(data) / rate == pytest.approx(1.0, abs=0.03)
+    # Starts on the kept sound, not on the silence that was cut off
+    assert _rms_db(data[: int(0.05 * rate)]) > -30
+
+
+@pytest.mark.skipif(not find("ffmpeg"), reason="needs ffmpeg")
+def test_export_applies_a_kept_fit_rate(tmp_path):
+    import soundfile as sf
+    clip = _clip_with_lead(tmp_path / "clip.wav", 0.0, 1.5)
+    (part, _), = asyncio.run(ax.build_dub_parts(
+        [{"start_time": 0.0, "audio_path": clip, "duration": 1.5, "offset": 0.0, "length": 1.0, "fit_rate": 1.5}],
+        tmp_path / "work"))
+    assert sf.info(part).duration == pytest.approx(1.0, abs=0.03)
+
+
+@pytest.mark.asyncio
+async def test_the_export_is_given_each_clips_window(monkeypatch, client, db_sessionmaker, tmp_path):
+    """The clips the export mixes carry exactly what the preview plays."""
+    import app.core.database as core_db
+    from app.api.routes import tts as tts_routes
+    from app.models.models import Job, JobStatus, Segment
+    from app.tests.timeline_helpers import _make_job, _write_clip
+
+    monkeypatch.setattr(core_db, "AsyncSessionLocal", db_sessionmaker)
+    job_id = await _make_job(client, db_sessionmaker)
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x")
+    async with db_sessionmaker() as s:
+        job = await s.get(Job, job_id)
+        job.video_path = str(video)
+        seg = Segment(job_id=job_id, start_time=2.0, end_time=3.0, khmer_text="ក", tts_duration_secs=2.5,
+                      voice_offset=0.4, fit_rate=1.2)
+        s.add(seg)
+        await s.flush()
+        seg.tts_audio_path = _write_clip(tmp_path, seg.id, 2.5)
+        job.status = JobStatus.MIXING
+        await s.commit()
+    seen = {}
+
+    async def fake_mix(video_path, tts_segments, output_path, **kwargs):
+        seen["clips"] = tts_segments
+        return output_path
+
+    monkeypatch.setattr(tts_routes, "mix_dubbed_audio", fake_mix)
+    await tts_routes._mix_job_task(job_id, True)
+    (clip,) = seen["clips"]
+    assert {k: clip[k] for k in ("start_time", "offset", "length", "fit_rate")} == {
+        "start_time": 2.0, "offset": 0.4, "length": pytest.approx(1.0), "fit_rate": 1.2}

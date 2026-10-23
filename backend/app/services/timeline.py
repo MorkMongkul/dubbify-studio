@@ -172,6 +172,16 @@ def split_text(text: str, share: float) -> tuple[str, str]:
     return left, right
 
 
+async def after_new_voice(db: AsyncSession, seg, duration: float, spoken_text: str) -> None:
+    """A new voice sets its clip: it starts where the line starts and is as
+    long as the voice, which plays whole at its own speed. The caller commits,
+    then settles the job (the clip may now run into the next one)."""
+    seg.voice_offset = 0.0
+    seg.fit_rate = 1.0
+    seg.end_time = seg.start_time + duration
+    seg.voice_text = spoken_text
+
+
 # ── Settling a job's tracks after a change ────────────────────
 
 _locks: dict[str, asyncio.Lock] = {}

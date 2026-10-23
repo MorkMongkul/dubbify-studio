@@ -23,7 +23,7 @@ from app.services.tts_client import tts_client
 from app.services.audio_extractor import mix_dubbed_audio, probe_video
 from app.services.video_overlay import build_subtitle_track, render_subtitle_pngs
 from app.services.pipeline_common import RUNNING_STATUSES
-from app.services import voice_level
+from app.services import timeline, voice_level
 from app.services import auto_voice
 from app.core.paths import resolve_media_path, resolve_existing
 
@@ -142,7 +142,8 @@ async def _render_segment_audio(seg: Segment, tts_dir: Path, voice_kwargs: dict,
     finally:
         tmp_path.unlink(missing_ok=True)
 
-    await db.refresh(seg, attribute_names=["start_time", "end_time", "volume_db", "voice_filter", "voice_speed"])
+    await db.refresh(seg, attribute_names=["start_time", "end_time", "source_start", "source_end",
+                                           "volume_db", "voice_filter", "voice_speed"])
     duration = await voice_level.level_new_voice(seg, raw_path, final_path)
     return str(final_path), duration, result.get("backend", "")
 
@@ -154,32 +155,6 @@ async def _audio_seconds(path: Path) -> float:
         return await get_video_duration(str(path))
     except Exception:  # noqa: BLE001 — unreadable counts as empty
         return 0.0
-
-
-ROOM_GAP = 0.1   # seconds left free before the next line
-
-
-async def _make_room(db: AsyncSession, seg: Segment, duration: float) -> None:
-    """
-    A voice longer than its line takes the silence after it — up to ROOM_GAP
-    before the next line starts (in any lane), else the end of the video. The
-    team widened these lines by hand; a line never shrinks.
-    """
-    wanted = seg.start_time + duration
-    if wanted <= seg.end_time + 0.01:
-        return
-    next_start = (await db.execute(
-        select(Segment.start_time).where(Segment.job_id == seg.job_id, Segment.id != seg.id,
-                                         Segment.start_time > seg.start_time + 1e-6)
-        .order_by(Segment.start_time).limit(1)
-    )).scalar_one_or_none()
-    limit = next_start - ROOM_GAP if next_start is not None else None
-    if limit is None:
-        video = (await db.execute(select(Job.duration_secs).where(Job.id == seg.job_id))).scalar_one_or_none()
-        limit = video if video else wanted
-    new_end = round(min(wanted, limit), 3)
-    if new_end > seg.end_time:
-        seg.end_time = new_end
 
 
 async def _synthesize_segment_db(segment_id: str, db: AsyncSession) -> tuple[Segment, str]:
@@ -208,6 +183,9 @@ async def _synthesize_segment_db(segment_id: str, db: AsyncSession) -> tuple[Seg
     tts_dir = job_dir / "tts"
     tts_dir.mkdir(parents=True, exist_ok=True)
 
+    # What the voice will say: text edited while it is made marks it outdated
+    spoken_text = seg.khmer_text
+
     # Release the DB connection before the TTS call — synthesis can take
     # minutes, and the dev SQLite engine has exactly one pooled connection, so
     # holding it here would block every other request (job polls, segment
@@ -225,8 +203,10 @@ async def _synthesize_segment_db(segment_id: str, db: AsyncSession) -> tuple[Seg
     # regenerate, then change to +3 dB and the clip came out +9 dB).
     seg.tts_audio_path    = final_path
     seg.tts_duration_secs = duration
-    await _make_room(db, seg, duration)
-    await db.flush()
+    await timeline.after_new_voice(db, seg, duration, spoken_text)
+    await db.commit()
+    # The clip may now run into the next one: it moves track, never in time
+    await timeline.settle_job(db, seg.job_id, [seg.id])
     return seg, backend
 
 
@@ -566,25 +546,6 @@ async def mix_final_audio(
     }
 
 
-def _autofit_rate(seg: Segment) -> float:
-    """Speed-up needed for a TTS clip to fit its segment window.
-
-    Must stay in lockstep with the editor's auto-fit preview
-    (VideoPlayer.startTTS): same manual-speed opt-out, same 1.05 overflow
-    threshold, same 3.5× cap — otherwise the export sounds slower than
-    what the user heard while editing. Manual voice_speed is already baked
-    into the clip file via atempo, so those clips are exported as-is.
-    """
-    if seg.voice_speed is not None and abs(seg.voice_speed - 1.0) > 0.001:
-        return 1.0
-    window = max(0.1, seg.end_time - seg.start_time)
-    tts_duration = seg.tts_duration_secs or 0.0
-    if tts_duration <= 0:
-        return 1.0
-    fit_rate = tts_duration / window
-    return min(3.5, fit_rate) if fit_rate > 1.05 else 1.0
-
-
 async def _set_mix_progress(job_id: str, fraction: float) -> None:
     """
     Export progress for the UI, written in its own short transaction. Never
@@ -635,7 +596,10 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
                 "start_time": seg.start_time,
                 "audio_path": resolve_media_path(seg.tts_audio_path),
                 "duration": seg.tts_duration_secs,
-                "fit_rate": _autofit_rate(seg),
+                # The clip's window, exactly as the preview plays it (timeline.py)
+                "offset": timeline.offset_of(seg),
+                "length": seg.end_time - seg.start_time,
+                "fit_rate": timeline.rate_of(seg),
             }
             for seg in segments
             if resolve_existing(seg.tts_audio_path)
@@ -798,9 +762,13 @@ async def _synthesize_all_segments(job_id: str):
     tts_dir.mkdir(parents=True, exist_ok=True)
 
     # Skip segments that already have a synthesized clip — re-running
-    # "synthesize job" must not re-buy TTS for unchanged lines (a text
-    # edit clears tts_audio_path, so changed lines still regenerate).
-    to_synth = [s for s in segments if not resolve_existing(s.tts_audio_path)]
+    # "synthesize job" must not re-buy TTS for unchanged lines. A text edit
+    # keeps the voice but marks it as made from older text (voice_text), so
+    # changed lines still regenerate.
+    to_synth = [
+        s for s in segments
+        if not resolve_existing(s.tts_audio_path) or (s.voice_text is not None and s.voice_text != s.khmer_text)
+    ]
     skipped = len(segments) - len(to_synth)
 
     concurrency = max(1, settings.TTS_BATCH_CONCURRENCY)
@@ -819,6 +787,7 @@ async def _synthesize_all_segments(job_id: str):
                         return False
 
                     voice_kwargs = await _resolve_voice(seg, db2)
+                    spoken_text = seg.khmer_text
 
                     # Release the DB connection during the (potentially
                     # minutes-long) TTS call so other concurrent workers and
@@ -831,8 +800,9 @@ async def _synthesize_all_segments(job_id: str):
                         gemini_seen.set()
                     seg.tts_audio_path    = final_path
                     seg.tts_duration_secs = duration
-                    await _make_room(db2, seg, duration)
+                    await timeline.after_new_voice(db2, seg, duration, spoken_text)
                     await db2.commit()
+                    await timeline.settle_job(db2, seg.job_id, [seg.id])
                     return True
                 except TTSUnavailable as e:
                     logger.warning(f"Job synthesis: segment {segment_id[:8]} not generated: {e}")

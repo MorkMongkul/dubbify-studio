@@ -9,8 +9,9 @@ Measured on a real project (6 episodes, the team's own voices and timings):
   original lines ranged over 12 dB (-32..-20): the dub sat on top of the music
   in one line and under the effects in the next. Each voice now takes the
   loudness of the original line it replaces.
-- A voice still longer than its line may use the silence after it, up to the
-  next line — the team widened these lines by hand.
+- 0.3.0: a new voice sets its clip's length (the clip starts where the line
+  starts); a clip that then runs into the next one on its track moves to
+  another track, never in time.
 """
 import numpy as np
 import pytest
@@ -146,23 +147,87 @@ async def test_without_separated_vocals_the_voice_keeps_its_level(client, db_ses
 
 
 @pytest.mark.asyncio
-async def test_a_voice_longer_than_its_line_takes_the_silence_after_it(client, db_sessionmaker, monkeypatch, voice_env):
-    job_dir, (first, second) = await _episode(client, db_sessionmaker, voice_env, [(1.0, 2.0), (5.0, 6.0)])
-    monkeypatch.setattr(tts_routes.tts_client, "synthesize", _engine(_tone(2.5, -20)))
-    await client.post(f"/api/v1/tts/synthesize/segment/{first}")
-    assert (await _segment(db_sessionmaker, first)).end_time == pytest.approx(3.5, abs=0.05)
-    monkeypatch.setattr(tts_routes.tts_client, "synthesize", _engine(_tone(5.0, -20)))
-    await client.post(f"/api/v1/tts/synthesize/segment/{first}")
-    assert (await _segment(db_sessionmaker, first)).end_time == pytest.approx(4.9, abs=0.01)   # stops before the next line
-    assert (await _segment(db_sessionmaker, second)).start_time == 5.0
+async def test_a_new_voice_sets_the_clip_to_its_length(client, db_sessionmaker, monkeypatch, voice_env):
+    job_dir, (seg_id,) = await _episode(client, db_sessionmaker, voice_env, [(1.0, 2.0)])
+    async with db_sessionmaker() as s:
+        seg = await s.get(Segment, seg_id)
+        seg.voice_offset, seg.fit_rate = 0.3, 1.4   # left from an earlier voice
+        await s.commit()
+    monkeypatch.setattr(tts_routes.tts_client, "synthesize", _engine(_tone(2.4, -20)))
+    assert (await client.post(f"/api/v1/tts/synthesize/segment/{seg_id}")).status_code == 200
+    seg = await _segment(db_sessionmaker, seg_id)
+    assert seg.end_time == pytest.approx(3.4, abs=0.05)
+    assert (seg.start_time, seg.voice_offset, seg.fit_rate, seg.voice_text) == (1.0, 0.0, 1.0, "សួស្តី")
 
 
 @pytest.mark.asyncio
-async def test_a_short_voice_never_shrinks_its_line(client, db_sessionmaker, monkeypatch, voice_env):
+async def test_a_short_voice_ends_where_it_ends(client, db_sessionmaker, monkeypatch, voice_env):
     job_dir, (seg_id,) = await _episode(client, db_sessionmaker, voice_env, [(1.0, 3.0)])
     monkeypatch.setattr(tts_routes.tts_client, "synthesize", _engine(_tone(0.5, -20)))
     await client.post(f"/api/v1/tts/synthesize/segment/{seg_id}")
-    assert (await _segment(db_sessionmaker, seg_id)).end_time == 3.0
+    assert (await _segment(db_sessionmaker, seg_id)).end_time == pytest.approx(1.5, abs=0.05)
+
+
+@pytest.mark.asyncio
+async def test_a_new_voice_that_runs_into_the_next_line_moves_track(client, db_sessionmaker, monkeypatch, voice_env):
+    job_dir, (first, second) = await _episode(client, db_sessionmaker, voice_env, [(1.0, 2.0), (2.5, 3.5)])
+    monkeypatch.setattr(tts_routes.tts_client, "synthesize", _engine(_tone(2.4, -20)))
+    await client.post(f"/api/v1/tts/synthesize/segment/{first}")
+    a, b = await _segment(db_sessionmaker, first), await _segment(db_sessionmaker, second)
+    assert (a.start_time, b.start_time, b.end_time) == (1.0, 2.5, 3.5)
+    assert a.lane_index != b.lane_index
+
+
+@pytest.mark.asyncio
+async def test_text_edited_while_the_voice_is_made_marks_it_outdated(client, db_sessionmaker, monkeypatch, voice_env):
+    job_dir, (seg_id,) = await _episode(client, db_sessionmaker, voice_env, [(1.0, 2.0)])
+
+    async def edited_meanwhile(text: str, output_path: str = "", **kwargs) -> dict:
+        async with db_sessionmaker() as s:
+            seg = await s.get(Segment, seg_id)
+            seg.khmer_text = "ថ្មី"
+            await s.commit()
+        _write(output_path, _tone(1.0, -20))
+        return {"success": True, "audio_path": output_path, "duration_secs": 1.0, "error": "", "backend": "voxcpm_gradio"}
+
+    monkeypatch.setattr(tts_routes.tts_client, "synthesize", edited_meanwhile)
+    await client.post(f"/api/v1/tts/synthesize/segment/{seg_id}")
+    seg = await _segment(db_sessionmaker, seg_id)
+    assert (seg.voice_text, seg.khmer_text) == ("សួស្តី", "ថ្មី")
+
+
+@pytest.mark.asyncio
+async def test_many_new_voices_never_overlap_on_a_track(client, file_db, monkeypatch, voice_env):
+    """Concurrent workers each write and settle (a real file database: see conftest.file_db)."""
+    db_sessionmaker = file_db
+    monkeypatch.setattr(tts_routes.settings, "TTS_BATCH_CONCURRENCY", 3)
+    lines = [(i * 2.0, i * 2.0 + 1.5) for i in range(6)]
+    job_dir, ids = await _episode(client, db_sessionmaker, voice_env, lines)
+    monkeypatch.setattr(tts_routes.tts_client, "synthesize", _engine(_tone(3.0, -20)))
+    assert (await client.post("/api/v1/tts/synthesize/batch", json={"segment_ids": ids})).status_code == 202
+    async with db_sessionmaker() as s:
+        rows = (await s.execute(select(Segment).where(Segment.id.in_(ids)))).scalars().all()
+    assert all(r.tts_audio_path for r in rows)
+    assert sorted(r.start_time for r in rows) == [a for a, _ in lines]
+    for i, a in enumerate(rows):
+        assert a.end_time == pytest.approx(a.start_time + 3.0, abs=0.05)
+        for b in rows[i + 1:]:
+            if (a.lane_index or 0) == (b.lane_index or 0):
+                assert not (a.start_time < b.end_time - 0.001 and b.start_time < a.end_time - 0.001)
+
+
+@pytest.mark.asyncio
+async def test_a_new_voice_takes_the_loudness_of_where_the_actor_spoke(client, db_sessionmaker, monkeypatch, voice_env):
+    """The clip was moved; the original line is still where the actor said it."""
+    job_dir, (seg_id,) = await _episode(client, db_sessionmaker, voice_env, [(6.0, 8.0)],
+                                        [_silence(2.0), _tone(2.0, -30), _silence(2.0), _tone(2.0, -10), _silence(1.0)])
+    async with db_sessionmaker() as s:
+        seg = await s.get(Segment, seg_id)
+        seg.source_start, seg.source_end = 2.0, 4.0
+        await s.commit()
+    monkeypatch.setattr(tts_routes.tts_client, "synthesize", _engine(_tone(1.5, -18)))
+    await client.post(f"/api/v1/tts/synthesize/segment/{seg_id}")
+    assert _level((await _segment(db_sessionmaker, seg_id)).tts_audio_path) == pytest.approx(-30, abs=1.5)
 
 
 # ── Clips made again from the raw voice ───────────────────────────────────────
@@ -180,7 +245,7 @@ async def test_changing_the_volume_keeps_the_original_lines_loudness_as_the_star
 
 @pytest.mark.asyncio
 async def test_a_line_moved_while_its_voice_is_made_keeps_its_new_place(client, db_sessionmaker, monkeypatch, voice_env):
-    """Synthesis takes seconds to minutes and the timeline isn't locked: the room is made from where the line is now."""
+    """Synthesis takes seconds to minutes and the timeline isn't locked: the clip starts where the line is now."""
     job_dir, (seg_id,) = await _episode(client, db_sessionmaker, voice_env, [(1.0, 2.0)])
 
     async def moved_meanwhile(text: str, output_path: str = "", **kwargs) -> dict:
@@ -238,17 +303,6 @@ async def test_a_volume_boost_never_clips_a_matched_voice(client, db_sessionmake
     await client.patch(f"/api/v1/segments/{seg_id}", json={"volume_db": 6.0})
     clip = sf.read((await _segment(db_sessionmaker, seg_id)).tts_audio_path, dtype="float32")[0]
     assert 20 * np.log10(np.abs(clip).max()) <= -1.0 + 0.1
-
-
-@pytest.mark.asyncio
-async def test_auto_fit_slows_a_voice_down_only_a_little(client, db_sessionmaker, monkeypatch, voice_env):
-    """Trimmed voices are often shorter than their line; stretching them to 0.65× to fill it sounded wrong."""
-    job_dir, (seg_id,) = await _episode(client, db_sessionmaker, voice_env, [(0.0, 2.0)])
-    monkeypatch.setattr(tts_routes.tts_client, "synthesize", _engine(_tone(1.2, -20)))
-    await client.post(f"/api/v1/tts/synthesize/segment/{seg_id}")
-    job_id = (await _segment(db_sessionmaker, seg_id)).job_id
-    assert (await client.post(f"/api/v1/jobs/{job_id}/segments/autofit")).status_code == 200
-    assert (await _segment(db_sessionmaker, seg_id)).voice_speed == pytest.approx(0.9, abs=0.01)
 
 
 # ── Voices the engine sends as MP3 ────────────────────────────────────────────

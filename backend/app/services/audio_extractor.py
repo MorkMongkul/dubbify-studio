@@ -326,18 +326,25 @@ def _tempo_chain(fit_rate: float) -> str:
 async def _render_dub_part(clips: list, offset: float, output: Path) -> None:
     """
     Mix these clips into one mono float WAV that starts at `offset` seconds:
-    each clip is sped up to fit its slot if needed and delayed to its start.
+    each clip plays its window of its voice file — from "offset" for "length"
+    seconds of the timeline at "fit_rate" (app/services/timeline.py, the same
+    rule the editor's preview follows) — delayed to its start.
     """
     inputs, chains, labels = [], [], []
     for i, seg in enumerate(clips):
         inputs += ["-i", seg["audio_path"]]
         delay_ms = max(0, round((seg["start_time"] - offset) * 1000))
+        rate = seg.get("fit_rate") or 1.0
+        window = ""
+        if "length" in seg:
+            window = (f"atrim=start={seg.get('offset') or 0.0:.3f}:duration={seg['length'] * rate:.3f},"
+                      f"asetpts=PTS-STARTPTS,")
         # adelay fed by atempo emits AV_NOPTS timestamps (ffmpeg 8.x), which
         # corrupts the mux — asetpts regenerates sample-accurate pts.
-        tempo = _tempo_chain(seg.get("fit_rate") or 1.0)
+        tempo = _tempo_chain(rate)
         setpts = ",asetpts=N/SR/TB" if tempo else ""
         chains.append(
-            f"[{i}:a]{tempo}aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=mono,"
+            f"[{i}:a]{window}{tempo}aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=mono,"
             f"adelay=delays={delay_ms}:all=1{setpts}[c{i}]"
         )
         labels.append(f"[c{i}]")
