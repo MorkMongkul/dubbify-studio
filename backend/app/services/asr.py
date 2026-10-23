@@ -236,10 +236,14 @@ async def _slice_chunk(audio_path: str, start: float, end: float, out_path: str)
     # clips are also cut from (pipeline_common.original_sound_for).
     # FLAC (lossless) instead of WAV: a whole-scene request of WAV clips was
     # ~7 MB of base64 and hit upload timeouts on a slow connection.
+    # -vn -sn -dn: sound only. From a video, ffmpeg otherwise decoded every frame
+    # and encoded it as PNG for the FLAC (which drops it): 34.5 s of CPU per 7 s
+    # clip instead of 0.01 s — every core at 100% while an episode was analysed.
     cmd = [
         ffmpeg(), "-y", "-v", "error",
         "-ss", f"{start:.3f}", "-t", f"{max(0.05, end - start):.3f}",
         "-i", audio_path,
+        "-vn", "-sn", "-dn",
         "-ar", "16000", "-ac", "1", "-c:a", "flac",
         out_path,
     ]

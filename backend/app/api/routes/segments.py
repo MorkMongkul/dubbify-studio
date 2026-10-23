@@ -19,7 +19,7 @@ from app.schemas.schemas import (
     SegmentResponse, SegmentUpdate, SegmentCreate,
     SpeakerResponse, SpeakerUpdate, SpeakerCreate, SpeakerMerge, SpeakerMergeResponse, SpeakerUnmerge,
 )
-from app.services import story_notes
+from app.services import story_notes, voice_level
 
 router = APIRouter(tags=["Segments & Speakers"])
 
@@ -129,15 +129,8 @@ async def update_segment(
                 return seg
             shutil.copy2(final_path, raw_path)
 
-        from app.services.audio_extractor import apply_audio_effects
-        new_duration = await apply_audio_effects(
-            input_path=str(raw_path),
-            output_path=final_path,
-            volume_db=seg.volume_db,
-            voice_filter=seg.voice_filter,
-            voice_speed=seg.voice_speed,
-        )
-        seg.tts_duration_secs = new_duration
+        # With the level decided when the voice was made (voice_level), not re-measured
+        seg.tts_duration_secs = await voice_level.render_clip(seg, raw_path, Path(final_path))
 
     await db.flush()
     await db.refresh(seg)
@@ -184,6 +177,9 @@ async def approve_all_segments(job_id: str, db: AsyncSession = Depends(get_db, s
     return {"approved": len(segments), "job_id": job_id}
 
 
+AUTOFIT_SLOWEST = 0.9
+
+
 @router.post("/jobs/{job_id}/segments/autofit", status_code=status.HTTP_200_OK)
 async def autofit_segment_speeds(job_id: str, db: AsyncSession = Depends(get_db, scope="function")):
     """
@@ -197,7 +193,6 @@ async def autofit_segment_speeds(job_id: str, db: AsyncSession = Depends(get_db,
     import shutil
     import soundfile as sf
     from app.core.paths import resolve_media_path
-    from app.services.audio_extractor import apply_audio_effects
 
     result = await db.execute(
         select(Segment)
@@ -224,20 +219,17 @@ async def autofit_segment_speeds(job_id: str, db: AsyncSession = Depends(get_db,
             missing += 1
             continue
         window = max(0.1, seg.end_time - seg.start_time)
-        target = max(0.5, min(2.0, raw_duration / window))
+        # Slowed down at most to AUTOFIT_SLOWEST: voices made since 0.2.8 have
+        # their silence trimmed and are often shorter than their line, and
+        # stretching them to fill it (down to 0.65×) sounded wrong.
+        target = max(AUTOFIT_SLOWEST, min(2.0, raw_duration / window))
 
         if abs(target - (seg.voice_speed or 1.0)) < 0.02:
             skipped += 1
             continue
 
         seg.voice_speed = target
-        seg.tts_duration_secs = await apply_audio_effects(
-            input_path=str(raw_path),
-            output_path=final_path,
-            volume_db=seg.volume_db,
-            voice_filter=seg.voice_filter,
-            voice_speed=target,
-        )
+        seg.tts_duration_secs = await voice_level.render_clip(seg, raw_path, Path(final_path))
         fitted += 1
         # Commit per clip: releases the (single, in SQLite dev) DB connection
         # between ffmpeg runs and lets polling clients see progress.

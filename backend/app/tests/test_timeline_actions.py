@@ -47,7 +47,7 @@ def _write_clip(dir_path, seg_id: str, duration: float) -> str:
 @pytest.mark.asyncio
 async def test_autofit_speeds_clips_to_their_slots(client, db_sessionmaker, tmp_path):
     job_id = await _make_job(client, db_sessionmaker)
-    # 2s of audio in a 1s slot → needs 2.0×; 2s of audio in a 4s slot → 0.5×
+    # 2s of audio in a 1s slot → needs 2.0×; 2s of audio in a 4s slot → slowed only to 0.9× (0.5× sounded wrong)
     long_id = await _add_segment(db_sessionmaker, job_id, 0.0, 1.0)
     short_id = await _add_segment(db_sessionmaker, job_id, 5.0, 9.0)
     async with db_sessionmaker() as session:
@@ -63,8 +63,8 @@ async def test_autofit_speeds_clips_to_their_slots(client, db_sessionmaker, tmp_
     listed = {s["id"]: s for s in (await client.get(f"/api/v1/jobs/{job_id}/segments")).json()}
     assert listed[long_id]["voice_speed"] == pytest.approx(2.0)
     assert listed[long_id]["tts_duration_secs"] == pytest.approx(1.0, abs=0.15)
-    assert listed[short_id]["voice_speed"] == pytest.approx(0.5)
-    assert listed[short_id]["tts_duration_secs"] == pytest.approx(4.0, abs=0.3)
+    assert listed[short_id]["voice_speed"] == pytest.approx(0.9)
+    assert listed[short_id]["tts_duration_secs"] == pytest.approx(2.0 / 0.9, abs=0.15)
 
 
 @pytest.mark.asyncio

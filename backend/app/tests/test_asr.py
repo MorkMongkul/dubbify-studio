@@ -10,10 +10,13 @@ retry policy runs against httpx.MockTransport.
 """
 import asyncio
 import json
+import resource
+import subprocess
 
 import httpx
 import pytest
 
+from app.core.binaries import ffmpeg, ffprobe, find
 from app.services import asr
 from app.services.asr import (
     SpeakerReference,
@@ -112,6 +115,28 @@ async def test_slice_chunk_seeks_before_opening_input(monkeypatch):
     await asr._slice_chunk("in.wav", 12.5, 14.0, "out.wav")
     cmd = captured["cmd"]
     assert cmd.index("-ss") < cmd.index("-i")
+
+
+@pytest.mark.skipif(not find("ffmpeg"), reason="needs ffmpeg")
+@pytest.mark.asyncio
+async def test_cutting_a_clip_from_a_video_leaves_the_picture_alone(tmp_path):
+    """
+    0.2.7 cut Gemini's clips straight from the episode's video, and ffmpeg also
+    decoded every frame and encoded it as PNG for the FLAC (dropped on writing):
+    34.5 s of CPU per 7 s clip instead of 0.01 s — every core at 100% while an
+    episode was analysed.
+    """
+    video = tmp_path / "source.mp4"
+    subprocess.run([ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=s=1280x720:d=3:r=25",
+                    "-f", "lavfi", "-i", "sine=f=440:d=3", "-shortest", "-c:a", "aac", str(video)], check=True)
+    before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    await asr._slice_chunk(str(video), 1.0, 2.0, str(tmp_path / "clip.flac"))
+    after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cpu = (after.ru_utime + after.ru_stime) - (before.ru_utime + before.ru_stime)
+    assert cpu < 0.3, f"cutting one second of sound took {cpu:.2f} s of CPU"
+    probe = subprocess.run([ffprobe(), "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0",
+                            str(tmp_path / "clip.flac")], capture_output=True, text=True, check=True)
+    assert probe.stdout.split() == ["audio"]
 
 
 # ── Window planning ───────────────────────────────────────────────────────────
