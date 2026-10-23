@@ -71,3 +71,158 @@ async def test_timing_fields_read_from_a_pre_upgrade_row_have_defaults(client, d
         await session.commit()
     body = (await client.get(f"/api/v1/jobs/{job_id}/segments")).json()[0]
     assert (body["voice_offset"], body["fit_rate"]) == (0.0, 1.0)
+
+
+# ── Task 2: the timing rules ──────────────────────────────────
+
+import asyncio  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from sqlalchemy import select  # noqa: E402
+
+from app.models.models import Segment  # noqa: E402
+from app.services.timeline import (  # noqa: E402
+    estimate_secs, free_lane, max_end, overlaps, overrun_target, rescale_for_speed, settle, settle_job,
+    split_text, clamp_voiced, follow_text, actor_span, is_voiced,
+)
+
+_ids = iter(range(10_000))
+
+
+def _seg(start, end, lane=0, tts=0.0, offset=None, fit=None, vs=1.0, source=None, text=""):
+    return SimpleNamespace(
+        id=f"s{next(_ids)}", start_time=start, end_time=end, lane_index=lane,
+        tts_audio_path="/x.wav" if tts else "", tts_duration_secs=tts,
+        voice_offset=offset, fit_rate=fit, voice_speed=vs,
+        source_start=source[0] if source else None, source_end=source[1] if source else None,
+        khmer_text=text,
+    )
+
+
+def test_estimate_follows_measured_pace():
+    assert estimate_secs("ក" * 20) == 1.3
+    assert estimate_secs("   ") == 0.1
+    assert estimate_secs("") == 0.1
+
+
+def test_max_end_counts_offset_and_rate():
+    assert max_end(_seg(2.0, 3.0, tts=3.0, offset=0.5, fit=1.25)) == pytest.approx(4.0)
+    assert max_end(_seg(1.0, 2.0, tts=2.0)) == pytest.approx(3.0)   # NULL offset/rate: 0 / 1
+
+
+def test_clamp_voiced_keeps_the_clip_inside_its_voice():
+    s = _seg(1.0, 9.0, tts=2.0)
+    clamp_voiced(s)
+    assert s.end_time == pytest.approx(3.0)
+    s = _seg(1.0, 1.02, tts=2.0, offset=5.0)
+    clamp_voiced(s)
+    assert s.voice_offset == pytest.approx(1.9) and s.end_time == pytest.approx(1.1)
+    s = _seg(1.0, 2.0, tts=2.0, offset=-1.0)
+    clamp_voiced(s)
+    assert s.voice_offset == 0.0
+
+
+def test_follow_text_sizes_a_voiceless_line_only():
+    s = _seg(2.0, 2.5, text="ក" * 30)
+    assert follow_text(s) is True and s.end_time == pytest.approx(3.95)
+    assert follow_text(s) is False
+    blank = _seg(2.0, 2.5, text="  ")
+    assert follow_text(blank) is False and blank.end_time == 2.5
+    voiced = _seg(2.0, 2.5, tts=1.0, text="ក" * 30)
+    assert follow_text(voiced) is False and voiced.end_time == 2.5
+
+
+def test_actor_span_falls_back_to_the_clip():
+    assert actor_span(_seg(1.0, 2.0, source=(0.5, 1.5))) == (0.5, 1.5)
+    assert actor_span(_seg(1.0, 2.0)) == (1.0, 2.0)
+
+
+def test_is_voiced_needs_a_file_and_a_length():
+    assert is_voiced(_seg(0, 1, tts=1.0))
+    assert not is_voiced(_seg(0, 1))
+
+
+def test_free_lane_prefers_nearest_then_below_then_new():
+    a, b, c = _seg(0, 5, lane=0), _seg(0, 5, lane=1), _seg(0, 5, lane=2)
+    blocker = _seg(10, 12, lane=1)
+    moving = _seg(11, 13, lane=1)
+    assert free_lane([blocker, moving, _seg(0, 1, lane=0), _seg(0, 1, lane=2)], moving) == 2
+    assert free_lane([blocker, moving, _seg(10, 12, lane=0), _seg(10, 12, lane=2)], moving) == 3
+    assert free_lane([blocker, moving, _seg(10, 12, lane=2), _seg(0, 1, lane=0)], moving) == 0
+    assert free_lane([a, b, c, _seg(20, 21, lane=1)], _seg(20.5, 22, lane=1)) == 2
+    lone = _seg(0, 1, lane=4)
+    assert free_lane([lone], lone) == 4
+
+
+def test_settle_moves_only_the_overlapping_clip_never_in_time():
+    a = _seg(0.0, 2.0, lane=0)
+    b = _seg(1.5, 3.0, lane=0)
+    moved = settle([a, b], [b.id])
+    assert moved == {b.id}
+    assert b.lane_index == 1 and (b.start_time, b.end_time) == (1.5, 3.0)
+    assert a.lane_index == 0 and (a.start_time, a.end_time) == (0.0, 2.0)
+    assert settle([a, b], [a.id, b.id]) == set()
+
+
+def test_overlaps_ignores_touching_clips():
+    assert not overlaps(_seg(0, 1), _seg(1, 2))
+    assert overlaps(_seg(0, 1.1), _seg(1, 2))
+
+
+def test_overrun_target_ignores_overlaps_the_original_had():
+    a = _seg(0.0, 3.8, tts=3.8, source=(0.0, 3.4))
+    b = _seg(3.0, 5.0)
+    assert overrun_target(a, [a, b]) == pytest.approx(3.4)
+    a.end_time = 3.3
+    assert overrun_target(a, [a, b]) is None
+    c = _seg(0.0, 3.8, tts=3.8)
+    assert overrun_target(c, [c, _seg(3.0, 5.0, lane=2)]) == pytest.approx(3.0)
+
+
+def test_rescale_keeps_the_same_words_cut():
+    s = _seg(0.0, 2.0, tts=3.0, offset=0.5, fit=1.25, vs=1.0)
+    rescale_for_speed(s, 1.0)
+    assert (s.voice_offset, s.end_time, s.voice_speed, s.fit_rate) == pytest.approx((0.5, 2.5, 1.0, 1.0))
+    rescale_for_speed(s, 1.25)
+    assert (s.voice_offset, s.end_time) == pytest.approx((0.4, 2.0))
+
+
+def test_split_text_at_nearest_phrase_break():
+    assert split_text("aaaa bbbb cccc", 0.6) == ("aaaa bbbb", "cccc")
+    assert split_text("aaaa bbbb cccc", 1 / 3) == ("aaaa", "bbbb cccc")
+    assert split_text("សួស្តី។ ទៅណា?", 0.5) == ("សួស្តី។", "ទៅណា?")
+
+
+def test_split_text_without_a_break_keeps_both_halves_whole():
+    assert split_text("abc", 0.5) == ("abc", "abc")
+    assert split_text("", 0.5) == ("", "")
+    assert split_text("abc ", 0.5) == ("abc ", "abc ")
+
+
+@pytest.mark.asyncio
+async def test_settle_job_never_leaves_overlaps_when_run_concurrently(client, db_sessionmaker):
+    job_id = await _make_job(client, db_sessionmaker)
+    async with db_sessionmaker() as session:
+        segs = [Segment(job_id=job_id, start_time=i * 2.0, end_time=i * 2.0 + 1.5, lane_index=0)
+                for i in range(6)]
+        session.add_all(segs)
+        await session.commit()
+        ids = [s.id for s in segs]
+
+    async def grow(seg_id: str):
+        async with db_sessionmaker() as session:
+            seg = await session.get(Segment, seg_id)
+            seg.end_time = seg.start_time + 3.0
+            await session.commit()
+            await asyncio.sleep(0)
+            await settle_job(session, job_id, [seg_id])
+
+    await asyncio.gather(*(grow(i) for i in ids))
+
+    async with db_sessionmaker() as session:
+        rows = (await session.execute(select(Segment).where(Segment.job_id == job_id))).scalars().all()
+    for i, a in enumerate(rows):
+        assert a.end_time == pytest.approx(a.start_time + 3.0)
+        for b in rows[i + 1:]:
+            if a.lane_index == b.lane_index:
+                assert not overlaps(a, b), (a.start_time, b.start_time, a.lane_index)
