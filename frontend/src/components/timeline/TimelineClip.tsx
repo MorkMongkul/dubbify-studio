@@ -10,7 +10,8 @@ import type { Segment, SegmentUpdate, LayoutChange } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { timeToPixels, pixelsToTime, hexToRgba, cn } from '@/lib/utils'
 import {
-  clampFades, effectiveSpeed, fractionToVolume, isVoiceOutdated, isVoiced, trimEnd, trimStart, volumeToFraction, waveformSlice,
+  clampFades, effectiveSpeed, fractionToVolume, isVoiceOutdated, isVoiced, trimEnd, trimStart, voiceUrl, volumeToFraction,
+  waveformSlice,
 } from '@/lib/clipRules'
 import { dropSpot, planDrop, type DropSpot } from '@/lib/tracks'
 import { previewClip } from '@/hooks/useVoicePlayback'
@@ -95,9 +96,7 @@ export const InteractiveSegment = memo(function InteractiveSegment({
   // every real synth) is what actually busts the browser + decodedPeaksCache.
   // Uses tts_audio_url (the /uploads/... URL), not tts_audio_path (an absolute
   // filesystem path that isn't fetchable from the browser).
-  const versionedAudioPath = seg.tts_audio_url
-    ? `${seg.tts_audio_url}?v=${seg.tts_duration_secs ?? 0}`
-    : undefined
+  const versionedAudioPath = seg.tts_audio_url ? voiceUrl(seg) : undefined
   const slice = useMemo(() => waveformSlice(seg), [seg])
 
   // Fades and the volume line, while one is being dragged (saved on release)

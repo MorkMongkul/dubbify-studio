@@ -10,6 +10,7 @@ import { jobs as jobsApi, segments as segmentsApi, speakers as speakersApi } fro
 import type { LayoutChange, Segment, SegmentCreate, SegmentUpdate, SpeakerMergeResponse, SpeakerUpdate, SplitResult } from '@/types'
 import { invalidateSpeakerLines, putSegments } from '@/hooks/useApi'
 import { useHistoryStore } from '@/store/historyStore'
+import { splitUndoPatch } from '@/lib/undoPatches'
 
 export function recordSegmentChange(
   qc: QueryClient,
@@ -202,16 +203,7 @@ export function recordSegmentSplit(
     label,
     undo: async () => {
       await segmentsApi.delete(box.secondId)
-      await segmentsApi.update(before.id, {
-        end_time: before.end_time,
-        lane_index: before.lane_index ?? 0,
-        khmer_text: before.khmer_text,
-        source_text: before.source_text,
-        english_text: before.english_text,
-        source_start: before.source_start ?? null,
-        source_end: before.source_end ?? null,
-        voice_text: before.voice_text ?? null,
-      })
+      await segmentsApi.update(before.id, splitUndoPatch(before))
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
     },
     redo: async () => {

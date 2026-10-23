@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useRef, type RefObject } from 'react'
 import type { Segment } from '@/types'
-import { audibleAt, fadeGainAt } from '@/lib/clipRules'
+import { audibleAt, fadeGainAt, voiceUrl } from '@/lib/clipRules'
 import { duckGainAt, duckSpans } from '@/lib/ducking'
 import { useEditorStore } from '@/store/editorStore'
 
@@ -58,8 +58,7 @@ export function useScrubAudio({ segmentsRef, musicUrl, duckMusic }: Options): (t
     }
     stop()
     for (const { seg, filePos, rate } of audibleAt(segs, t)) {
-      const versioned = `${seg.tts_audio_url}?v=${seg.tts_duration_secs ?? 0}`
-      const a = audio(versioned.startsWith('/') ? versioned : `/${versioned}`)
+      const a = audio(voiceUrl(seg))
       a.currentTime = filePos
       a.playbackRate = rate
       a.volume = Math.max(0, Math.min(1, volume * fadeGainAt(seg, t)))

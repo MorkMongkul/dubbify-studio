@@ -3,7 +3,11 @@
 // moves a clip in time; empty tracks aren't shown. Pure logic: `npm test` runs it.
 
 export type Placed = { id: string; start_time: number; end_time: number; lane_index?: number | null }
-export type LayoutChange = { id: string; start_time?: number; end_time?: number; lane_index?: number; voice_offset?: number }
+export type LayoutChange = {
+  id: string; start_time?: number; end_time?: number; lane_index?: number; voice_offset?: number
+  /** Sent by an undo: a trim may have shortened the fades. */
+  fade_in_secs?: number; fade_out_secs?: number
+}
 /** Onto an existing row, or a new track inserted at a boundary (0 = above the first row). */
 export type DropSpot = { kind: 'onto'; row: number } | { kind: 'insert'; boundary: number }
 

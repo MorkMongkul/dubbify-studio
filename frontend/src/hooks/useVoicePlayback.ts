@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useRef, type RefObject } from 'react'
 import type { Segment } from '@/types'
-import { audibleAt, fadeGainAt, isVoiced } from '@/lib/clipRules'
+import { audibleAt, fadeGainAt, isVoiced, voiceUrl } from '@/lib/clipRules'
 import { useEditorStore } from '@/store/editorStore'
 
 /** Seconds a playing voice may drift from where it should be before it is re-seeked. */
@@ -68,11 +68,6 @@ function liveFactor(seg: Segment): number {
   return live && live.id === seg.id ? 10 ** ((live.db - (seg.volume_db ?? 0)) / 20) : 1
 }
 
-const voiceUrl = (seg: Segment) => {
-  // Cache-bust: the backend overwrites the same file on every re-synthesis
-  const versioned = `${seg.tts_audio_url}?v=${seg.tts_duration_secs ?? 0}`
-  return versioned.startsWith('/') ? versioned : `/${versioned}`
-}
 
 function newAudio(url: string): HTMLAudioElement {
   const audio = new Audio(url)

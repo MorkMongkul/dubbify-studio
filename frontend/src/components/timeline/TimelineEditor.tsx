@@ -22,6 +22,7 @@ import { clipAtPlayhead, trackRows } from '@/lib/tracks'
 import { effectiveSpeed, isVoiced, overrunSpans, trimEnd, trimStart } from '@/lib/clipRules'
 import { isTypingTarget } from '@/lib/transport'
 import { redoWithToast, undoWithToast } from '@/lib/undoActions'
+import { layoutPlace } from '@/lib/undoPatches'
 import { useHistoryStore } from '@/store/historyStore'
 import { ContextMenu, type MenuItem } from '@/components/ui/ContextMenu'
 
@@ -316,13 +317,10 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const handleCommitLayout = useCallback((changes: LayoutChange[], label: string) => {
     if (!jobId || !changes.length) return
     const before = new Map(segmentsRef.current.map((s) => [s.id, s]))
-    const place = (s: Segment): LayoutChange => ({
-      id: s.id, start_time: s.start_time, end_time: s.end_time, lane_index: s.lane_index ?? 0, voice_offset: s.voice_offset ?? 0,
-    })
     layoutSegments({ jobId, changes }, {
       onSuccess: (updated) => {
         const moved = updated.filter((u) => before.has(u.id))
-        recordLayoutChange(qc, jobId, moved.map((u) => ({ id: u.id, before: place(before.get(u.id)!), after: place(u) })), label)
+        recordLayoutChange(qc, jobId, moved.map((u) => ({ id: u.id, before: layoutPlace(before.get(u.id)!), after: layoutPlace(u) })), label)
       },
       onError: () => toast.error("Couldn't move the clip"),
     })

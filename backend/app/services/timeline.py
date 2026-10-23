@@ -265,6 +265,7 @@ async def after_new_voice(db: AsyncSession, seg, duration: float, spoken_text: s
     seg.fit_rate = 1.0
     seg.end_time = seg.start_time + duration
     seg.voice_text = spoken_text
+    clamp_fades(seg)
 
 
 # ── Settling a job's tracks after a change ────────────────────

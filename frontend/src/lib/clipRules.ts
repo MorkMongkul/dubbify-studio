@@ -75,6 +75,16 @@ export function audibleAt<S extends Voiced>(segs: S[], t: number): { seg: S; fil
   return heard
 }
 
+/**
+ * The voice file's address, versioned by everything that re-renders it in
+ * place (the backend overwrites the same path): its length, volume and filter.
+ * Without the volume a volume change kept playing the old, cached file.
+ */
+export function voiceUrl(seg: Pick<Segment, 'tts_audio_url' | 'tts_duration_secs' | 'volume_db' | 'voice_filter'>): string {
+  const versioned = `${seg.tts_audio_url}?v=${seg.tts_duration_secs ?? 0}-${seg.volume_db ?? 0}-${seg.voice_filter ?? ''}`
+  return versioned.startsWith('/') ? versioned : `/${versioned}`
+}
+
 /** The voice was made from text that has been edited since. */
 export function isVoiceOutdated(seg: Pick<Segment, 'tts_audio_url' | 'tts_duration_secs' | 'voice_text' | 'khmer_text'>): boolean {
   return isVoiced(seg) && seg.voice_text != null && seg.voice_text !== seg.khmer_text

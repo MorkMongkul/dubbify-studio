@@ -6,7 +6,8 @@
 // Pure logic, no runtime imports: `npm test` runs it.
 import type { Segment } from '../types/index.ts'
 
-export type SegmentOverlay = Partial<Pick<Segment, 'start_time' | 'end_time' | 'lane_index' | 'voice_offset' | 'khmer_text'>>
+export type SegmentOverlay = Partial<Pick<Segment,
+  'start_time' | 'end_time' | 'lane_index' | 'voice_offset' | 'khmer_text' | 'fade_in_secs' | 'fade_out_secs'>>
 
 const fromServerOnly = (key: string) => key.startsWith('tts_') || (key.startsWith('voice_') && key !== 'voice_offset') || key === 'fit_rate'
 

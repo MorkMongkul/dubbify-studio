@@ -335,6 +335,9 @@ class LayoutChange(BaseModel):
     end_time: Optional[float] = Field(None, ge=0)
     lane_index: Optional[int] = Field(None, ge=0)
     voice_offset: Optional[float] = None
+    # Sent by an undo, so a trim that shortened the fades gives them back
+    fade_in_secs: Optional[float] = Field(None, ge=0)
+    fade_out_secs: Optional[float] = Field(None, ge=0)
 
 
 class LayoutRequest(BaseModel):

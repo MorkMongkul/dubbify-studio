@@ -204,7 +204,7 @@ async def update_layout(
         raise HTTPException(status_code=404, detail="Segment not found in this session")
 
     def place(s: Segment) -> tuple:
-        return (s.start_time, s.end_time, s.lane_index or 0, timeline.offset_of(s))
+        return (s.start_time, s.end_time, s.lane_index or 0, timeline.offset_of(s), timeline.fades_of(s))
 
     before = {s.id: place(s) for s in segs}
     for change in payload.changes:

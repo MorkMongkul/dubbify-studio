@@ -199,3 +199,43 @@ async def test_analysis_turns_ducking_on(monkeypatch, tmp_path, db_sessionmaker)
     await pipeline.run_analysis_pipeline(job_id)
     async with db_sessionmaker() as s:
         assert (await s.get(Job, job_id)).duck_music is True
+
+
+# ── Review fixes ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_a_new_voice_keeps_the_fades_inside_its_clip(client, db_sessionmaker, tmp_path, monkeypatch):
+    import numpy as np
+    import soundfile as sf
+    from app.api.routes import tts as tts_routes
+    monkeypatch.setattr(tts_routes.settings, "UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(tts_routes.settings, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(tts_routes.settings, "VOXCPM2_API_URL", "")
+    monkeypatch.setattr(tts_routes.settings, "VOXCPM2_HF_SPACE_FALLBACK", "openbmb/VoxCPM-Demo")
+
+    async def engine(text, output_path="", **kwargs):
+        t = np.arange(int(22050 * 1.2)) / 22050
+        sf.write(output_path, (0.1 * np.sin(2 * np.pi * 220 * t)).astype(np.float32), 22050)
+        return {"success": True, "audio_path": output_path, "duration_secs": 1.2, "error": "", "backend": "voxcpm_gradio"}
+
+    monkeypatch.setattr(tts_routes.tts_client, "synthesize", engine)
+    job_id = await _make_job(client, db_sessionmaker)
+    sid = await _add_segment(db_sessionmaker, job_id, 0.0, 3.0, fade_in_secs=1.0, fade_out_secs=1.5)
+    assert (await client.post(f"/api/v1/tts/synthesize/segment/{sid}")).status_code == 200
+    async with db_sessionmaker() as s:
+        seg = await s.get(Segment, sid)
+    assert seg.fade_in_secs + seg.fade_out_secs <= seg.end_time - seg.start_time + 1e-6
+
+
+@pytest.mark.asyncio
+async def test_a_layout_change_carries_fades_so_a_trim_undo_restores_them(client, db_sessionmaker, tmp_path):
+    job_id = await _make_job(client, db_sessionmaker)
+    sid = await _voiced_line(db_sessionmaker, job_id, tmp_path, 0.0, 2.0, fade_in_secs=0.5, fade_out_secs=1.0)
+    trimmed = (await client.put(f"/api/v1/jobs/{job_id}/segments/layout",
+                                json={"changes": [{"id": sid, "end_time": 1.0}]})).json()["segments"][0]
+    assert trimmed["fade_in_secs"] + trimmed["fade_out_secs"] <= 1.0 + 1e-6
+    # The undo: the clip's place before, fades included
+    back = (await client.put(f"/api/v1/jobs/{job_id}/segments/layout", json={"changes": [
+        {"id": sid, "start_time": 0.0, "end_time": 2.0, "lane_index": 0, "voice_offset": 0.0,
+         "fade_in_secs": 0.5, "fade_out_secs": 1.0}]})).json()["segments"][0]
+    assert (back["end_time"], back["fade_in_secs"], back["fade_out_secs"]) == (2.0, 0.5, 1.0)
