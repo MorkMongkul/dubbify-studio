@@ -11,7 +11,8 @@
 
 import { useCallback, useEffect, useRef, type RefObject } from 'react'
 import type { Segment } from '@/types'
-import { audibleAt, isVoiced } from '@/lib/clipRules'
+import { audibleAt, fadeGainAt, isVoiced } from '@/lib/clipRules'
+import { useEditorStore } from '@/store/editorStore'
 
 /** Seconds a playing voice may drift from where it should be before it is re-seeked. */
 const MAX_DRIFT = 0.1
@@ -21,6 +22,50 @@ const PRELOAD_AHEAD = 3
 interface Player {
   audio: HTMLAudioElement
   url: string
+  /** Its gain in the shared AudioContext — can go above the file's own level (the volume line). */
+  gain: GainNode | null
+}
+
+// One AudioContext for the voices: a gain node per voice carries the volume,
+// the fades and a volume line being dragged (an element's own volume stops at 1).
+let voiceContext: AudioContext | null = null
+function voiceAudioContext(): AudioContext | null {
+  if (voiceContext) return voiceContext
+  const w = window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }
+  const Ctx = w.AudioContext || w.webkitAudioContext
+  if (!Ctx) return null
+  try { voiceContext = new Ctx() } catch { return null }
+  return voiceContext
+}
+
+function newPlayer(url: string): Player {
+  const audio = newAudio(url)
+  const ctx = voiceAudioContext()
+  if (!ctx) return { audio, url, gain: null }
+  try {
+    const gain = ctx.createGain()
+    ctx.createMediaElementSource(audio).connect(gain)
+    gain.connect(ctx.destination)
+    return { audio, url, gain }
+  } catch {
+    return { audio, url, gain: null }
+  }
+}
+
+/** Set what a voice is heard at: the editor volume × its fade × a volume line being dragged. */
+function setLevel(p: Player, level: number) {
+  if (p.gain) {
+    if (p.audio.volume !== 1) p.audio.volume = 1
+    p.gain.gain.value = level
+  } else {
+    p.audio.volume = Math.max(0, Math.min(1, level))
+  }
+}
+
+/** A volume line being dragged plays at its new level before it is saved. */
+function liveFactor(seg: Segment): number {
+  const live = useEditorStore.getState().liveClipVolume
+  return live && live.id === seg.id ? 10 ** ((live.db - (seg.volume_db ?? 0)) / 20) : 1
 }
 
 const voiceUrl = (seg: Segment) => {
@@ -64,6 +109,7 @@ export function useVoicePlayback({ videoRef, segmentsRef, isPlaying, playbackRat
     }
     const t = video.currentTime
     const playing = liveRef.current.isPlaying && !video.paused
+    if (playing && voiceContext?.state === 'suspended') voiceContext.resume().catch(() => {})
     const muted = mutedRef.current ?? {}
     const segs = (segmentsRef.current ?? []).filter((s) => !muted[s.speaker_id ?? '__none__'])
     const wanted = new Map(audibleAt(segs, t).map((h) => [h.seg.id, h]))
@@ -80,11 +126,11 @@ export function useVoicePlayback({ videoRef, segmentsRef, isPlaying, playbackRat
       let p = map.get(seg.id)
       if (!p || p.url !== url) {
         p?.audio.pause()
-        p = { audio: newAudio(url), url }
+        p = newPlayer(url)
         map.set(seg.id, p)
       }
       const audio = p.audio
-      audio.volume = liveRef.current.volume
+      setLevel(p, liveRef.current.volume * fadeGainAt(seg, t) * liveFactor(seg))
       const wantedRate = clampRate(rate * (video.playbackRate || 1))
       if (Math.abs(audio.playbackRate - wantedRate) > 1e-3) audio.playbackRate = wantedRate
       if (!playing) {
@@ -105,9 +151,9 @@ export function useVoicePlayback({ videoRef, segmentsRef, isPlaying, playbackRat
       const url = voiceUrl(seg)
       const p = map.get(seg.id)
       if (p && p.url === url) continue
-      const audio = newAudio(url)
-      audio.currentTime = seg.voice_offset ?? 0
-      map.set(seg.id, { audio, url })
+      const ready = newPlayer(url)
+      ready.audio.currentTime = seg.voice_offset ?? 0
+      map.set(seg.id, ready)
     }
   }, [videoRef, segmentsRef, mutedRef])
 
@@ -155,7 +201,7 @@ export function stopPreview(): void {
   preview = null
 }
 
-/** Play one clip's window once — the part of its voice the clip plays, at its rate. */
+/** Play one clip's window once — the part of its voice the clip plays, at its rate, with its fades. */
 export function previewClip(seg: Segment, volume = 1): void {
   stopPreview()
   if (!isVoiced(seg)) return
@@ -163,13 +209,15 @@ export function previewClip(seg: Segment, volume = 1): void {
   const from = seg.voice_offset ?? 0
   const until = from + (seg.end_time - seg.start_time) * rate
   const audio = newAudio(voiceUrl(seg))
-  audio.volume = volume
+  audio.volume = Math.max(0, Math.min(1, volume * fadeGainAt(seg, seg.start_time)))
   audio.playbackRate = clampRate(rate)
   const current = { audio, raf: 0 }
   preview = current
   const watch = () => {
     if (preview !== current) return
     if (audio.currentTime >= until || audio.ended) { stopPreview(); return }
+    // Where the clip is on the timeline now, for its fades
+    audio.volume = Math.max(0, Math.min(1, volume * fadeGainAt(seg, seg.start_time + (audio.currentTime - from) / rate)))
     current.raf = requestAnimationFrame(watch)
   }
   audio.currentTime = from

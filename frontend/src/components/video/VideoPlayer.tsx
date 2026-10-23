@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useState } from 'react'
+import { useRef, useEffect, useCallback, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Maximize2, Minimize2, VolumeX, Play, Pause, SkipBack, SkipForward } from 'lucide-react'
 import type { Segment, Speaker, Overlay } from '@/types'
@@ -7,6 +7,7 @@ import { formatTime, cn, originalVoicesReplaced } from '@/lib/utils'
 import { OverlayCanvas } from './OverlayCanvas'
 import { useVoicePlayback } from '@/hooks/useVoicePlayback'
 import { frameSecs, isTypingTarget, nextEdge, shuttle } from '@/lib/transport'
+import { duckGainAt, duckSpans } from '@/lib/ducking'
 
 interface VideoPlayerProps {
   videoUrl?: string
@@ -22,9 +23,11 @@ interface VideoPlayerProps {
   stemsVersion?: number
   /** The video's frame rate: one ← / → step (else 1/30 s). */
   frameRate?: number | null
+  /** The music & effects dip under the voices (job.duck_music). */
+  duckMusic?: boolean
 }
 
-export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus, overlays, bgmVolumeDb, stemsVersion, frameRate }: VideoPlayerProps) {
+export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus, overlays, bgmVolumeDb, stemsVersion, frameRate, duckMusic }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const bgmAudioRef = useRef<HTMLAudioElement>(null)
   const vocalsAudioRef = useRef<HTMLAudioElement>(null)
@@ -255,6 +258,26 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       if (vocals) vocals.volume = 0
     }
   }, [volume, mutedTrackIds, jobStatus, hasStemAudio])
+
+  // The music dips under the voices, as in the export: its level follows the
+  // ducking gain every frame while playing
+  const duckSpansMemo = useMemo(() => (duckMusic ? duckSpans(segments) : []), [duckMusic, segments])
+  useEffect(() => {
+    const bgm = bgmAudioRef.current
+    if (!bgm || !hasStemAudio) return
+    const base = mutedTrackIds['__bgm__'] ? 0 : volume
+    const apply = () => {
+      const t = videoRef.current?.currentTime ?? 0
+      bgm.volume = Math.max(0, Math.min(1, base * (duckSpansMemo.length ? duckGainAt(duckSpansMemo, t) : 1)))
+    }
+    apply()
+    if (!isPlaying) return
+    let raf = requestAnimationFrame(function tick() {
+      apply()
+      raf = requestAnimationFrame(tick)
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [duckSpansMemo, isPlaying, volume, mutedTrackIds, hasStemAudio, currentTime])
 
   // Playback rate
   useEffect(() => {
