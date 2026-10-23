@@ -178,6 +178,13 @@ class Job(Base):
     # currently-applied value for the UI slider to read back.
     bgm_volume_db = Column(Float, default=0.0)
 
+    # Timeline rules the episode's clips follow: 1 = 0.3.0 (a clip is as long as
+    # its voice). NULL = made before 0.3.0, converted once at startup
+    # (timeline.convert_old_jobs). New jobs get 1.
+    timeline_version = Column(Integer, nullable=True, default=1)
+    # The video's frame rate (one ← / → step in the editor); NULL = not read yet.
+    frame_rate = Column(Float, nullable=True)
+
     project  = relationship("Project", back_populates="jobs")
     segments = relationship("Segment", back_populates="job", cascade="all, delete",
                             order_by="Segment.start_time")
@@ -226,9 +233,14 @@ class Segment(Base):
     # speaker can share a lane or be spread across separate ones.
     lane_index = Column(Integer, nullable=True, default=0)
 
-    # Timing
+    # Timing: where the clip is on the timeline. A clip with a voice is exactly
+    # as long as the part of the voice it plays (app/services/timeline.py).
     start_time = Column(Float, nullable=False)   # seconds
     end_time   = Column(Float, nullable=False)   # seconds
+    # Where the actor spoke in the original (a fact about the video: stays put
+    # when the clip moves). NULL for a line added by hand.
+    source_start = Column(Float, nullable=True)
+    source_end   = Column(Float, nullable=True)
 
     # Text content
     source_text  = Column(Text, default="")     # original Chinese
@@ -238,6 +250,14 @@ class Segment(Base):
     # TTS output
     tts_audio_path    = Column(String, default="")   # synthesised .wav
     tts_duration_secs = Column(Float, default=0.0)
+    # The clip plays its voice file from voice_offset (seconds into the file)
+    # for (end_time - start_time) seconds at fit_rate on top of the speed baked
+    # into the file. NULL (rows from before 0.3.0) reads as 0.0 / 1.0.
+    voice_offset = Column(Float, nullable=True, default=0.0)
+    fit_rate     = Column(Float, nullable=True, default=1.0)
+    # The Khmer text the voice was made from; differs from khmer_text once the
+    # text is edited after the voice was made (the voice is kept).
+    voice_text   = Column(Text, nullable=True)
 
     # Per-segment voice override — takes precedence over the speaker's voice.
     voice_id = Column(String, ForeignKey("voices.id"), nullable=True)

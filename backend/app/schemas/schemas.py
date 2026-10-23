@@ -81,6 +81,7 @@ class JobResponse(BaseModel):
     created_at: datetime
     completed_at: Optional[datetime]
     finished_at: Optional[datetime] = None
+    frame_rate: Optional[float] = None
 
     @computed_field
     def video_url(self) -> Optional[str]:
@@ -247,6 +248,10 @@ class SegmentUpdate(BaseModel):
     volume_db: Optional[float] = None
     voice_filter: Optional[str] = None
     voice_speed: Optional[float] = None
+    source_start: Optional[float] = None
+    source_end: Optional[float] = None
+    voice_offset: Optional[float] = None
+    voice_text: Optional[str] = None
 
 
 class SegmentResponse(BaseModel):
@@ -267,6 +272,22 @@ class SegmentResponse(BaseModel):
     volume_db: float
     voice_filter: str
     voice_speed: float
+    source_start: Optional[float] = None
+    source_end: Optional[float] = None
+    voice_offset: float = 0.0
+    fit_rate: float = 1.0
+    voice_text: Optional[str] = None
+
+    # Rows from before 0.3.0 hold NULL until they are converted
+    @field_validator("voice_offset", mode="before")
+    @classmethod
+    def _offset_default(cls, v):
+        return 0.0 if v is None else v
+
+    @field_validator("fit_rate", mode="before")
+    @classmethod
+    def _rate_default(cls, v):
+        return 1.0 if v is None else v
 
     @computed_field
     def tts_audio_url(self) -> Optional[str]:
