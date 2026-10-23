@@ -116,3 +116,36 @@ async def test_a_failing_progress_update_does_not_stop_the_encode():
         duration=2.0, on_progress=broken,
     )
     assert rc == 0 and calls
+
+
+@pytest.mark.skipif(not find("ffmpeg"), reason="needs ffmpeg")
+def test_the_exported_voice_is_as_loud_as_in_the_preview(tmp_path):
+    """
+    The mono voice track was mixed into the stereo music at -3 dB per side
+    (ffmpeg's mono-to-stereo pan law), while the preview plays the same clip
+    at full level on both sides: every export's voices sat 3 dB lower against
+    the music than what the user heard while editing.
+    """
+    clip = tmp_path / "line.wav"
+    subprocess.run([ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:d=2", "-ac", "1",
+                    "-af", "volume=-17dB", str(clip)], check=True)          # a sine at -17 dB peak is about -20 dB RMS
+    music = tmp_path / "no_vocals.wav"
+    subprocess.run([ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "4",
+                    str(music)], check=True)
+    video = tmp_path / "in.mp4"
+    subprocess.run([ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=160x90:d=4:r=10",
+                    "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "4", "-shortest",
+                    "-c:v", "mpeg4", "-c:a", "aac", str(video)], check=True)
+    out = asyncio.run(ax.mix_dubbed_audio(str(video), [{"start_time": 1.0, "audio_path": str(clip), "duration": 2.0}],
+                                          str(tmp_path / "out.mp4"), bgm_path=str(music)))
+
+    def rms(path, channel=None):
+        af = "volumedetect" if channel is None else f"pan=mono|c0=c{channel},volumedetect"
+        r = subprocess.run([ffmpeg(), "-v", "info", "-ss", "1.5", "-t", "1", "-i", str(path), "-af", af, "-f", "null", "-"],
+                           capture_output=True, text=True)
+        return float(r.stderr.split("mean_volume:")[1].split("dB")[0])
+
+    clip_level = float(subprocess.run([ffmpeg(), "-v", "info", "-i", str(clip), "-af", "volumedetect", "-f", "null", "-"],
+                                      capture_output=True, text=True).stderr.split("mean_volume:")[1].split("dB")[0])
+    for side in (0, 1):
+        assert rms(out, side) == pytest.approx(clip_level, abs=1.0)
