@@ -17,6 +17,7 @@ from app.models.models import ChatMessage, ChatProposedEdit, ChatThread, Project
 from app.schemas.schemas import (
     ChatEditLine, ChatMessageResponse, ChatProposedEditResponse, ChatSendRequest, ChatSendResponse, ChatThreadResponse,
 )
+from app.services import timeline
 from app.services.pipeline_common import episode_ids
 from app.services.chat_agent import (
     ChatTurnFailed, LineNotFound, ThreadNotFound, adopt_unthreaded, apply_edit_to_segment, message_order, naive_utcnow,
@@ -145,6 +146,7 @@ async def approve_edit(edit_id: str, db: AsyncSession = Depends(get_db, scope="f
     edit.status = "approved"
     edit.resolved_at = naive_utcnow()
     await db.commit()
+    await timeline.settle_job(db, seg.job_id, [seg.id])
     await db.refresh(edit)
     return edit
 

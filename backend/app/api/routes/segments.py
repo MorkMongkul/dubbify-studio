@@ -349,66 +349,61 @@ async def approve_all_segments(job_id: str, db: AsyncSession = Depends(get_db, s
     return {"approved": len(segments), "job_id": job_id}
 
 
-AUTOFIT_SLOWEST = 0.9
-
-
 @router.post("/jobs/{job_id}/segments/autofit", status_code=status.HTTP_200_OK)
 async def autofit_segment_speeds(job_id: str, db: AsyncSession = Depends(get_db, scope="function")):
     """
-    Set each generated clip's voice_speed so its audio exactly fills its
-    timeline slot: audio longer than the slot speeds up, shorter slows down
-    (clamped to atempo's 0.5–2.0 range). The speed is applied to the RAW
-    synthesized clip (same re-apply path as the Voice Speed slider), so the
-    editor preview, the slider UI, and the export all agree afterwards.
+    Speed up each voice that runs into a later line — just enough to end
+    before it starts (an overlap the original already had doesn't count) and
+    never above timeline.AUTOFIT_FASTEST. Never slows a voice down, never
+    lowers a speed the user set. The new speed is rendered into the voice file
+    (as the speed control does) and the clip keeps the same words. Returns how
+    many voices it sped up and how many still run into the next line.
     """
-    from pathlib import Path
     import shutil
-    import soundfile as sf
     from app.core.paths import resolve_media_path
 
-    result = await db.execute(
-        select(Segment)
-        .where(Segment.job_id == job_id, Segment.tts_audio_path != "")
-        .order_by(Segment.start_time)
-    )
-    segments = result.scalars().all()
-    if not segments:
+    segs = (await db.execute(
+        select(Segment).where(Segment.job_id == job_id).order_by(Segment.start_time)
+    )).scalars().all()
+    voiced = [s for s in segs if timeline.is_voiced(s)]
+    if not voiced:
         raise HTTPException(status_code=404, detail="No generated clips to fit — synthesize voices first")
 
-    fitted = skipped = missing = 0
-    for seg in segments:
-        final_path = resolve_media_path(seg.tts_audio_path)
-        raw_path = Path(final_path).with_name(f"seg_{seg.id}_raw.wav")
+    fitted = left = 0
+    changed: list[str] = []
+    for seg in voiced:
+        target = timeline.overrun_target(seg, segs)
+        if target is None:
+            continue
+        current = timeline.total_speed(seg)
+        if current >= timeline.AUTOFIT_FASTEST - 0.005:
+            left += 1
+            continue
+        needed = current * (seg.end_time - seg.start_time) / max(timeline.MIN_CLIP_SECS, target - seg.start_time)
+        new_speed = round(min(timeline.AUTOFIT_FASTEST, needed), 3)
+
+        final_path = Path(resolve_media_path(seg.tts_audio_path))
+        raw_path = final_path.with_name(f"seg_{seg.id}_raw.wav")
         if not raw_path.exists():
-            if not Path(final_path).exists():
-                missing += 1
+            if not final_path.exists():
+                left += 1     # the voice is gone from disk: nothing to speed up
                 continue
             shutil.copy2(final_path, raw_path)
-
-        try:
-            raw_duration = sf.info(str(raw_path)).duration
-        except Exception:
-            missing += 1
-            continue
-        window = max(0.1, seg.end_time - seg.start_time)
-        # Slowed down at most to AUTOFIT_SLOWEST: voices made since 0.2.8 have
-        # their silence trimmed and are often shorter than their line, and
-        # stretching them to fill it (down to 0.65×) sounded wrong.
-        target = max(AUTOFIT_SLOWEST, min(2.0, raw_duration / window))
-
-        if abs(target - (seg.voice_speed or 1.0)) < 0.02:
-            skipped += 1
-            continue
-
-        seg.voice_speed = target
-        seg.tts_duration_secs = await voice_level.render_clip(seg, raw_path, Path(final_path))
+        # The file's own speed carries the whole speed from now on (fit_rate 1)
+        timeline.rescale_for_speed(seg, new_speed)
+        seg.tts_duration_secs = await voice_level.render_clip(seg, raw_path, final_path)
+        timeline.clamp_voiced(seg)
         fitted += 1
+        changed.append(seg.id)
+        if new_speed < needed - 0.005:
+            left += 1
         # Commit per clip: releases the (single, in SQLite dev) DB connection
         # between ffmpeg runs and lets polling clients see progress.
         await db.commit()
 
     await db.commit()
-    return {"fitted": fitted, "skipped": skipped, "missing": missing}
+    await timeline.settle_job(db, job_id, changed)
+    return {"fitted": fitted, "left": left}
 
 
 @router.post("/jobs/{job_id}/segments/tidy-lanes", status_code=status.HTTP_200_OK)

@@ -30,7 +30,7 @@ from sqlalchemy import select, func, or_, literal_column
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.services import gemini_models, story_notes
+from app.services import gemini_models, story_notes, timeline
 from app.services.pipeline_common import episode_ids
 from app.models.models import ChatMessage, ChatProposedEdit, ChatThread, Job, Project, Segment, Speaker, message_time
 
@@ -226,7 +226,8 @@ async def _tool_propose_edit(db: AsyncSession, project: Project, args: dict, mes
 
     if auto:
         apply_edit_to_segment(seg, new_text)
-        await db.flush()
+        await db.commit()
+        await timeline.settle_job(db, seg.job_id, [seg.id])
         return {"status": "applied", "edit_id": edit.id}
 
     await db.flush()
@@ -240,14 +241,16 @@ async def _tool_propose_edit(db: AsyncSession, project: Project, args: dict, mes
 def apply_edit_to_segment(seg: Segment, new_khmer_text: str) -> None:
     """Shared by auto-apply and the manual approve endpoint (routes/chat.py).
 
-    Clears tts_audio_path — same "stale clip after a text edit" convention
-    SegmentUpdate uses — and un-approves the segment: a changed translation,
-    even one the user trusted the AI to apply automatically, needs a human
-    look before it's synthesized again.
+    Keeps the voice, like every text edit (the clip shows it was made from
+    older text; New voice makes it again), and un-approves the segment: a
+    changed translation, even one the user trusted the AI to apply
+    automatically, needs a human look before it's synthesized again. A line
+    with no voice takes its new text's length; the caller commits, then
+    settles the job's tracks (timeline.settle_job).
     """
     seg.khmer_text = new_khmer_text
-    seg.tts_audio_path = ""
     seg.is_approved = False
+    timeline.follow_text(seg)
 
 
 _TOOL_IMPLS = {

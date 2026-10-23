@@ -463,6 +463,22 @@ async def test_translate_missing_fills_only_empty_lines_and_keeps_edits(client, 
 
 
 @pytest.mark.asyncio
+async def test_translate_missing_lines_sizes_lines_by_their_text(client, monkeypatch, uploads, background_db):
+    _project_id, job_id = await _seed(background_db, segments=[(0.0, 0.5, "你好", "", None, ""),
+                                                               (1.0, 3.0, "再见", "", None, "")])
+
+    async def fake_translate(texts, source_lang, target_lang, segments_context=None, story="", cast="", memory=None):
+        return ["ក" * 30 for _ in texts], TranslationReport()
+
+    monkeypatch.setattr(pipeline, "translate_batch_with_report", fake_translate)
+    assert (await client.post(f"/api/v1/jobs/{job_id}/translate")).status_code == 202
+    (a, _), (b, _) = await _segments(background_db, job_id)
+    assert (a.start_time, a.end_time) == (0.0, pytest.approx(1.95))
+    assert (b.start_time, b.end_time) == (1.0, pytest.approx(2.95))
+    assert (a.lane_index or 0) != (b.lane_index or 0)     # they overlap now: never on one track
+
+
+@pytest.mark.asyncio
 async def test_translate_missing_never_overwrites_a_line_typed_while_it_ran(client, monkeypatch, uploads, background_db):
     _project_id, job_id = await _seed(background_db, segments=[(0.0, 2.0, "你好", "", None, "")])
 

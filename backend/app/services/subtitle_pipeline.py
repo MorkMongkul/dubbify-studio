@@ -25,7 +25,7 @@ from app.services.subtitle_parser import parse_subtitle_file
 from app.services.asr import DEFAULT_SPEAKER, label_speech
 from app.services.diarizer import DiarizedSegment
 from app.services.translator import translate_batch_with_report
-from app.services.timeline import follow_text, settle_job
+from app.services.timeline import actor_span, follow_text, settle_job
 from app.services.pipeline_common import (
     update_job_status as _update_job,
     build_speaker_references,
@@ -165,7 +165,7 @@ async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None =
                 select(Segment).where(Segment.job_id == job_id).order_by(Segment.start_time)
             )
             existing_segments = seg_result.scalars().all()
-            spans = [(s.start_time, s.end_time) for s in existing_segments]
+            spans = [actor_span(s) for s in existing_segments]   # the cue, not the moved clip
 
             taken_labels = await project_speaker_labels(db, project.id)
             with tempfile.TemporaryDirectory(prefix="speaker_refs_") as ref_dir:

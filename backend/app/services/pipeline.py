@@ -24,7 +24,7 @@ from app.services.audio_extractor import extract_audio, get_video_duration
 from app.services.source_separator import render_bgm_volume, separate_vocals_bgm
 from app.services.asr import VOICES, labels_for_spans, transcribe_audio
 from app.services.translator import translate_batch_with_report
-from app.services.timeline import follow_text, lay_out_new, settle_job
+from app.services.timeline import actor_span, follow_text, lay_out_new, settle_job
 from app.services.pipeline_common import (
     update_job_status as _update_job,
     build_speaker_references,
@@ -304,10 +304,15 @@ async def run_translation(job_id: str) -> None:
                     select(Segment).where(Segment.id.in_([seg_id for seg_id, _, _ in todo]))
                     .execution_options(populate_existing=True)
                 )).scalars().all()}
+                filled = []
                 for (seg_id, _, _), text in zip(todo, texts):
                     seg = current.get(seg_id)
                     if seg is not None and text and needs_translation(seg):
                         seg.khmer_text = text
+                        follow_text(seg)    # a line with no voice is as long as its text
+                        filled.append(seg_id)
+                await db.commit()
+                await settle_job(db, job.id, filled)
                 warning = report.warning()
             else:
                 warning = ""
@@ -342,7 +347,8 @@ async def run_speaker_detection(job_id: str) -> None:
             if not vocals_path:
                 raise RuntimeError("No extracted audio found for this session.")
             segment_ids = [s.id for s in segments]
-            spans = [(s.start_time, s.end_time) for s in segments]
+            # Where the actor spoke, not where the (perhaps moved) clip is
+            spans = [actor_span(s) for s in segments]
 
             taken_labels = await project_speaker_labels(db, project.id)
             with tempfile.TemporaryDirectory(prefix="speaker_refs_") as ref_dir:

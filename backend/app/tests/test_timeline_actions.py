@@ -1,6 +1,7 @@
 """
-Bulk timeline actions: auto-fit (speed clips to exactly fill their slots)
-and tidy-lanes (repack scattered clips into minimal lanes).
+Bulk timeline actions: Auto-fit (speed up voices that run into the next line,
+never above 1.25×, never slowing one down) and tidy-lanes (repack scattered
+clips into minimal lanes).
 """
 import pytest
 
@@ -8,41 +9,55 @@ from app.models.models import Segment
 from app.tests.timeline_helpers import _add_segment, _make_job, _write_clip
 
 
-@pytest.mark.asyncio
-async def test_autofit_speeds_clips_to_their_slots(client, db_sessionmaker, tmp_path):
-    job_id = await _make_job(client, db_sessionmaker)
-    # 2s of audio in a 1s slot → needs 2.0×; 2s of audio in a 4s slot → slowed only to 0.9× (0.5× sounded wrong)
-    long_id = await _add_segment(db_sessionmaker, job_id, 0.0, 1.0)
-    short_id = await _add_segment(db_sessionmaker, job_id, 5.0, 9.0)
+async def _voiced_clip(db_sessionmaker, job_id, tmp_path, start, tts, **fields) -> str:
+    sid = await _add_segment(db_sessionmaker, job_id, start, start + tts, **fields)
     async with db_sessionmaker() as session:
-        for sid in (long_id, short_id):
-            seg = await session.get(Segment, sid)
-            seg.tts_audio_path = _write_clip(tmp_path, sid, 2.0)
+        seg = await session.get(Segment, sid)
+        seg.tts_audio_path = _write_clip(tmp_path, sid, tts)
+        seg.tts_duration_secs = tts
         await session.commit()
+    return sid
 
-    resp = await client.post(f"/api/v1/jobs/{job_id}/segments/autofit")
-    assert resp.status_code == 200
-    assert resp.json()["fitted"] == 2
 
-    listed = {s["id"]: s for s in (await client.get(f"/api/v1/jobs/{job_id}/segments")).json()}
-    assert listed[long_id]["voice_speed"] == pytest.approx(2.0)
-    assert listed[long_id]["tts_duration_secs"] == pytest.approx(1.0, abs=0.15)
-    assert listed[short_id]["voice_speed"] == pytest.approx(0.9)
-    assert listed[short_id]["tts_duration_secs"] == pytest.approx(2.0 / 0.9, abs=0.15)
+async def _get(db_sessionmaker, sid) -> Segment:
+    async with db_sessionmaker() as session:
+        return await session.get(Segment, sid)
 
 
 @pytest.mark.asyncio
-async def test_autofit_skips_already_fitting_clips(client, db_sessionmaker, tmp_path):
+async def test_autofit_only_speeds_up_voices_that_run_into_the_next_line(client, db_sessionmaker, tmp_path):
     job_id = await _make_job(client, db_sessionmaker)
-    seg_id = await _add_segment(db_sessionmaker, job_id, 0.0, 2.0)
-    async with db_sessionmaker() as session:
-        seg = await session.get(Segment, seg_id)
-        seg.tts_audio_path = _write_clip(tmp_path, seg_id, 2.0)  # exactly fits
-        await session.commit()
+    a = await _voiced_clip(db_sessionmaker, job_id, tmp_path, 0.0, 2.4, source_start=0.0, source_end=2.0)
+    await _add_segment(db_sessionmaker, job_id, 2.0, 3.0, lane=1, khmer_text="")       # B
+    c = await _voiced_clip(db_sessionmaker, job_id, tmp_path, 10.0, 3.0)                # needs 1.5×
+    await _add_segment(db_sessionmaker, job_id, 12.0, 12.5, lane=1, khmer_text="")
+    d = await _voiced_clip(db_sessionmaker, job_id, tmp_path, 20.0, 1.0)                # nothing after it
 
     resp = await client.post(f"/api/v1/jobs/{job_id}/segments/autofit")
     assert resp.status_code == 200
-    assert resp.json() == {"fitted": 0, "skipped": 1, "missing": 0}
+    assert resp.json() == {"fitted": 2, "left": 1}
+
+    sa, sc, sd = [await _get(db_sessionmaker, x) for x in (a, c, d)]
+    assert sa.voice_speed == pytest.approx(1.2, abs=0.01)
+    assert sa.end_time == pytest.approx(2.0, abs=0.02) and sa.start_time == 0.0
+    assert sa.tts_duration_secs == pytest.approx(2.0, abs=0.03)
+    assert sc.voice_speed == pytest.approx(1.25) and sc.end_time == pytest.approx(12.4, abs=0.03)
+    assert (sd.voice_speed, sd.end_time) == (1.0, 21.0)
+
+
+@pytest.mark.asyncio
+async def test_autofit_never_slows_a_voice_down(client, db_sessionmaker, tmp_path):
+    job_id = await _make_job(client, db_sessionmaker)
+    short = await _voiced_clip(db_sessionmaker, job_id, tmp_path, 0.0, 1.0)            # far shorter than its slot
+    await _add_segment(db_sessionmaker, job_id, 5.0, 6.0, lane=1, khmer_text="")
+    fast = await _voiced_clip(db_sessionmaker, job_id, tmp_path, 10.0, 2.0, voice_speed=1.4)   # set by hand
+    await _add_segment(db_sessionmaker, job_id, 11.0, 12.0, lane=1, khmer_text="")
+
+    body = (await client.post(f"/api/v1/jobs/{job_id}/segments/autofit")).json()
+    assert body == {"fitted": 0, "left": 1}
+    s, f = await _get(db_sessionmaker, short), await _get(db_sessionmaker, fast)
+    assert (s.voice_speed, s.end_time) == (1.0, 1.0)
+    assert (f.voice_speed, f.end_time) == (1.4, 12.0)
 
 
 @pytest.mark.asyncio

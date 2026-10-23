@@ -242,6 +242,23 @@ async def test_a_line_without_a_speaker_gets_a_fixed_voice_by_its_pitch(episode,
 
 
 @pytest.mark.asyncio
+async def test_voice_choice_reads_where_the_actor_spoke(episode, db_sessionmaker):
+    """The clip was moved onto the woman's stretch; the actor (a man) spoke at 0–2 s."""
+    ids = await episode()
+    hero = await _speaker(db_sessionmaker, ids["project"], "SPEAKER_00")
+    line = await _line(db_sessionmaker, ids["job"], 2.0, hero)
+    loose = await _line(db_sessionmaker, ids["job"], 2.0, None)
+    async with db_sessionmaker() as db:
+        for sid in (line, loose):
+            seg = await db.get(Segment, sid)
+            seg.source_start, seg.source_end = 0.0, 2.0
+        await db.commit()
+    await _resolve(db_sessionmaker, line)
+    assert (await _voice_of(db_sessionmaker, hero))[0] == "builtin-01-man-a"
+    assert (await _resolve(db_sessionmaker, loose))["description"].startswith("builtin-01-man")
+
+
+@pytest.mark.asyncio
 async def test_without_built_in_voices_the_speakers_description_is_used(episode, db_sessionmaker):
     ids = await episode(voices=[])
     hero = await _speaker(db_sessionmaker, ids["project"], "SPEAKER_00")
