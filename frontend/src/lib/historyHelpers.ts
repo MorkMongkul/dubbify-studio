@@ -6,8 +6,8 @@
 // so the UI reflects the reverted/reapplied server state.
 
 import type { QueryClient } from '@tanstack/react-query'
-import { jobs as jobsApi, segments as segmentsApi, speakers as speakersApi } from '@/api/client'
-import type { LayoutChange, Segment, SegmentCreate, SegmentUpdate, SpeakerMergeResponse, SpeakerUpdate, SplitResult } from '@/types'
+import { jobs as jobsApi, segments as segmentsApi, speakers as speakersApi, stemPieces as stemPiecesApi } from '@/api/client'
+import type { LayoutChange, Stem, StemPiece, Segment, SegmentCreate, SegmentUpdate, SpeakerMergeResponse, SpeakerUpdate, SplitResult } from '@/types'
 import { invalidateSpeakerLines, putSegments } from '@/hooks/useApi'
 import { useHistoryStore } from '@/store/historyStore'
 import { splitUndoPatch } from '@/lib/undoPatches'
@@ -228,6 +228,17 @@ export function recordSegmentDuplicate(qc: QueryClient, jobId: string, created: 
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
     },
   })
+}
+
+/** A stem's pieces cut, trimmed, deleted or reshaped: undo and redo each send the whole list once. */
+export function recordPiecesChange(
+  qc: QueryClient, jobId: string, stem: Stem, before: StemPiece[], after: StemPiece[], label: string,
+) {
+  const send = async (pieces: StemPiece[]) => {
+    const stored = await stemPiecesApi.put(jobId, stem, pieces)
+    qc.setQueryData<Record<Stem, StemPiece[]>>(['stem-pieces', jobId], (old) => old && { ...old, [stem]: stored })
+  }
+  useHistoryStore.getState().push({ label, undo: () => send(before), redo: () => send(after) })
 }
 
 /** The music dipping under the voices switched on or off: one undo step. */

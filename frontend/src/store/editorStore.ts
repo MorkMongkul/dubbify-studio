@@ -86,6 +86,12 @@ interface EditorStore {
   // outside DEFAULT_STATE, so switching episodes keeps it.
   scrubAudio: boolean
   toggleScrubAudio: () => void
+  // The selected piece of the music or the original voices (0.3.2)
+  selectedPiece: { stem: 'music' | 'voices'; id: string } | null
+  setSelectedPiece: (p: { stem: 'music' | 'voices'; id: string } | null) => void
+  // A piece's volume line being dragged: the preview plays this level until saved
+  livePieceVolume: { id: string; db: number } | null
+  setLivePieceVolume: (v: { id: string; db: number } | null) => void
 
   // Mute & Solo States
   mutedTrackIds: Record<string, boolean>
@@ -174,6 +180,8 @@ const DEFAULT_STATE = {
   rightPanelCollapsed: false,
   segmentPositions: {},
   liveClipVolume: null as { id: string; db: number } | null,
+  selectedPiece: null as { stem: 'music' | 'voices'; id: string } | null,
+  livePieceVolume: null as { id: string; db: number } | null,
   mutedTrackIds: {},
   soloedTrackIds: {},
   selectedSegmentIds: [] as string[],
@@ -200,6 +208,8 @@ export const useEditorStore = create<EditorStore>()(
     scrubAudio: true,
     toggleScrubAudio: () => set((s) => ({ scrubAudio: !s.scrubAudio })),
     setLiveClipVolume: (v) => set({ liveClipVolume: v }),
+    setSelectedPiece: (p) => set({ selectedPiece: p }),
+    setLivePieceVolume: (v) => set({ livePieceVolume: v }),
 
     // ── Batch voice generation (not part of DEFAULT_STATE) ─────
     // The backend batch keeps running no matter where the user navigates;

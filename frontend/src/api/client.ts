@@ -3,7 +3,7 @@
 
 import axios, { type AxiosProgressEvent } from 'axios'
 import type {
-  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, SpeakerMergeResponse, Segment, SegmentUpdate, SegmentCreate, LayoutChange, SplitResult, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView,
+  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, SpeakerMergeResponse, Segment, SegmentUpdate, SegmentCreate, LayoutChange, SplitResult, Stem, StemPiece, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView,
 } from '@/types'
 
 const api = axios.create({
@@ -162,6 +162,9 @@ export const jobs = {
   setDucking: (jobId: string, on: boolean) =>
     api.patch<Job>(`/jobs/${jobId}/ducking`, { duck_music: on }).then((r) => r.data),
 
+  frames: (jobId: string) =>
+    api.get<PictureStrip>(`/jobs/${jobId}/frames`).then((r) => r.data),
+
   setTitle: (jobId: string, title: string) =>
     api.patch<Job>(`/jobs/${jobId}/title`, { title }).then((r) => r.data),
 
@@ -218,6 +221,23 @@ export const segments = {
 
   approveAll: (jobId: string) =>
     api.post<{ approved: number }>(`/jobs/${jobId}/approve-all`).then((r) => r.data),
+}
+
+// ── The music and the original voices in pieces (0.3.2) ──────
+export const stemPieces = {
+  /** Both stems' pieces; a stem nobody cut is one whole piece. */
+  list: (jobId: string) =>
+    api.get<Record<Stem, StemPiece[]>>(`/jobs/${jobId}/stem-pieces`).then((r) => r.data),
+  /** Replace a stem's pieces (an edit or an undo); returns what was stored. */
+  put: (jobId: string, stem: Stem, pieces: StemPiece[]) =>
+    api.put<StemPiece[]>(`/jobs/${jobId}/stem-pieces/${stem}`, { pieces }).then((r) => r.data),
+}
+
+/** GET /jobs/{id}/frames — the picture strip, one frame every `interval` seconds from 0. */
+export interface PictureStrip {
+  ready: boolean
+  interval: number
+  urls: string[]
 }
 
 // ── TTS ───────────────────────────────────────────────────────

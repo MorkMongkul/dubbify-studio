@@ -3,12 +3,12 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { AxiosError } from 'axios'
-import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions, chat, appSettings, story } from '@/api/client'
+import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions, chat, appSettings, story, stemPieces } from '@/api/client'
 import type { VoiceCreateInput } from '@/api/client'
 import { useEditorStore } from '@/store/editorStore'
 import { standInMessage, withTurn } from '@/lib/chatMessages'
 import type {
-  Segment, LayoutChange, ProjectCreate, ProjectUpdate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice, OverlayUpdate, AppSettingsUpdate, GeminiModelSetting,
+  Segment, LayoutChange, Stem, StemPiece, ProjectCreate, ProjectUpdate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice, OverlayUpdate, AppSettingsUpdate, GeminiModelSetting,
   ChatLineRef, ChatMessage, StoryEdit,
 } from '@/types'
 
@@ -352,6 +352,42 @@ export function useSetDucking() {
     onSuccess: (updated) => {
       qc.setQueryData(['job', updated.id], updated)
     },
+  })
+}
+
+// ── The music and the original voices in pieces (0.3.2) ──────
+export function useStemPieces(jobId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['stem-pieces', jobId],
+    queryFn: () => stemPieces.list(jobId!),
+    enabled: !!jobId,
+  })
+}
+
+/** Replace a stem's pieces: shown at once, then what the server stored. */
+export function useSetStemPieces() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ jobId, stem, pieces }: { jobId: string; stem: Stem; pieces: StemPiece[] }) =>
+      stemPieces.put(jobId, stem, pieces),
+    onMutate: ({ jobId, stem, pieces }) => {
+      qc.setQueryData<Record<Stem, StemPiece[]>>(['stem-pieces', jobId], (old) => old && { ...old, [stem]: pieces })
+    },
+    onSuccess: (stored, { jobId, stem }) => {
+      qc.setQueryData<Record<Stem, StemPiece[]>>(['stem-pieces', jobId], (old) => old && { ...old, [stem]: stored })
+    },
+    onError: (_, { jobId }) => qc.invalidateQueries({ queryKey: ['stem-pieces', jobId] }),
+  })
+}
+
+/** The picture strip: asked again every few seconds until it's ready. */
+export function useFrames(jobId: string | null | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['frames', jobId],
+    queryFn: () => jobs.frames(jobId!),
+    enabled: !!jobId && enabled,
+    refetchInterval: (query) => (query.state.data?.ready ? false : 4000),
+    staleTime: Infinity,
   })
 }
 
