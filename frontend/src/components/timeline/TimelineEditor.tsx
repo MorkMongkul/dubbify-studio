@@ -1261,8 +1261,6 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                           onContextMenu={handleClipContextMenu}
                           onPatch={handleClipPatch}
                           onSelect={handleSegmentSelect}
-                          onDelete={handleSegmentDelete}
-                          onRegenerate={jobId ? handleSegmentRegenerate : undefined}
                           isPersisting={isLayingOut && !!layoutVariables?.changes.some((c) => c.id === seg.id)}
                           isRegenerating={isRegenerating && regenVariables?.segmentId === seg.id}
                           isSplitting={splittingId === seg.id}

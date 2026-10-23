@@ -5,7 +5,7 @@
 // Dragging moves it in time and between tracks like CapCut; a drop never moves
 // another clip in time (lib/tracks.ts planDrop).
 import { memo, useRef, useEffect, useState, useMemo } from 'react'
-import { Loader2, X, RefreshCw, Gauge, FilePenLine } from 'lucide-react'
+import { Loader2, Gauge, FilePenLine } from 'lucide-react'
 import type { Segment, SegmentUpdate, LayoutChange } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { timeToPixels, pixelsToTime, hexToRgba, cn } from '@/lib/utils'
@@ -43,8 +43,6 @@ interface InteractiveSegmentProps {
   /** A clip setting changed on the clip itself (fades, the volume line): one PATCH + one undo step. */
   onPatch?: (seg: Segment, after: SegmentUpdate, before: SegmentUpdate, label: string) => void
   onSelect: (seg: Segment) => void
-  onDelete: (id: string) => void
-  onRegenerate?: (id: string) => void
   onContextMenu?: (seg: Segment, x: number, y: number) => void
   isPersisting?: boolean
   isRegenerating?: boolean
@@ -63,7 +61,7 @@ interface InteractiveSegmentProps {
 // difference between smooth and stuttering timeline interaction.
 export const InteractiveSegment = memo(function InteractiveSegment({
   seg, color, isActive, isSelected, onToggleSelect, isApproved, zoom, duration, rows, allSegments, PX_PER_SEC,
-  lanesRef, insertLineRef, overruns, onCommitLayout, onPatch, onSelect, onDelete, onRegenerate, onContextMenu,
+  lanesRef, insertLineRef, overruns, onCommitLayout, onPatch, onSelect, onContextMenu,
   isPersisting, isRegenerating, isSplitting,
   mutedTrackIds, soloedTrackIds, volume,
   activeTool, snapEnabled, onSplit,
@@ -461,7 +459,7 @@ export const InteractiveSegment = memo(function InteractiveSegment({
             voiced
               ? 'h-[27px] items-center bg-gradient-to-b from-black/45 via-black/25 to-transparent'
               : 'bottom-0 items-start pt-1 bg-black/20',
-            isActive ? 'pr-14' : isApproved ? 'pr-7' : 'pr-2',
+            isApproved ? 'pr-7' : 'pr-2',
           )}
         >
           <span
@@ -577,37 +575,12 @@ export const InteractiveSegment = memo(function InteractiveSegment({
         <div className="absolute top-1 left-1 h-1.5 w-1.5 rounded-full bg-white/70 animate-pulse pointer-events-none" title="Saving…" />
       )}
 
-      {/* Approved Indicator (hidden when segment is active — delete button takes that spot) */}
-      {isApproved && !isActive && (
+      {/* Approved Indicator */}
+      {isApproved && (
         <div
           className="absolute top-2 right-3.5 h-2 w-2 rounded-full bg-emerald-400 border border-black/30 shadow-sm pointer-events-none"
           title="Approved"
         />
-      )}
-
-      {/* Active-segment actions — Regenerate (real re-synthesis) + Delete */}
-      {isActive && (
-        <div className="absolute top-0.5 right-2.5 z-30 flex items-center gap-1">
-          {seg.tts_audio_path && onRegenerate && (
-            <button
-              className="h-4 w-4 rounded-full bg-ink-700 hover:bg-ink-600 flex items-center justify-center shadow transition-colors disabled:opacity-50"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => { e.stopPropagation(); onRegenerate(seg.id) }}
-              disabled={isRegenerating}
-              title="New voice"
-            >
-              <RefreshCw size={8} className={cn('text-white', isRegenerating && 'animate-spin')} strokeWidth={3} />
-            </button>
-          )}
-          <button
-            className="h-4 w-4 rounded-full bg-red-500 hover:bg-red-400 flex items-center justify-center shadow transition-colors"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => { e.stopPropagation(); onDelete(seg.id) }}
-            title="Delete (⌫)"
-          >
-            <X size={8} className="text-white" strokeWidth={3} />
-          </button>
-        </div>
       )}
 
       {/* Right Trim Handle — see note on the left handle */}
