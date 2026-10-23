@@ -15,6 +15,8 @@ import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, cn, isJobRunni
 import { recordLayoutChange, recordSegmentDelete, recordSegmentsDelete, recordSegmentDuplicate, recordSegmentSplit } from '@/lib/historyHelpers'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { InteractiveSegment, LANE_HEIGHT } from './TimelineClip'
+import { trackRows } from '@/lib/tracks'
+import { overrunSpans } from '@/lib/clipRules'
 
 const PX_PER_SEC = 100 // base pixels per second at zoom=1
 const STEM_HEIGHT = 64  // BGM / Vocals stem rows
@@ -209,15 +211,14 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     ? `uploads/${projectId}/${jobId}/vocals.preview.wav?v=${job?.stems_version ?? 0}`
     : null
 
-  // Timeline rows are free lanes, independent of speaker — a lane is just a
-  // vertical position, and clips of any speaker can live on any lane. One
-  // extra empty lane always trails the highest used one so there's somewhere
-  // to drag a clip to create a brand new lane.
-  const laneIndices = useMemo(() => {
-    const usedLanes = new Set(segments.map((s) => s.lane_index ?? 0))
-    const maxLane = usedLanes.size > 0 ? Math.max(...usedLanes) : 0
-    return Array.from({ length: maxLane + 2 }, (_, i) => i)
-  }, [segments])
+  // Timeline rows are free lanes, independent of speaker. Only lanes that hold
+  // a clip are drawn (an emptied track disappears, like CapCut's); a drop above,
+  // below or between tracks makes a new one (lib/tracks.ts).
+  const rows = useMemo(() => trackRows(segments), [segments])
+  // The part of each voice that runs into a later line where the original didn't
+  const overruns = useMemo(() => overrunSpans(segments), [segments])
+  // Where a drop would insert a new track — positioned by the dragged clip
+  const insertLineRef = useRef<HTMLDivElement>(null)
 
   // Compute speaker color map
   const speakerColorMap = useMemo(() => {
@@ -452,14 +453,15 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     const startY = startClientY - contentRect.top
     const canMarquee = activeTool === 'select'
 
-    // Clip hit-boxes in content space. laneIndices is a dense 0..maxLane+1
-    // range, so a clip's row offset is simply lane_index * LANE_HEIGHT.
+    // Clip hit-boxes in content space, by the row each clip is drawn in
+    // (empty tracks aren't drawn, so a lane number is not a row).
+    const rowOf = (s: Segment) => rows.indexOf(s.lane_index ?? 0)
     const boxes = canMarquee ? segmentsRef.current.map((s) => ({
       id: s.id,
       x1: speakerPanelWidth + timeToPixels(s.start_time, zoom, PX_PER_SEC),
       x2: speakerPanelWidth + timeToPixels(s.end_time, zoom, PX_PER_SEC),
-      y1: lanesTop + (s.lane_index ?? 0) * LANE_HEIGHT,
-      y2: lanesTop + ((s.lane_index ?? 0) + 1) * LANE_HEIGHT,
+      y1: lanesTop + rowOf(s) * LANE_HEIGHT,
+      y2: lanesTop + (rowOf(s) + 1) * LANE_HEIGHT,
     })) : []
 
     let marqueeActive = false
@@ -518,7 +520,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
 
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
-  }, [seekFromTrackEvent, speakerPanelWidth, zoom, activeTool, setSelectedSegments])
+  }, [seekFromTrackEvent, speakerPanelWidth, zoom, activeTool, setSelectedSegments, rows])
 
   const handleHorizontalResizeDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -1074,9 +1076,9 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
               </div>
             </div>
 
-            {/* Timeline lanes — free rows, independent of speaker */}
-            <div ref={lanesRef}>
-            {laneIndices.map((laneIdx) => {
+            {/* Voice tracks — free rows, independent of speaker; only tracks with clips */}
+            <div ref={lanesRef} className="relative">
+            {rows.map((laneIdx) => {
               const laneSegments = segments.filter((s) => (s.lane_index ?? 0) === laneIdx)
 
               return (
@@ -1085,24 +1087,28 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                   className="relative border-b border-timeline-grid"
                   style={{ height: LANE_HEIGHT }}
                 >
-                  {/* Track label (sticky left) */}
+                  {/* Track header (sticky left) — no controls on voice tracks */}
                   <div
-                    className="sticky left-0 z-10 h-full flex items-center px-2.5 gap-2 shrink-0 bg-ink-900/95 backdrop-blur-sm border-r border-white/[0.06]"
+                    className="sticky left-0 z-10 h-full shrink-0 bg-ink-900/95 backdrop-blur-sm border-r border-white/[0.06]"
                     style={{ float: 'left', width: 'var(--speaker-width)' }}
-                  >
-                    <span className="text-[12.5px] font-medium text-white/45 truncate grow min-w-0 pr-1 select-none">
-                      Track {laneIdx + 1}
-                    </span>
-                    <span className="text-[10.5px] text-white/25 tabular-nums shrink-0">
-                      {laneSegments.length || ''}
-                    </span>
-                  </div>
+                  />
 
                   {/* Segments */}
                   <div
                     className="absolute top-0 bottom-0 right-0"
                     style={{ left: 'var(--speaker-width)' }}
                   >
+                    {/* Where the actor spoke: a bracket that stays put when the clip moves */}
+                    {laneSegments.map((seg) => seg.source_start != null && seg.source_end != null && (
+                      <div
+                        key={`span-${seg.id}`}
+                        className="absolute bottom-[2px] h-[4px] border-x-2 border-b-2 border-ink-500/80 rounded-b-[2px] pointer-events-none"
+                        style={{
+                          left: timeToPixels(seg.source_start, zoom, PX_PER_SEC),
+                          width: Math.max(2, timeToPixels(seg.source_end - seg.source_start, zoom, PX_PER_SEC)),
+                        }}
+                      />
+                    ))}
                     {laneSegments.map((seg) => {
                       const isActive = seg.id === activeSegmentId
                       const isApproved = seg.is_approved
@@ -1119,11 +1125,12 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                           isApproved={isApproved}
                           zoom={zoom}
                           duration={duration}
-                          laneIndices={laneIndices}
+                          rows={rows}
                           allSegments={segments}
                           PX_PER_SEC={PX_PER_SEC}
-                          scrollRef={scrollRef}
                           lanesRef={lanesRef}
+                          insertLineRef={insertLineRef}
+                          overruns={overruns[seg.id]}
                           onCommitLayout={handleCommitLayout}
                           onSelect={handleSegmentSelect}
                           onDelete={handleSegmentDelete}
@@ -1144,6 +1151,12 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                 </div>
               )
             })}
+              {/* Where a drop would insert a new track */}
+              <div
+                ref={insertLineRef}
+                className="absolute right-0 h-[2px] bg-brand-500 pointer-events-none z-40"
+                style={{ left: 'var(--speaker-width)', display: 'none', boxShadow: '0 0 6px rgba(240,80,110,0.8)' }}
+              />
             </div>
 
             {/* Empty state — not while a step runs: its progress shows in the
