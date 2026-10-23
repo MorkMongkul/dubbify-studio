@@ -11,7 +11,7 @@ import {
 import { toast } from 'sonner'
 import type { Segment, SegmentUpdate, Speaker, Job, LayoutChange } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
-import { useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useSetBgmVolume, useLayoutSegments, useSplitSegment, useDuplicateSegment, useSetDucking, putSegments } from '@/hooks/useApi'
+import { useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useSetBgmVolume, useLayoutSegments, useSplitSegment, useDuplicateSegment, useSetDucking, useStemPieces, putSegments } from '@/hooks/useApi'
 import { useScrubAudio } from '@/hooks/useScrubAudio'
 import { segments as segmentsApi } from '@/api/client'
 import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, cn, isJobRunning, originalVoicesReplaced } from '@/lib/utils'
@@ -584,7 +584,9 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const musicUrl = jobId && projectId && job?.stems_separated != null
     ? `/uploads/${projectId}/${jobId}/no_vocals.m4a?v=${job?.bgm_volume_db ?? 0}-${job?.stems_version ?? 0}`
     : null
-  const scrubSnippet = useScrubAudio({ segmentsRef, musicUrl, duckMusic: !!job?.duck_music })
+  const voicesUrl = musicUrl && musicUrl.replace('/no_vocals.m4a?v=', '/vocals.m4a?v=')
+  const { data: stemPieceLists } = useStemPieces(jobId)
+  const scrubSnippet = useScrubAudio({ segmentsRef, musicUrl, duckMusic: !!job?.duck_music, voicesUrl, pieces: stemPieceLists })
   const scrubTo = useCallback((t: number) => {
     const clamped = Math.max(0, Math.min(duration, t))
     setCurrentTime(clamped)

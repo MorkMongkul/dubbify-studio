@@ -1,13 +1,15 @@
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Maximize2, Minimize2, VolumeX, Play, Pause, SkipBack, SkipForward } from 'lucide-react'
-import type { Segment, Speaker, Overlay } from '@/types'
+import type { Segment, Speaker, Overlay, StemPiece } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { formatTime, cn, originalVoicesReplaced } from '@/lib/utils'
 import { OverlayCanvas } from './OverlayCanvas'
 import { useVoicePlayback } from '@/hooks/useVoicePlayback'
 import { frameSecs, isTypingTarget, nextEdge, shuttle } from '@/lib/transport'
 import { duckGainAt, duckSpans } from '@/lib/ducking'
+import { pieceAt, pieceGainAt } from '@/lib/stemPieces'
+import { useStemPieces } from '@/hooks/useApi'
 
 interface VideoPlayerProps {
   videoUrl?: string
@@ -259,16 +261,38 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     }
   }, [volume, mutedTrackIds, jobStatus, hasStemAudio])
 
-  // The music dips under the voices, as in the export: its level follows the
-  // ducking gain every frame while playing
+  // The stems' levels follow the export every frame while playing:
+  // - the music: its pieces (silence between them) × the dip under the voices;
+  // - the original voices: their pieces — when the track is muted (as after
+  //   analysis) only the pieces switched into the export, which the export plays.
+  // Before the pieces are known (or with no video length yet) a stem is one whole piece.
+  const { data: pieces } = useStemPieces(jobId)
+  const piecesKnown = !!pieces && (pieces.music.length > 0 || pieces.voices.length > 0)
   const duckSpansMemo = useMemo(() => (duckMusic ? duckSpans(segments) : []), [duckMusic, segments])
+  const vocalsMuted = mutedTrackIds['__vocals__'] ?? originalVoicesReplaced(jobStatus)
   useEffect(() => {
     const bgm = bgmAudioRef.current
-    if (!bgm || !hasStemAudio) return
-    const base = mutedTrackIds['__bgm__'] ? 0 : volume
+    const vocals = vocalsAudioRef.current
+    if (!hasStemAudio) return
+    const musicBase = mutedTrackIds['__bgm__'] ? 0 : volume
+    const exportedVoices = piecesKnown ? pieces!.voices.filter((p) => p.in_export) : []
+    const live = (list: StemPiece[], t: number) => {
+      const lv = useEditorStore.getState().livePieceVolume
+      const p = lv && pieceAt(list, t)
+      return p && p.id === lv.id ? 10 ** ((lv.db - p.volume_db) / 20) : 1
+    }
     const apply = () => {
       const t = videoRef.current?.currentTime ?? 0
-      bgm.volume = Math.max(0, Math.min(1, base * (duckSpansMemo.length ? duckGainAt(duckSpansMemo, t) : 1)))
+      if (bgm) {
+        const pieceGain = piecesKnown ? pieceGainAt(pieces!.music, t) * live(pieces!.music, t) : 1
+        const duck = duckSpansMemo.length ? duckGainAt(duckSpansMemo, t) : 1
+        bgm.volume = Math.max(0, Math.min(1, musicBase * pieceGain * duck))
+      }
+      if (vocals) {
+        const list = vocalsMuted ? exportedVoices : piecesKnown ? pieces!.voices : null
+        const gain = list ? pieceGainAt(list, t) * live(list, t) : vocalsMuted ? 0 : 1
+        vocals.volume = Math.max(0, Math.min(1, volume * gain))
+      }
     }
     apply()
     if (!isPlaying) return
@@ -277,7 +301,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       raf = requestAnimationFrame(tick)
     })
     return () => cancelAnimationFrame(raf)
-  }, [duckSpansMemo, isPlaying, volume, mutedTrackIds, hasStemAudio, currentTime])
+  }, [duckSpansMemo, isPlaying, volume, mutedTrackIds, hasStemAudio, currentTime, pieces, piecesKnown, vocalsMuted])
 
   // Playback rate
   useEffect(() => {
