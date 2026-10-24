@@ -347,6 +347,33 @@ def _tempo_chain(fit_rate: float) -> str:
     return ",".join(steps) + ","
 
 
+async def voice_at_rate(src: Path, rate: float) -> Path:
+    """
+    A voice file at its clip's speed, for the editor's preview: the export's own
+    atempo (_tempo_chain), made once per file version and speed into preview/
+    next to it (an older copy of that voice is removed). The preview plays it
+    from memory instead of a media element: WebKit stalls a playing element
+    ~0.6 s on every seek, which cut the voices in Safari and the desktop app.
+    """
+    version = src.stat().st_mtime_ns
+    out_dir = src.parent / "preview"
+    out = out_dir / f"{src.stem}-{rate:.4f}-{version}.wav"
+    if out.exists():
+        return out
+    out_dir.mkdir(exist_ok=True)
+    part = out_dir / f".{out.stem}-{os.urandom(4).hex()}.part"
+    rc, err = await _run_ffmpeg([ffmpeg(), "-y", "-i", str(src), "-af", _tempo_chain(rate).rstrip(","),
+                                 "-c:a", "pcm_s16le", "-f", "wav", str(part)])
+    if rc != 0:
+        part.unlink(missing_ok=True)
+        raise RuntimeError(f"Making the voice at {rate:.2f}× failed: {err[-500:]}")
+    os.replace(part, out)
+    for old in out_dir.glob(f"{src.stem}-*.wav"):
+        if old != out:
+            old.unlink(missing_ok=True)
+    return out
+
+
 async def _render_dub_part(clips: list, offset: float, output: Path) -> None:
     """
     Mix these clips into one mono float WAV that starts at `offset` seconds:

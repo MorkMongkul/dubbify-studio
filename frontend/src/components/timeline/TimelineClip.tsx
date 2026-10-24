@@ -15,7 +15,7 @@ import {
 } from '@/lib/clipRules'
 import { dbLabel, gainFor, levelBars, peaksFrom, volumeAfterDrag, volumeTop } from '@/lib/waveform'
 import { dropSpot, planDrop, type DropSpot } from '@/lib/tracks'
-import { previewClip } from '@/hooks/useVoicePlayback'
+import { previewClip } from '@/hooks/usePreviewAudio'
 import { DragTip } from './DragTip'
 
 export const LANE_HEIGHT = 64  // clip row height — also the divisor for drop-target row math

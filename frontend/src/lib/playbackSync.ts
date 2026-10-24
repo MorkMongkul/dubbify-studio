@@ -1,28 +1,23 @@
 // src/lib/playbackSync.ts
-// Keeping an audio player (the music, the original voices, a voice clip) with
-// the video without cutting its sound. Re-seeking on every small drift cut the
-// sound again and again: a seek takes WebKit ~0.3 s to resume, which put the
-// player behind again, which triggered another seek (measured on a real
-// episode: 10–18 seeks per player in 8 s of playback). Now a small drift is
-// caught up by playing up to 5% faster or slower (pitch kept — inaudible), and
-// only a big one jumps, after which the player gets time to settle. Pure.
+// Keeping the preview's sound (hooks/usePreviewAudio, its own clock) with the
+// picture. WebKit — Safari and the desktop app — stalls a playing media element
+// whenever it is touched: a seek stalls it ~0.3–1 s, and a change of speed
+// stops a video outright while it lasts (12 changes in 6 s: it moved 0.18 s;
+// measured 2026-10-24). So the picture is never touched while it plays: when
+// it and the sound drift further apart than the eye forgives, the sound, which
+// starts again instantly anywhere, starts again from where the picture is. Pure.
 
-/** Drift (s) below which a player counts as in step. */
-const IN_STEP = 0.04
-/** Drift (s) beyond which the player jumps (a seek elsewhere, a stall). */
-const JUMP = 0.5
-/** After a jump or a start, ms the player gets to settle before it's judged. */
+/** The sound may be heard this far ahead of the picture (s)… */
+const EARLY = 0.045
+/** …or this far behind it, before anyone notices (ITU-R BT.1359). */
+const LATE = 0.125
+/** After a start, ms the picture gets to settle before it's judged. */
 const SETTLE_MS = 600
-/** The most a nudge changes the player's speed. */
-const MAX_NUDGE = 0.05
 
-export type SyncAction = { kind: 'none' } | { kind: 'nudge'; factor: number } | { kind: 'jump' }
+export type SyncAction = 'none' | 'resync'
 
-/** `drift`: the player's position minus where it should be (s; positive = ahead). */
-export function syncAction(drift: number, msSinceJump: number): SyncAction {
-  if (msSinceJump < SETTLE_MS) return { kind: 'none' }
-  if (Math.abs(drift) > JUMP) return { kind: 'jump' }
-  if (Math.abs(drift) < IN_STEP) return { kind: 'none' }
-  // Catch up over a few seconds: behind → a little faster, ahead → a little slower
-  return { kind: 'nudge', factor: 1 - Math.max(-MAX_NUDGE, Math.min(MAX_NUDGE, drift * 0.5)) }
+/** `drift`: the picture's position minus the sound being heard (s; positive = the sound is late). */
+export function syncAction(drift: number, msSinceStart: number): SyncAction {
+  if (msSinceStart < SETTLE_MS) return 'none'
+  return drift > LATE || drift < -EARLY ? 'resync' : 'none'
 }

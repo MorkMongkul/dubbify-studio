@@ -3,7 +3,8 @@ app/api/routes/segments.py
 Segment endpoints: review, edit translations, approve lines.
 Also includes speaker management endpoints.
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm.attributes import flag_modified
@@ -20,6 +21,7 @@ from app.schemas.schemas import (
     SpeakerResponse, SpeakerUpdate, SpeakerCreate, SpeakerMerge, SpeakerMergeResponse, SpeakerUnmerge,
 )
 from app.services import story_notes, timeline, voice_level
+from app.services.audio_extractor import voice_at_rate
 
 router = APIRouter(tags=["Segments & Speakers"])
 
@@ -335,6 +337,25 @@ async def delete_segment(segment_id: str, db: AsyncSession = Depends(get_db, sco
         raise HTTPException(status_code=404, detail="Segment not found")
     await db.delete(seg)
     await db.commit()
+
+
+@router.get("/segments/{segment_id}/voice")
+async def voice_at_speed(
+    segment_id: str,
+    rate: float = Query(..., gt=1.0, le=4.0),
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """A clip's voice at its speed, made with the export's filter, for the editor's preview."""
+    seg = (await db.execute(select(Segment).where(Segment.id == segment_id))).scalar_one_or_none()
+    path = Path(resolve_media_path(seg.tts_audio_path)) if seg and seg.tts_audio_path else None
+    await db.commit()  # no transaction held while ffmpeg runs
+    if path is None or not path.is_file():
+        raise HTTPException(status_code=404, detail="This line has no voice")
+    try:
+        out = await voice_at_rate(path, rate)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return FileResponse(out, media_type="audio/wav")
 
 
 @router.post("/segments/{segment_id}/approve", response_model=SegmentResponse)
