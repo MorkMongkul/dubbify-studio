@@ -2,8 +2,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  anchorAt, fadePoints, heardAt, LEAD, pictureHold, previewVoiceUrl, soundKey, stillAnchor, stretchOf, toCtx, toMedia, upcoming,
-  voiceStart,
+  anchorAt, fadePoints, heardAt, LEAD, loadOrder, pictureHold, previewVoiceUrl, soundKey, stillAnchor, stretchOf, toCtx, toMedia,
+  upcoming, voiceStart,
 } from '../src/lib/audioPlan.ts'
 import { voiceUrl } from '../src/lib/clipRules.ts'
 import type { Segment } from '../src/types/index.ts'
@@ -81,4 +81,10 @@ test('the voices to load: those still playing or starting soon', () => {
   const segs = [clip({ id: 'past', start_time: 0, end_time: 1 }), clip({ id: 'now' }), clip({ id: 'soon', start_time: 6, end_time: 7 }),
     clip({ id: 'later', start_time: 20, end_time: 21 }), clip({ id: 'text', tts_audio_url: null })]
   assert.deepEqual(upcoming(segs, 3, 5).map((s) => s.id), ['now', 'soon'])
+})
+
+test('an episode\'s voices load from the playhead on, then the ones before it, nearest first', () => {
+  const at = (id: string, start: number) => clip({ id, start_time: start, end_time: start + 1 })
+  const segs = [at('a', 1), at('b', 9), at('c', 4.5), at('d', 6), at('e', 2), clip({ id: 'text', tts_audio_url: null })]
+  assert.deepEqual(loadOrder(segs, 5).map((s) => s.id), ['c', 'd', 'b', 'e', 'a'])   // c is still playing at 5
 })

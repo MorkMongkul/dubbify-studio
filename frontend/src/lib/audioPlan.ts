@@ -73,6 +73,14 @@ export function upcoming<S extends Planned>(segs: S[], t: number, ahead: number)
   return segs.filter((s) => isVoiced(s) && s.end_time > t && s.start_time < t + ahead)
 }
 
+/** Every voiced clip, in the order to load it: from the playhead on (by start), then the ones before it, nearest first. */
+export function loadOrder<S extends Planned>(segs: S[], t: number): S[] {
+  const voiced = segs.filter((s) => isVoiced(s))
+  const ahead = voiced.filter((s) => s.end_time > t).sort((a, b) => a.start_time - b.start_time)
+  const before = voiced.filter((s) => s.end_time <= t).sort((a, b) => b.start_time - a.start_time)
+  return [...ahead, ...before]
+}
+
 /** Media time `media` plays at audio-clock time `ctx`, at `rate` media seconds per second. */
 export interface Anchor { ctx: number; media: number; rate: number }
 

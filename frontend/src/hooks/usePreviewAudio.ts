@@ -13,19 +13,28 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import type { Segment } from '@/types'
 import {
-  anchorAt, fadePoints, heardAt, LEAD, pictureHold, previewVoiceUrl, soundKey, stillAnchor, toCtx, toMedia, upcoming,
-  voiceStart, type Anchor,
+  anchorAt, fadePoints, heardAt, LEAD, loadOrder, pictureHold, previewVoiceUrl, soundKey, stillAnchor, toCtx, toMedia,
+  upcoming, voiceStart, type Anchor,
 } from '@/lib/audioPlan'
 import { fadeGainAt, isVoiced, voiceUrl } from '@/lib/clipRules'
 import { syncAction } from '@/lib/playbackSync'
 import { useEditorStore } from '@/store/editorStore'
 
-/** Voices are loaded this far ahead of the playhead (s)… */
+/** Every voice of the episode loads in the background, this many at a time
+ * (a voice faster than 1× is made by the server on its first load)… */
+const LOADING_AT_ONCE = 4
+/** …and the ones this far ahead of the playhead (s) at once, whatever the queue. */
 const LOAD_AHEAD = 8
-/** …and scheduled this far ahead. */
+/** Voices are scheduled this far ahead. */
 const START_AHEAD = 1
+/** Pressing play waits, at most this long (s), for the sounds of the first… */
+const READY_WAIT = 1.5
+/** …this many seconds (right after an episode opens they may still be loading). */
+const READY_SPAN = 1.5
+/** A voice or stem that changes while it plays crosses over to its new sound in this long (s). */
+const SWAP_SECS = 0.012
 /** Decoded voices kept (a few hundred KB each); the oldest used go first. */
-const MAX_VOICES = 120
+const MAX_VOICES = 200
 /** A failed load is tried again after this long (ms). */
 const RETRY_MS = 5000
 
@@ -59,12 +68,12 @@ async function fetchDecode(ctx: AudioContext, url: string): Promise<AudioBuffer 
 // Voices by URL, oldest used first
 const voiceLoads = new Map<string, Promise<AudioBuffer | null>>()
 const voiceBuffers = new Map<string, AudioBuffer>()
-function loadVoice(ctx: AudioContext, url: string): void {
+function loadVoice(ctx: AudioContext, url: string): Promise<AudioBuffer | null> {
   const pending = voiceLoads.get(url)
   if (pending) {
     voiceLoads.delete(url)
     voiceLoads.set(url, pending)
-    return
+    return pending
   }
   const load = fetchDecode(ctx, url).then((buffer) => {
     if (buffer) voiceBuffers.set(url, buffer)
@@ -77,6 +86,23 @@ function loadVoice(ctx: AudioContext, url: string): void {
     voiceLoads.delete(oldest)
     voiceBuffers.delete(oldest)
   }
+  return load
+}
+
+// The episode's voices waiting to load, in order; a new list replaces it
+let voiceQueue: string[] = []
+let loadingNow = 0
+function pumpVoices(ctx: AudioContext): void {
+  while (loadingNow < LOADING_AT_ONCE && voiceQueue.length) {
+    const url = voiceQueue.shift()!
+    if (voiceLoads.has(url)) continue
+    loadingNow++
+    loadVoice(ctx, url).finally(() => { loadingNow--; pumpVoices(ctx) })
+  }
+}
+function queueVoices(ctx: AudioContext, urls: string[]): void {
+  voiceQueue = urls.filter((u) => !voiceLoads.has(u))
+  pumpVoices(ctx)
 }
 
 // The open episode's stems (≈50 MB each in memory): another episode's are let go
@@ -113,6 +139,22 @@ interface StemSound extends Sound { buffer: AudioBuffer }
 function stopSound(s: Sound): void {
   try { s.src.stop() } catch { /* never started */ }
   for (const n of s.nodes) n.disconnect()
+}
+
+/** Fade a sound out from `when` over SWAP_SECS and let it go: its new sound fades in over it. */
+function fadeOutSound(s: Sound, when: number): void {
+  s.level.gain.cancelScheduledValues(when)
+  s.level.gain.setValueAtTime(s.lastLevel, when)
+  s.level.gain.linearRampToValueAtTime(0, when + SWAP_SECS)
+  s.src.onended = () => { for (const n of s.nodes) n.disconnect() }
+  try { s.src.stop(when + SWAP_SECS + 0.005) } catch { stopSound(s) }
+}
+
+/** Start a sound's level at `when`: at once, or rising over SWAP_SECS when it takes over from its old sound. */
+function startLevel(level: GainNode, value: number, when: number, crossing: boolean): void {
+  if (!crossing) { level.gain.value = value; return }
+  level.gain.setValueAtTime(0, when)
+  level.gain.linearRampToValueAtTime(value, when + SWAP_SECS)
 }
 
 /** Ease a level to its new value (a jump clicks); only when it changed. */
@@ -173,12 +215,20 @@ class PreviewSound {
     return segments.filter((s) => isVoiced(s) && !muted[s.speaker_id ?? '__none__'])
   }
 
-  /** Load the voices around the playhead, so playing starts with them. */
+  /** Load every voice of the episode, from the playhead on, so playing starts with them. */
   preload(): void {
     const ctx = audioContext()
     const video = this.input?.videoRef.current
     if (!ctx || !video) return
-    for (const seg of upcoming(this.heard(), video.currentTime, LOAD_AHEAD)) loadVoice(ctx, previewVoiceUrl(seg))
+    queueVoices(ctx, loadOrder(this.heard(), video.currentTime).map(previewVoiceUrl))
+  }
+
+  /** The sounds of the first READY_SPAN s from `t`, loaded — or READY_WAIT s gone by. */
+  private async ready(ctx: AudioContext, t: number): Promise<void> {
+    const loads: Promise<unknown>[] = upcoming(this.heard(), t, READY_SPAN).map((seg) => loadVoice(ctx, previewVoiceUrl(seg)))
+    const stems = this.input?.stems
+    if (stems) for (const urls of [stems.music, stems.voices]) loads.push(stemLoads.get(urls.join(' ')) ?? Promise.resolve())
+    await Promise.race([Promise.all(loads), new Promise((r) => setTimeout(r, READY_WAIT * 1000))])
   }
 
   /** Play from the still picture: the sound at once from the playhead, the picture once that sound is heard. */
@@ -191,6 +241,7 @@ class PreviewSound {
     if (ctx && ctx.state !== 'running') {
       await Promise.race([ctx.resume().catch(() => {}), new Promise((r) => setTimeout(r, 300))])
     }
+    if (ctx) await this.ready(ctx, video.currentTime)
     if (start !== this.starts || !this.input?.isPlaying) return        // stopped meanwhile
     if (!ctx || ctx.state !== 'running' || video.readyState < 3) {
       // No sound clock yet, or the picture must load first (it would stall while the
@@ -249,17 +300,24 @@ class PreviewSound {
       for (const stem of ['music', 'voices'] as const) {
         const buffer = stemBuffers.get(input.stems[stem].join(' '))
         let s = this.stems.get(stem)
-        if (s && s.buffer !== buffer) { stopSound(s); this.stems.delete(stem); s = undefined }
+        // Made again (a music level change): the old sound plays until the new one is loaded
+        let crossing = false
+        if (s && buffer && s.buffer !== buffer) {
+          fadeOutSound(s, startAt(now))
+          this.stems.delete(stem)
+          s = undefined
+          crossing = true
+        }
         if (!s && buffer && now < buffer.duration) {
           const when = startAt(now)
           const src = ctx.createBufferSource()
           src.buffer = buffer
           src.playbackRate.value = rate
           const level = ctx.createGain()
-          level.gain.value = input.stemLevel.current(stem, toMedia(a, when))
+          startLevel(level, input.stemLevel.current(stem, toMedia(a, when)), when, crossing)
           src.connect(level).connect(ctx.destination)
           src.start(when, toMedia(a, when))
-          s = { src, level, nodes: [src, level], lastLevel: level.gain.value, buffer }
+          s = { src, level, nodes: [src, level], lastLevel: input.stemLevel.current(stem, toMedia(a, when)), buffer }
           this.stems.set(stem, s)
         }
         if (s) setLevel(ctx, s, input.stemLevel.current(stem, now))
@@ -270,9 +328,17 @@ class PreviewSound {
     const heard = this.heard()
     for (const seg of upcoming(heard, now, LOAD_AHEAD)) loadVoice(ctx, previewVoiceUrl(seg))
     const wanted = new Map(upcoming(heard, now, START_AHEAD).map((s) => [s.id, s]))
+    const crossing = new Set<string>()
     for (const [id, s] of this.voices) {
       const seg = wanted.get(id)
-      if (!seg || seg.end_time <= now || s.key !== soundKey(seg)) { stopSound(s); this.voices.delete(id) }
+      if (!seg || seg.end_time <= now) { stopSound(s); this.voices.delete(id); continue }
+      if (s.key === soundKey(seg)) continue
+      // Changed while it plays (a speed, a filter, a trim): it plays on until the
+      // new sound is loaded, then the two cross over — no gap
+      if (!voiceBuffers.has(previewVoiceUrl(seg))) { loadVoice(ctx, previewVoiceUrl(seg)); continue }
+      fadeOutSound(s, startAt(now))
+      this.voices.delete(id)
+      crossing.add(id)
     }
     for (const seg of wanted.values()) {
       const playing = this.voices.get(seg.id)
@@ -293,7 +359,7 @@ class PreviewSound {
       fade.gain.setValueAtTime(points[0][1], when)
       for (const [m, g] of points.slice(1)) fade.gain.linearRampToValueAtTime(g, toCtx(a, m))
       const gain = ctx.createGain()
-      gain.gain.value = level
+      startLevel(gain, level, when, crossing.has(seg.id))
       src.connect(fade).connect(gain).connect(ctx.destination)
       src.start(when, plan.offset)
       src.stop(toCtx(a, seg.end_time))
