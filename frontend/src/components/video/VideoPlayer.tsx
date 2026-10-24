@@ -8,6 +8,7 @@ import { OverlayCanvas } from './OverlayCanvas'
 import { gainFor, resumeAudio, useVoicePlayback } from '@/hooks/useVoicePlayback'
 import { frameSecs, isTypingTarget, nextEdge, shuttle } from '@/lib/transport'
 import { switchesOf } from '@/lib/trackFlags'
+import { syncAction } from '@/lib/playbackSync'
 import { duckGainAt, duckSpans } from '@/lib/ducking'
 import { pieceAt, setLevel, stemLevelAt } from '@/lib/stemPieces'
 import { useStemPieces } from '@/hooks/useApi'
@@ -329,19 +330,38 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     const bgm = bgmAudioRef.current
     const vocals = vocalsAudioRef.current
 
-    const syncTimes = () => {
-      const t = video.currentTime
-      if (bgm && Math.abs(bgm.currentTime - t) > 0.15) {
-        bgm.currentTime = t
+    // A seek puts the stems where the video is; while playing, a small drift
+    // is caught up by nudging their speed and only a big one jumps
+    // (lib/playbackSync) — a jump on every small drift cut the sound again and again.
+    const stems = [bgm, vocals].filter((el): el is HTMLAudioElement => !!el)
+    let jumpedAt = 0
+    const jumpTo = (t: number, always: boolean) => {
+      for (const el of stems) {
+        if (always || Math.abs(el.currentTime - t) > 0.04) {
+          el.currentTime = t
+          jumpedAt = performance.now()
+        }
       }
-      if (vocals && Math.abs(vocals.currentTime - t) > 0.15) {
-        vocals.currentTime = t
+    }
+    const onSeek = () => jumpTo(video.currentTime, true)
+    const keepInStep = () => {
+      if (video.paused) return
+      const t = video.currentTime
+      const base = video.playbackRate || 1
+      for (const el of stems) {
+        const action = syncAction(el.currentTime - t, performance.now() - jumpedAt)
+        if (action.kind === 'jump') {
+          el.currentTime = t
+          jumpedAt = performance.now()
+        }
+        const rate = action.kind === 'nudge' ? base * action.factor : base
+        if (Math.abs(el.playbackRate - rate) > 1e-3) el.playbackRate = rate
       }
     }
 
     const playAudios = () => {
-      if (bgm) bgm.play().catch(() => {})
-      if (vocals) vocals.play().catch(() => {})
+      jumpTo(video.currentTime, false)
+      for (const el of stems) el.play().catch(() => {})
     }
 
     const pauseAudios = () => {
@@ -355,12 +375,12 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
 
     video.addEventListener('play', playAudios)
     video.addEventListener('pause', pauseAudios)
-    video.addEventListener('seeking', syncTimes)
-    video.addEventListener('seeked', syncTimes)
-    video.addEventListener('timeupdate', syncTimes)
+    video.addEventListener('seeking', onSeek)
+    video.addEventListener('seeked', onSeek)
+    video.addEventListener('timeupdate', keepInStep)
 
     // Initial sync
-    syncTimes()
+    jumpTo(video.currentTime, false)
     if (isPlaying) {
       playAudios()
     } else {
@@ -370,9 +390,9 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     return () => {
       video.removeEventListener('play', playAudios)
       video.removeEventListener('pause', pauseAudios)
-      video.removeEventListener('seeking', syncTimes)
-      video.removeEventListener('seeked', syncTimes)
-      video.removeEventListener('timeupdate', syncTimes)
+      video.removeEventListener('seeking', onSeek)
+      video.removeEventListener('seeked', onSeek)
+      video.removeEventListener('timeupdate', keepInStep)
       if (bgm) bgm.pause()
       if (vocals) vocals.pause()
     }

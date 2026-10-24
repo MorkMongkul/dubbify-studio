@@ -13,9 +13,8 @@ import { useCallback, useEffect, useRef, type RefObject } from 'react'
 import type { Segment } from '@/types'
 import { audibleAt, fadeGainAt, isVoiced, voiceUrl } from '@/lib/clipRules'
 import { useEditorStore } from '@/store/editorStore'
+import { syncAction } from '@/lib/playbackSync'
 
-/** Seconds a playing voice may drift from where it should be before it is re-seeked. */
-const MAX_DRIFT = 0.1
 /** Clips starting this soon are loaded ahead, so they start on time. */
 const PRELOAD_AHEAD = 3
 
@@ -24,6 +23,8 @@ interface Player {
   url: string
   /** Its gain in the shared AudioContext — can go above the file's own level (the volume line). */
   gain: GainNode | null
+  /** When it last started or jumped (performance.now): it gets time to settle before it's judged. */
+  jumpedAt: number
 }
 
 // One AudioContext for the voices: a gain node per voice carries the volume,
@@ -41,14 +42,14 @@ function voiceAudioContext(): AudioContext | null {
 function newPlayer(url: string): Player {
   const audio = newAudio(url)
   const ctx = voiceAudioContext()
-  if (!ctx) return { audio, url, gain: null }
+  if (!ctx) return { audio, url, gain: null, jumpedAt: 0 }
   try {
     const gain = ctx.createGain()
     ctx.createMediaElementSource(audio).connect(gain)
     gain.connect(ctx.destination)
-    return { audio, url, gain }
+    return { audio, url, gain, jumpedAt: 0 }
   } catch {
-    return { audio, url, gain: null }
+    return { audio, url, gain: null, jumpedAt: 0 }
   }
 }
 
@@ -140,7 +141,7 @@ export function useVoicePlayback({ videoRef, segmentsRef, isPlaying, playbackRat
 
     for (const [id, p] of map) {
       if (wanted.has(id)) continue
-      p.audio.pause()
+      if (!p.audio.paused) p.audio.pause()
       if (!ahead.some((s) => s.id === id)) map.delete(id)
     }
 
@@ -155,18 +156,30 @@ export function useVoicePlayback({ videoRef, segmentsRef, isPlaying, playbackRat
       const audio = p.audio
       setLevel(p, liveRef.current.volume * fadeGainAt(seg, t) * liveFactor(seg))
       const wantedRate = clampRate(rate * (video.playbackRate || 1))
-      if (Math.abs(audio.playbackRate - wantedRate) > 1e-3) audio.playbackRate = wantedRate
       if (!playing) {
+        if (Math.abs(audio.playbackRate - wantedRate) > 1e-3) audio.playbackRate = wantedRate
         if (!audio.paused) audio.pause()
         if (Math.abs(audio.currentTime - filePos) > 0.02) audio.currentTime = filePos
         continue
       }
+      // Kept in step without cutting the sound: a small drift is caught up by a
+      // speed nudge, only a big one jumps (lib/playbackSync)
+      let nudge = 1
       if (audio.paused) {
-        audio.currentTime = filePos
+        if (Math.abs(audio.currentTime - filePos) > 0.02) audio.currentTime = filePos
+        p.jumpedAt = performance.now()
         audio.play().catch(() => {})
-      } else if (Math.abs(audio.currentTime - filePos) > MAX_DRIFT) {
-        audio.currentTime = filePos
+      } else {
+        const action = syncAction(audio.currentTime - filePos, performance.now() - p.jumpedAt)
+        if (action.kind === 'jump') {
+          audio.currentTime = filePos
+          p.jumpedAt = performance.now()
+        } else if (action.kind === 'nudge') {
+          nudge = action.factor
+        }
       }
+      const target = clampRate(wantedRate * nudge)
+      if (Math.abs(audio.playbackRate - target) > 1e-3) audio.playbackRate = target
     }
 
     // Load the next clips ahead, parked on their first kept sound
