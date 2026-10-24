@@ -79,6 +79,13 @@ function place(c: MediaClip, placed: MediaClip[]): MediaClip {
   return { ...c, lane_index: Math.max(c.lane_index, ...placed.map((p) => p.lane_index)) + 1 }
 }
 
+/** A new clip (the tile's +, at the playhead): on the top unlocked track that is free over its span, else a new track above. */
+export function addAt(clip: MediaClip, existing: MediaClip[], locked: Set<number> = new Set()): MediaClip {
+  const lanes = mediaRows(existing)
+  const lane = lanes.find((l) => !locked.has(l) && free(l, clip.start_time, clip.end_time, existing))
+  return { ...clip, lane_index: lane ?? (lanes.length ? lanes[0] + 1 : 0) }
+}
+
 /** Copied clips pasted at `at`: the same spacing, boxes and volume; each on its own track when free there, else above. */
 export function pasteClips(copied: MediaClip[], at: number, existing: MediaClip[]): MediaClip[] {
   if (!copied.length) return []

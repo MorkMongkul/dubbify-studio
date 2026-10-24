@@ -80,9 +80,12 @@ async def upload_media(project_id: str, background_tasks: BackgroundTasks, file:
 
 @router.get("/projects/{project_id}/media", response_model=list[MediaAssetResponse])
 async def list_media(project_id: str, db: AsyncSession = Depends(get_db, scope="function")):
-    rows = await db.execute(select(MediaAsset).where(MediaAsset.project_id == project_id)
-                            .order_by(MediaAsset.created_at.desc()))
-    return rows.scalars().all()
+    rows = (await db.execute(select(MediaAsset).where(MediaAsset.project_id == project_id)
+                             .order_by(MediaAsset.created_at.desc()))).scalars().all()
+    counts = dict((await db.execute(
+        select(MediaClip.asset_id, func.count(func.distinct(MediaClip.job_id)))
+        .where(MediaClip.asset_id.in_([a.id for a in rows])).group_by(MediaClip.asset_id))).all())
+    return [MediaAssetResponse.model_validate(a).model_copy(update={"used_in": counts.get(a.id, 0)}) for a in rows]
 
 
 @router.delete("/media/{asset_id}", response_model=MediaDeleted)

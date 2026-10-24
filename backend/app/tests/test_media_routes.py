@@ -151,3 +151,16 @@ async def test_media_track_switches_are_kept_for_tracks_with_clips(client, db_se
     resp = await client.put(f"/api/v1/jobs/{job_id}/media-clips", json={
         "clips": [_clip(a, 2, 9, lane=1)], "track_flags": {"1": {"hidden": True}, "4": {"locked": True}}})
     assert resp.json()["track_flags"] == {"1": {"locked": False, "hidden": True, "muted": False}}
+
+
+@pytest.mark.asyncio
+async def test_the_library_says_how_many_episodes_use_each_media(client, db_sessionmaker):
+    job1, project_id = await _job(client, db_sessionmaker, 88.0)
+    job2, _ = await _job(client, db_sessionmaker, 88.0, project_id)
+    a = (await _upload(client, project_id))["id"]
+    unused = (await _upload(client, project_id, name="spare.png"))["id"]
+    await client.put(f"/api/v1/jobs/{job1}/media-clips", json={"clips": [_clip(a, 2, 9), _clip(a, 20, 25)]})
+    await client.put(f"/api/v1/jobs/{job2}/media-clips", json={"clips": [_clip(a, 30, 35)]})
+    used = {m["id"]: m["used_in"] for m in (await client.get(f"/api/v1/projects/{project_id}/media")).json()}
+    assert used == {a: 2, unused: 0}
+

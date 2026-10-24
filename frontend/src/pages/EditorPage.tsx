@@ -14,7 +14,7 @@ import {
   ChevronLeft, ChevronRight, Download,
   Loader2, AlertCircle,
   UploadCloud, Film, FileText, X,
-  AlignLeft, ImagePlus, Edit2,
+  AlignLeft, Edit2,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useQueryClient } from '@tanstack/react-query'
@@ -24,24 +24,22 @@ import {
   useProjectJobs,
   useCreateProject, useUploadVideo, useUploadWithSubtitle,
   useAnalyzeJob, useMixFinalAudio,
-  useProject, useUpdateProject, useUploadProjectLogo, useDeleteProjectLogo,
-  useOverlays,
+  useProject, useUpdateProject,
 } from '@/hooks/useApi'
 import { useEditorStore } from '@/store/editorStore'
 
 import { VideoPlayer }    from '@/components/video/VideoPlayer'
 import { TimelineEditor } from '@/components/timeline/TimelineEditor'
 import { TranscriptPanel } from '@/components/transcript/TranscriptPanel'
-import { OverlaysPanel } from '@/components/overlays/OverlaysPanel'
 import { EditorRail } from '@/components/layout/EditorRail'
 import { LayoutMenu } from '@/components/layout/LayoutMenu'
 import { loadLayout, saveLayout } from '@/lib/layoutStorage'
 import { SpeakersPanel } from '@/components/panels/SpeakersPanel'
 import { ProjectsPanel } from '@/components/panels/ProjectsPanel'
+import { MediaPanel } from '@/components/panels/MediaPanel'
 import { VoicesPanel } from '@/components/panels/VoicesPanel'
 import { AssistantPanel } from '@/components/panels/AssistantPanel'
 import { StoryPanel } from '@/components/panels/StoryPanel'
-import { PanelHeader, PanelEmptyState } from '@/components/panels/PanelShell'
 import { Button } from '@/components/ui/Button'
 import { Modal, InputField } from '@/components/ui/Modal'
 import { exportWarnings } from '@/lib/trackFlags'
@@ -230,10 +228,7 @@ export default function EditorPage() {
   const { data: spks = []  } = useSpeakers(projectId ?? null)
   const { data: projectJobs = [], isLoading: loadingJobs, refetch: refetchJobs } = useProjectJobs(projectId ?? null)
   const { data: currentProject } = useProject(projectId ?? null)
-  const { data: jobOverlays = [] } = useOverlays(jobId ?? null)
   const updateProject = useUpdateProject()
-  const uploadLogo = useUploadProjectLogo()
-  const deleteLogo = useDeleteProjectLogo()
   // Inline project rename in the header — null = not editing.
   const [editingProjectName, setEditingProjectName] = useState<string | null>(null)
 
@@ -294,7 +289,6 @@ export default function EditorPage() {
   const [uploadProgress,  setUploadProgress]  = useState(0)
   const [uploadError,     setUploadError]     = useState<string | null>(null)
   const exporting = mixing || isMixing
-  const [logoUploading,   setLogoUploading]   = useState(false)
 
   const isUploading    = uploadingVideo || uploadingWithSub
   const isSetupLoading = creatingProject || isUploading
@@ -496,24 +490,6 @@ export default function EditorPage() {
     }
   }, [job?.status, job?.error_msg])
 
-  const handleLogoFileChange = (file: File | null) => {
-    if (!file || !projectId) return
-    setLogoUploading(true)
-    uploadLogo.mutate({ projectId, file }, {
-      onSuccess: () => toast.success('Logo uploaded'),
-      onError: () => toast.error('Failed to upload logo'),
-      onSettled: () => setLogoUploading(false),
-    })
-  }
-
-  const handleRemoveLogo = () => {
-    if (!projectId) return
-    deleteLogo.mutate(projectId, {
-      onSuccess: () => toast.success('Logo removed'),
-      onError: () => toast.error('Failed to remove logo'),
-    })
-  }
-
   // Commit the header's inline project rename. No-ops on blank/unchanged so
   // blur-after-Escape and click-away-without-typing never fire a PATCH.
   const commitProjectRename = () => {
@@ -656,29 +632,8 @@ export default function EditorPage() {
                 <ProjectsPanel activeProjectId={projectId} activeJobId={jobId} onImportFile={onDropVideo} />
               ) : railTab === 'speakers' ? (
                 <SpeakersPanel projectId={projectId} jobId={jobId} />
-              ) : railTab === 'elements' ? (
-                jobId ? (
-                  <>
-                    <PanelHeader icon={ImagePlus} title="Elements" />
-                    <div className="flex-1 overflow-y-auto p-3">
-                      <OverlaysPanel
-                        jobId={jobId}
-                        project={currentProject}
-                        onUploadProjectLogo={handleLogoFileChange}
-                        onRemoveProjectLogo={handleRemoveLogo}
-                        projectLogoUploading={logoUploading}
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <div className="h-full flex flex-col min-h-0">
-                    <PanelHeader icon={ImagePlus} title="Elements" />
-                    <PanelEmptyState
-                      icon={ImagePlus}
-                      title="No episode open"
-                    />
-                  </div>
-                )
+              ) : railTab === 'media' ? (
+                <MediaPanel projectId={projectId} jobId={jobId} />
               ) : railTab === 'voices' ? (
                 <VoicesPanel />
               ) : railTab === 'story' ? (
@@ -723,7 +678,7 @@ export default function EditorPage() {
                   // No fixed aspect-ratio wrapper here: VideoPlayer sizes itself
                   // to the clip's real dimensions (landscape or portrait/Reel),
                   // bounded by the available pane space via max-w/max-h.
-                  <VideoPlayer videoUrl={videoUrl} segments={displaySegs} speakers={spks} className="max-w-full max-h-full" jobId={jobId} projectId={projectId} jobStatus={job.status} overlays={jobOverlays} bgmVolumeDb={job.bgm_volume_db} stemsVersion={job.stems_version} frameRate={job.frame_rate} duckMusic={!!job.duck_music} trackFlags={job.track_flags} />
+                  <VideoPlayer videoUrl={videoUrl} segments={displaySegs} speakers={spks} className="max-w-full max-h-full" jobId={jobId} projectId={projectId} jobStatus={job.status} bgmVolumeDb={job.bgm_volume_db} stemsVersion={job.stems_version} frameRate={job.frame_rate} duckMusic={!!job.duck_music} trackFlags={job.track_flags} />
                 ) : jobId && job && !videoUrl ? (
                   <div className="flex flex-col items-center gap-4 text-center max-w-xs">
                     <Loader2 size={20} className="animate-spin text-brand-300" />

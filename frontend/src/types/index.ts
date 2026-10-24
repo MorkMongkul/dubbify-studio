@@ -630,6 +630,8 @@ export interface MediaAsset {
   status: 'preparing' | 'ready' | 'failed'
   error: string | null
   created_at: string | null
+  /** How many episodes have clips of it. */
+  used_in: number
   url: string | null
   /** What the editor shows: a video's preview copy (colour over its alpha matte), an image itself. */
   preview_url: string | null

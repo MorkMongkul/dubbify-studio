@@ -179,6 +179,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       if (video.videoWidth > 0 && video.videoHeight > 0) {
         setVideoAspectRatio(video.videoWidth / video.videoHeight)
         setVideoPixelWidth(video.videoWidth)
+        useEditorStore.getState().setVideoSize({ width: video.videoWidth, height: video.videoHeight })
       }
     }
     const onPlay  = () => setPlaying(true)

@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  defaultClip, drawOrder, duplicateClip, fitBox, mediaExportWarnings, mediaRows, pasteClips, splitClip, trimMediaEnd,
+  addAt, defaultClip, drawOrder, duplicateClip, fitBox, mediaExportWarnings, mediaRows, pasteClips, splitClip, trimMediaEnd,
   trimMediaStart,
 } from '../src/lib/media.ts'
 import type { MediaAsset, MediaClip } from '../src/types/index.ts'
@@ -98,3 +98,14 @@ test('the export window names media tracks that are hidden or muted', () => {
     "Media track 2 is muted: its sound won't be in the export",
   ])
 })
+
+test('+ adds at the playhead on the top track that is free there, else on a new track above', () => {
+  assert.equal(addAt(clip(10, 15, 0), []).lane_index, 0)
+  const existing = [clip(0, 20, 0), clip(30, 40, 1)]
+  assert.equal(addAt(clip(10, 15, 0), existing).lane_index, 1)
+  assert.equal(addAt(clip(32, 35, 0), existing).lane_index, 0)
+  assert.equal(addAt(clip(12, 14, 0), [clip(0, 20, 0), clip(10, 20, 1)]).lane_index, 2)
+  // never onto a locked track
+  assert.equal(addAt(clip(10, 15, 0), existing, new Set([1])).lane_index, 2)
+})
+

@@ -9,7 +9,7 @@ import type { LayoutChange } from '@/lib/tracks'
 
 // Which panel the left icon rail has open in the dynamic dock. Settings is a
 // window of its own (settingsOpen), not a panel.
-export type RailTab = 'projects' | 'speakers' | 'elements' | 'voices' | 'story' | 'assistant'
+export type RailTab = 'projects' | 'speakers' | 'media' | 'voices' | 'story' | 'assistant'
 
 export interface VoicePreset {
   id: string
@@ -22,6 +22,8 @@ interface EditorStore {
   // Playback
   currentTime: number
   duration: number
+  /** The video's own pixel size (a new media clip fits its frame); null until it has loaded. */
+  videoSize: { width: number; height: number } | null
   isPlaying: boolean
   volume: number
   playbackRate: number
@@ -119,6 +121,7 @@ interface EditorStore {
   // Actions — playback
   setCurrentTime: (t: number) => void
   setDuration: (d: number) => void
+  setVideoSize: (size: { width: number; height: number } | null) => void
   setPlaying: (p: boolean) => void
   togglePlaying: () => void
   setVolume: (v: number) => void
@@ -166,6 +169,7 @@ interface EditorStore {
 const DEFAULT_STATE = {
   currentTime: 0,
   duration: 0,
+  videoSize: null as { width: number; height: number } | null,
   isPlaying: false,
   volume: 1,
   playbackRate: 1,
@@ -244,6 +248,10 @@ export const useEditorStore = create<EditorStore>()(
     },
     setDuration: (d) => {
       if (get().duration !== d) set({ duration: d })
+    },
+    setVideoSize: (size) => {
+      const was = get().videoSize
+      if (was?.width !== size?.width || was?.height !== size?.height) set({ videoSize: size })
     },
     setPlaying: (p) => {
       if (get().isPlaying !== p) set({ isPlaying: p })

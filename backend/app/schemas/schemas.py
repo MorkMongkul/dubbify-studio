@@ -813,6 +813,8 @@ class MediaAssetResponse(BaseModel):
     status: str
     error: Optional[str] = None
     created_at: Optional[datetime] = None
+    # How many episodes have clips of it (the delete confirmation says so)
+    used_in: int = 0
     path: str = Field("", exclude=True)
     preview_path: Optional[str] = Field(None, exclude=True)
     thumb_path: Optional[str] = Field(None, exclude=True)
