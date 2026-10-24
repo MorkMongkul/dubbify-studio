@@ -5,12 +5,13 @@ import type { Segment, Speaker, StemPiece, TrackFlagMap } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { formatTime, cn, originalVoicesReplaced } from '@/lib/utils'
 import { MediaCanvas } from './MediaCanvas'
-import { heldByEngine, usePreviewAudio, type Stem } from '@/hooks/usePreviewAudio'
+import { heldByEngine, usePreviewAudio, type MediaSound, type Stem } from '@/hooks/usePreviewAudio'
 import { frameSecs, isTypingTarget, nextEdge, seekVideoTo, shuttle } from '@/lib/transport'
 import { switchesOf } from '@/lib/trackFlags'
 import { duckGainAt, duckSpans } from '@/lib/ducking'
 import { pieceAt, stemLevelAt } from '@/lib/stemPieces'
-import { useStemPieces } from '@/hooks/useApi'
+import { useMediaAssets, useMediaClips, useStemPieces } from '@/hooks/useApi'
+import { mediaSwitchesOf } from '@/lib/media'
 
 interface VideoPlayerProps {
   videoUrl?: string
@@ -264,11 +265,23 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       : volume * stemLevelAt(pieces, 'voices', t, vocalsMuted) * live(pieces?.voices, t)
   }, [duckSpansMemo, volume, mutedTrackIds, pieces, vocalsMuted])
 
+  // The media clips' own sound, as the export mixes it: muted media tracks left out
+  const { data: mediaList } = useMediaClips(jobId)
+  const { data: mediaAssets } = useMediaAssets(projectId)
+  const mediaSounds = useMemo((): MediaSound[] => {
+    const assets = new Map((mediaAssets ?? []).map((a) => [a.id, a]))
+    return (mediaList?.clips ?? []).flatMap((c) => {
+      const a = assets.get(c.asset_id)
+      if (!a?.has_audio || !a.audio_url || mediaSwitchesOf(mediaList?.track_flags, c.lane_index).muted) return []
+      return [{ id: c.id, url: a.audio_url, start_time: c.start_time, end_time: c.end_time, source_in: c.source_in, volume_db: c.volume_db }]
+    })
+  }, [mediaList, mediaAssets])
+
   // Everything heard: the voices (every clip under the playhead plays its window,
-  // as in the export), the music & effects and the original voices — on one clock
+  // as in the export), the music & effects, the original voices and the media's own sound — on one clock
   usePreviewAudio({
     videoRef, videoUrl, isPlaying, playbackRate, volume,
-    segments: voiceSegments, muted: mutedTrackIds, stems: hasStemAudio ? stemFiles : null, stemLevel,
+    segments: voiceSegments, muted: mutedTrackIds, stems: hasStemAudio ? stemFiles : null, stemLevel, mediaSounds,
   })
 
   // Playback rate
