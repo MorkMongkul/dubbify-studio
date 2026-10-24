@@ -215,6 +215,11 @@ async def update_layout(
             if value is not None:
                 setattr(seg, field, value)
         _apply_timing(seg, {k for k, v in sent.items() if v is not None}, moved_from=old_start)
+    if payload.track_flags is not None:
+        # A drop that inserted a track moved the tracks below it: their switches move too
+        job = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
+        if job:
+            job.track_flags = timeline.flags_to(timeline.prune_flags(timeline.flags_from(payload.track_flags), segs))
     await db.commit()
     await timeline.settle_job(db, job_id, [c.id for c in payload.changes])
     changed = [s for s in segs if place(s) != before[s.id]]
@@ -424,6 +429,8 @@ async def tidy_segment_lanes(job_id: str, db: AsyncSession = Depends(get_db, sco
     left-to-right greedy assignment — each clip drops into the first lane
     whose previous clip has already ended, opening a new lane only for true
     time overlaps. Non-overlapping tracks collapse back to a single lane.
+    A track with a switch on (locked, hidden or muted) keeps its clips, and
+    the others are packed around it.
     """
     result = await db.execute(
         select(Segment)
@@ -433,25 +440,34 @@ async def tidy_segment_lanes(job_id: str, db: AsyncSession = Depends(get_db, sco
     segments = result.scalars().all()
     if not segments:
         raise HTTPException(status_code=404, detail="No segments found for this job")
+    job = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
+    switched = set(timeline.flags_from(job.track_flags if job else None))
 
-    lane_ends: list[float] = []   # last occupied end_time per lane
+    def free_numbers():
+        n = 0
+        while True:
+            if n not in switched:
+                yield n
+            n += 1
+
+    numbers = free_numbers()
+    lanes: list[int] = []         # the track numbers in use, in order
+    lane_ends: dict[int, float] = {}   # last occupied end_time per track
     changed = 0
     for seg in segments:
-        lane = next(
-            (i for i, end in enumerate(lane_ends) if seg.start_time >= end - 0.001),
-            None,
-        )
+        if (seg.lane_index or 0) in switched:
+            continue
+        lane = next((n for n in lanes if seg.start_time >= lane_ends[n] - 0.001), None)
         if lane is None:
-            lane = len(lane_ends)
-            lane_ends.append(seg.end_time)
-        else:
-            lane_ends[lane] = seg.end_time
+            lane = next(numbers)
+            lanes.append(lane)
+        lane_ends[lane] = seg.end_time
         if (seg.lane_index or 0) != lane:
             seg.lane_index = lane
             changed += 1
 
     await db.commit()
-    return {"changed": changed, "lanes": len(lane_ends)}
+    return {"changed": changed, "lanes": len(lanes) + len({s.lane_index or 0 for s in segments} & switched)}
 
 
 # ── Speakers ──────────────────────────────────────────────────

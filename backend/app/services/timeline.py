@@ -21,6 +21,7 @@ constants below from this file.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Iterable
 
 from sqlalchemy import select
@@ -181,12 +182,69 @@ def overlaps(a, b) -> bool:
     return a.start_time < b.end_time - EPS and b.start_time < a.end_time - EPS
 
 
-def free_lane(segs, seg) -> int:
+# ── Track switches: lock, hide, mute (like CapCut's track headers) ──
+# Stored per episode in jobs.track_flags as JSON, keyed by lane_index; only
+# tracks with a switch on. Locked: no edits (the editor enforces it) and the
+# server never moves another clip onto it. Hidden: its subtitles aren't shown
+# or exported. Muted: its voices aren't played or exported (export_lines).
+
+FLAG_KEYS = ("locked", "hidden", "muted")
+Flags = dict[int, dict[str, bool]]
+
+
+def flags_from(raw) -> Flags:
+    """A job's switches from jobs.track_flags (JSON text, or an already parsed dict)."""
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return {}
+    out: Flags = {}
+    for lane, f in (data or {}).items():
+        try:
+            lane_no = int(lane)
+        except (TypeError, ValueError):
+            continue
+        f = f if isinstance(f, dict) else getattr(f, "model_dump", lambda: {})()
+        on = {k: bool(f.get(k)) for k in FLAG_KEYS}
+        if lane_no >= 0 and any(on.values()):
+            out[lane_no] = on
+    return out
+
+
+def flags_to(flags: Flags) -> str | None:
+    on = {str(lane): f for lane, f in sorted(flags.items()) if any(f.get(k) for k in FLAG_KEYS)}
+    return json.dumps(on) if on else None
+
+
+def flag(flags: Flags | None, lane: int, key: str) -> bool:
+    return bool(flags and flags.get(lane, {}).get(key))
+
+
+def prune_flags(flags: Flags, segs) -> Flags:
+    """Only tracks that still have clips keep their switches (an empty track
+    disappears, and a later clip landing on its number must not inherit them)."""
+    used = {lane_of(s) for s in segs}
+    return {lane: f for lane, f in flags.items() if lane in used}
+
+
+def export_lines(segs, flags: Flags | None):
+    """What the export plays and shows: the voices of tracks that aren't muted,
+    and the subtitles of tracks that aren't hidden."""
+    voices = [s for s in segs if not flag(flags, lane_of(s), "muted")]
+    subtitles = [s for s in segs if not flag(flags, lane_of(s), "hidden")]
+    return voices, subtitles
+
+
+def free_lane(segs, seg, flags: Flags | None = None) -> int:
     """The track `seg` should be on: its own if nothing there overlaps it, else
     the existing track nearest to it where it fits (a tie goes to the lower
-    track), else a new track below the last."""
+    track) — never a locked one, and only one muted and hidden the way its own
+    is — else a new track below the last."""
     others = [s for s in segs if s.id != seg.id]
     own = lane_of(seg)
+    kind = (flag(flags, own, "hidden"), flag(flags, own, "muted"))
 
     def fits(lane: int) -> bool:
         return not any(lane_of(s) == lane and overlaps(s, seg) for s in others)
@@ -194,20 +252,29 @@ def free_lane(segs, seg) -> int:
     if fits(own):
         return own
     lanes = sorted({lane_of(s) for s in others} | {own})
-    candidates = [lane for lane in lanes if lane != own and fits(lane)]
+    candidates = [
+        lane for lane in lanes
+        if lane != own and fits(lane) and not flag(flags, lane, "locked")
+        and (flag(flags, lane, "hidden"), flag(flags, lane, "muted")) == kind
+    ]
     if candidates:
         return min(candidates, key=lambda lane: (abs(lane - own), -lane))
-    return max(lanes) + 1
+    return max(lanes + list((flags or {}).keys())) + 1
 
 
-def settle(segs, changed_ids: Iterable[str]) -> set[str]:
+def settle(segs, changed_ids: Iterable[str], flags: Flags | None = None) -> set[str]:
     """Move each changed clip that overlaps another on its track to the nearest
-    track where it fits. Never touches times. Returns the ids it moved."""
+    track where it fits. Never touches times. A new track a clip moves to is
+    muted and hidden like the one it left (`flags` is updated). Returns the ids
+    it moved."""
     changed = set(changed_ids)
     moved: set[str] = set()
     for seg in sorted((s for s in segs if s.id in changed), key=lambda s: (s.start_time, s.end_time)):
-        lane = free_lane(segs, seg)
-        if lane != lane_of(seg):
+        own = lane_of(seg)
+        lane = free_lane(segs, seg, flags)
+        if lane != own:
+            if flags is not None and lane not in flags and (flag(flags, own, "hidden") or flag(flags, own, "muted")):
+                flags[lane] = {"locked": False, "hidden": flag(flags, own, "hidden"), "muted": flag(flags, own, "muted")}
             seg.lane_index = lane
             moved.add(seg.id)
     return moved
@@ -287,7 +354,7 @@ async def settle_job(db: AsyncSession, job_id: str, changed_ids: Iterable[str]) 
     """Settle a job's tracks after a change the caller has already committed
     (anything not committed in this session's segments is overwritten).
     Returns the ids of the clips it moved to another track."""
-    from app.models.models import Segment
+    from app.models.models import Job, Segment
 
     changed = list(changed_ids)
     if not changed:
@@ -298,7 +365,15 @@ async def settle_job(db: AsyncSession, job_id: str, changed_ids: Iterable[str]) 
         segs = (await db.execute(
             select(Segment).where(Segment.job_id == job_id).execution_options(populate_existing=True)
         )).scalars().all()
-        moved = settle(segs, changed)
+        job = (await db.execute(
+            select(Job).where(Job.id == job_id).execution_options(populate_existing=True)
+        )).scalar_one_or_none()
+        flags = flags_from(job.track_flags) if job else {}
+        moved = settle(segs, changed, flags)
+        if job:
+            stored = flags_to(prune_flags(flags, segs))
+            if stored != job.track_flags:
+                job.track_flags = stored
         await db.commit()
     return moved
 

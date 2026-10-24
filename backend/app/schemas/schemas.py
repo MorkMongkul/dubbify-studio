@@ -14,7 +14,7 @@ def _check_color(value):
     if value is not None and not _COLOR_RE.match(value):
         raise ValueError("Use a colour name (e.g. white) or a hex value (e.g. #ff0000)")
     return value
-from typing import Literal, Optional, List
+from typing import Dict, Literal, Optional, List
 from datetime import datetime
 from app.models.models import JobStatus, Gender, AgeGroup, VoiceMode
 from app.services.voice_tags import AGE_GROUPS, GENDERS, normalize_tags, voice_section
@@ -66,6 +66,19 @@ class ProjectResponse(BaseModel):
 
 
 # ── Job schemas ───────────────────────────────────────────────
+class TrackFlags(BaseModel):
+    """A voice track's switches (timeline.FLAG_KEYS): locked = no edits; hidden =
+    its subtitles aren't shown or exported; muted = its voices aren't played or exported."""
+    locked: bool = False
+    hidden: bool = False
+    muted: bool = False
+
+
+class TrackFlagsUpdate(BaseModel):
+    """Every track's switches, keyed by lane_index (only tracks with a switch on need be sent)."""
+    flags: Dict[str, TrackFlags]
+
+
 class JobResponse(BaseModel):
     id: str
     project_id: str
@@ -83,6 +96,13 @@ class JobResponse(BaseModel):
     finished_at: Optional[datetime] = None
     frame_rate: Optional[float] = None
     duck_music: bool = False
+    track_flags: Dict[str, TrackFlags] = {}
+
+    @field_validator("track_flags", mode="before")
+    @classmethod
+    def _track_flags(cls, v):
+        from app.services.timeline import flags_from
+        return {str(lane): f for lane, f in flags_from(v).items()}
 
     # NULL: analysed before 0.3.1 — the music doesn't dip
     @field_validator("duck_music", mode="before")
@@ -342,6 +362,8 @@ class LayoutChange(BaseModel):
 
 class LayoutRequest(BaseModel):
     changes: List[LayoutChange]
+    # A drop that inserts a track shifts the tracks below it; their switches move with them
+    track_flags: Optional[Dict[str, TrackFlags]] = None
 
 
 class LayoutResponse(BaseModel):

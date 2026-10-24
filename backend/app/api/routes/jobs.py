@@ -18,8 +18,8 @@ from typing import List
 from app.core.database import get_db
 from app.core.config import settings
 from app.models.models import Job, Project, JobStatus, Segment, StemPiece
-from app.schemas.schemas import JobResponse, PipelineStartResponse, BgmVolumeUpdate, JobTitleUpdate, JobFinishedUpdate, JobDuckingUpdate
-from app.services import picture_strip, story_learning
+from app.schemas.schemas import JobResponse, PipelineStartResponse, BgmVolumeUpdate, JobTitleUpdate, JobFinishedUpdate, JobDuckingUpdate, TrackFlagsUpdate
+from app.services import picture_strip, story_learning, timeline
 from app.services.pipeline import (
     needs_translation, run_analysis_pipeline, run_pipeline, run_separation_retry, run_speaker_detection,
     run_translation,
@@ -500,6 +500,25 @@ async def set_job_ducking(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     job.duck_music = payload.duck_music
+    await db.commit()
+    await db.refresh(job)
+    return job
+
+
+@router.put("/{job_id}/track-flags", response_model=JobResponse)
+async def set_track_flags(
+    job_id: str,
+    payload: TrackFlagsUpdate,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """Every voice track's switches — lock, hide, mute — like CapCut's track
+    headers. Tracks without clips don't keep switches."""
+    from app.models.models import Segment
+    job = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    segs = (await db.execute(select(Segment).where(Segment.job_id == job_id))).scalars().all()
+    job.track_flags = timeline.flags_to(timeline.prune_flags(timeline.flags_from(payload.flags), segs))
     await db.commit()
     await db.refresh(job)
     return job

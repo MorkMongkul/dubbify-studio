@@ -589,6 +589,11 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
         )
         job_overlays = overlay_result.scalars().all()
 
+        # Muted tracks' voices aren't exported, hidden tracks' subtitles aren't
+        # burned in (the track headers' switches)
+        all_voiced = segments
+        segments, subtitle_segments = timeline.export_lines(all_voiced, timeline.flags_from(job.track_flags))
+
         # Stored paths may be relative (older rows) — resolve them here so the
         # export works regardless of the process's working directory.
         tts_seg_list = [
@@ -625,7 +630,9 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
             logger.warning(f"Mix: {missing_clips} TTS clip(s) missing on disk — skipped")
         if not tts_seg_list:
             job.status = JobStatus.COMPLETED
-            job.error_msg = "No synthesized audio files were found on disk. Re-generate the voices and try again."
+            job.error_msg = ("Every voice track is muted, so there's nothing to export. Unmute a track and try again."
+                             if all_voiced and not segments else
+                             "No synthesized audio files were found on disk. Re-generate the voices and try again.")
             await db.commit()
             return
 
@@ -683,7 +690,7 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
                         shutil.rmtree(subs_dir, ignore_errors=True)
                         subtitle_lines = await asyncio.to_thread(
                             render_subtitle_pngs,
-                            segments,
+                            subtitle_segments,
                             box={"x": ov.x, "y": ov.y, "width": ov.width, "height": ov.height},
                             video_width=video_width,
                             video_height=video_height,

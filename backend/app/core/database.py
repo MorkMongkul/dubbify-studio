@@ -132,6 +132,7 @@ async def init_db(bind: AsyncEngine | None = None):
             ("segments", [("fade_in_secs", float_type), ("fade_out_secs", float_type)]),   # 0.3.1
             ("jobs", [("duck_music", "BOOLEAN")]),                                       # 0.3.1
             ("jobs", [("stem_pieces_made", "BOOLEAN")]),                                 # 0.3.2
+            ("jobs", [("track_flags", "TEXT")]),                                         # 0.3.1 tracks
         ):
             for name in await add_missing_columns(conn, table, columns):
                 logger.info(f"Added column {name} to the {table} table.")
