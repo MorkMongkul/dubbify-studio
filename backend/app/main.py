@@ -3,6 +3,7 @@ app/main.py
 FastAPI application entry point.
 Registers all routers and startup/shutdown events.
 """
+import asyncio
 import sys
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
@@ -17,6 +18,8 @@ from app.core.database import init_db
 from app.services.pipeline_common import recover_orphaned_jobs
 from app.services.builtin_voices import seed_builtin_voices
 from app.services.timeline import convert_old_jobs
+from app.services.media_assets import resume_interrupted
+import app.core.database as core_db
 from app.api.routes import health, projects, jobs, segments, tts, voices, overlays, chat, story, stem_pieces, media
 from app.api.routes import settings as settings_routes
 
@@ -29,6 +32,10 @@ logger = logging.getLogger(__name__)
 
 
 # ── Lifespan (startup / shutdown) ─────────────────────────────
+# Startup work left running in the background (a task nobody holds can be collected)
+_background: set[asyncio.Task] = set()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.APP_NAME} v{settings.version}")
@@ -55,6 +62,10 @@ async def lifespan(app: FastAPI):
         # Not fatal: an episode not converted yet still plays the same in the
         # preview and the export; the next launch retries.
         logger.exception("Couldn't convert older episodes to the new timeline")
+    # Media left preparing when the app quit: prepared again, in the background
+    task = asyncio.create_task(resume_interrupted(core_db.AsyncSessionLocal))
+    _background.add(task)
+    task.add_done_callback(_background.discard)
     yield
     logger.info("Shutting down.")
 

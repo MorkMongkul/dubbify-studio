@@ -24,7 +24,7 @@ from app.schemas.schemas import (
     MediaTemplateCreate, MediaTemplateRename, MediaTemplateResponse,
 )
 from app.services import media
-from app.services.media_assets import IMAGE_EXTS, VIDEO_EXTS, prepare_asset, probe_asset
+from app.services.media_assets import IMAGE_EXTS, VIDEO_EXTS, UnknownLength, prepare_asset, probe_asset
 
 router = APIRouter(tags=["Media"])
 
@@ -61,6 +61,9 @@ async def upload_media(project_id: str, background_tasks: BackgroundTasks, file:
     await _save_upload(file, dest)
     try:
         facts = await probe_asset(dest)
+    except UnknownLength:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise HTTPException(status_code=415, detail="This video doesn't say how long it is — save it again as MP4 or MOV")
     except ValueError:
         shutil.rmtree(folder, ignore_errors=True)
         raise HTTPException(status_code=415, detail="This file isn't an image or a video Movelo can read")
@@ -90,17 +93,12 @@ async def list_media(project_id: str, db: AsyncSession = Depends(get_db, scope="
 
 @router.delete("/media/{asset_id}", response_model=MediaDeleted)
 async def delete_media(asset_id: str, db: AsyncSession = Depends(get_db, scope="function")):
-    """Remove media from the library, with its clips in every episode and its items in templates."""
+    """Remove media from the library, with its clips in every episode. Templates keep their items
+    for it: applying one skips them and says so."""
     asset = await _get_or_404(db, MediaAsset, asset_id, "Media")
     clips = (await db.execute(select(MediaClip).where(MediaClip.asset_id == asset_id))).scalars().all()
     episodes = len({c.job_id for c in clips})
     await db.execute(delete(MediaClip).where(MediaClip.asset_id == asset_id))
-    templates = (await db.execute(select(MediaTemplate).where(MediaTemplate.project_id == asset.project_id))).scalars().all()
-    for t in templates:
-        items = json.loads(t.items or "[]")
-        kept = [i for i in items if i.get("asset_id") != asset_id]
-        if len(kept) != len(items):
-            t.items = json.dumps(kept)
     folder = Path(asset.path).parent
     await db.delete(asset)
     await db.commit()

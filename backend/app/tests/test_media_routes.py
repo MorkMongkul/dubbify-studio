@@ -94,7 +94,8 @@ async def test_deleting_media_removes_its_clips_everywhere_and_templates_skip_it
     assert [c["asset_id"] for c in (await client.get(f"/api/v1/jobs/{job1}/media-clips")).json()["clips"]] == [keep]
     assert (await client.get(f"/api/v1/jobs/{job2}/media-clips")).json()["clips"] == []
     applied = (await client.post(f"/api/v1/media-templates/{template['id']}/apply/{job2}")).json()
-    assert applied["skipped"] == 0 and [c["asset_id"] for c in applied["clips"]] == [keep]
+    # The template keeps its item for the deleted media: Apply skips it and says so
+    assert applied["skipped"] == 1 and [c["asset_id"] for c in applied["clips"]] == [keep]
 
 
 @pytest.mark.asyncio

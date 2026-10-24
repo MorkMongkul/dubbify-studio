@@ -122,3 +122,70 @@ async def test_preparing_marks_the_asset_ready_with_its_files(prores_alpha, db_s
         asset = await s.get(MediaAsset, asset_id)
         assert asset.status == "ready", asset.error
         assert Path(asset.preview_path).exists() and Path(asset.thumb_path).exists()
+
+
+def _rms_db(audio: Path, channel: int) -> float:
+    """One channel's RMS level in dBFS (astats)."""
+    out = subprocess.run([ffmpeg(), "-hide_banner", "-i", str(audio), "-af",
+                          f"pan=mono|c0=c{channel},astats=metadata=0:reset=0", "-f", "null", "-"],
+                         capture_output=True, text=True).stderr
+    import re
+    return float(re.findall(r"RMS level dB: (-?[\d.]+)", out)[-1])
+
+
+@pytest.mark.asyncio
+async def test_a_mono_sound_is_previewed_as_loud_as_the_export_plays_it(tmp_path):
+    # The export puts a mono sound on both sides at full level (pan=stereo|c0=c0|c1=c0); the
+    # preview's sound file must not be 3 dB under it (ffmpeg's -ac 2 pan law)
+    path = tmp_path / "jingle.mkv"
+    _ff("-f", "lavfi", "-i", "testsrc=s=96x64:d=1:r=10", "-f", "lavfi", "-i", "sine=f=1000:d=1",
+        "-c:v", "libx264" if _has_encoder("libx264") else "mpeg4", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "1",
+        "-shortest", str(path))
+    facts = await media_assets.probe_asset(path)
+    made = await media_assets.make_preview(path, tmp_path / "out", facts)
+    source = _rms_db(path, 0)
+    assert abs(_rms_db(Path(made["audio"]), 0) - source) < 0.5
+
+
+@pytest.mark.asyncio
+async def test_a_one_frame_gif_is_an_image(tmp_path):
+    # A still GIF has no length: as a "video" it became a 0.1 s clip that couldn't be stretched
+    path = tmp_path / "logo.gif"
+    Image.new("RGB", (40, 20), (255, 0, 0)).save(path)
+    facts = await media_assets.probe_asset(path)
+    assert (facts.kind, facts.duration_secs) == ("image", None)
+    moving = tmp_path / "spark.gif"
+    frames = [Image.new("RGB", (40, 20), (255, 0, 0)), Image.new("RGB", (40, 20), (0, 0, 255))]
+    frames[0].save(moving, save_all=True, append_images=frames[1:], duration=100, loop=0)
+    assert (await media_assets.probe_asset(moving)).kind == "video"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not _has_encoder("libx264"), reason="this ffmpeg can't write H.264")
+async def test_a_video_that_doesnt_say_how_long_it_is_is_refused(tmp_path):
+    # Written to a pipe, Matroska has no length in it (as some browser recordings)
+    path = tmp_path / "recording.mkv"
+    with open(path, "wb") as f:
+        subprocess.run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=s=96x64:d=1:r=10",
+                        "-c:v", "libx264", "-f", "matroska", "-"], stdout=f, check=True)
+    with pytest.raises(media_assets.UnknownLength):
+        await media_assets.probe_asset(path)
+
+
+@pytest.mark.asyncio
+async def test_media_left_preparing_when_the_app_quit_is_prepared_at_start(prores_alpha, db_sessionmaker):
+    facts = await media_assets.probe_asset(prores_alpha)
+    async with db_sessionmaker() as s:
+        project = Project(name="Drama")
+        s.add(project)
+        await s.flush()
+        asset = MediaAsset(project_id=project.id, name="card.mov", kind=facts.kind, path=str(prores_alpha),
+                           width=facts.width, height=facts.height, duration_secs=facts.duration_secs,
+                           has_alpha=facts.has_alpha, alpha_kept=facts.alpha_kept, has_audio=facts.has_audio,
+                           status="preparing")
+        s.add(asset)
+        await s.commit()
+        asset_id = asset.id
+    await media_assets.resume_interrupted(db_sessionmaker)
+    async with db_sessionmaker() as s:
+        assert (await s.get(MediaAsset, asset_id)).status == "ready"

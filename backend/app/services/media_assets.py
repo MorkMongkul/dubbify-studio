@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image
+from sqlalchemy import select
 
 from app.core.binaries import ffmpeg
 from app.core.paths import resolve_media_path
@@ -48,6 +49,10 @@ class AssetFacts:
     animated_webp: bool = False
 
 
+class UnknownLength(ValueError):
+    """A video whose file doesn't say how long it is (as some browser recordings)."""
+
+
 def _has_alpha_plane(pix_fmt: str) -> bool:
     return pix_fmt.startswith(("yuva", "gbrap", "ya")) or pix_fmt in _ALPHA_FORMATS
 
@@ -56,6 +61,15 @@ def _animated_webp(path: Path) -> bool:
     try:
         with Image.open(path) as im:
             return bool(getattr(im, "is_animated", False))
+    except Exception:
+        return False
+
+
+def _still_gif(path: Path) -> bool:
+    """A GIF of one frame: a picture, not a video (it has no length)."""
+    try:
+        with Image.open(path) as im:
+            return getattr(im, "n_frames", 1) <= 1
     except Exception:
         return False
 
@@ -73,14 +87,22 @@ async def probe_asset(path: Path) -> AssetFacts:
     video = next((s for s in streams if s.get("codec_type") == "video"), None)
     if video is None:
         raise ValueError("not an image or a video")
-    kind = "image" if ext in IMAGE_EXTS else "video"
+    kind = "image" if ext in IMAGE_EXTS or (ext == ".gif" and _still_gif(path)) else "video"
     tags = {k.lower(): v for k, v in (video.get("tags") or {}).items()}
     webm_alpha = str(tags.get("alpha_mode", "")) == "1"
     has_alpha = _has_alpha_plane(video.get("pix_fmt") or "") or webm_alpha
     duration = None
     if kind == "video":
-        raw = (info.get("format") or {}).get("duration") or video.get("duration")
-        duration = float(raw) if raw not in (None, "N/A") else None
+        for raw in ((info.get("format") or {}).get("duration"), video.get("duration")):
+            try:
+                duration = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if duration > 0:
+                break
+        if not duration or duration <= 0:
+            # As a clip it would be clamped to a sliver that can't be stretched
+            raise UnknownLength("This video doesn't say how long it is")
     return AssetFacts(
         kind=kind,
         width=int(video.get("width") or 0),
@@ -137,7 +159,11 @@ async def make_preview(src: Path, out_dir: Path, facts: AssetFacts) -> dict:
     audio = None
     if facts.has_audio:
         audio = out_dir / "audio.m4a"
-        rc, err = await _run_ffmpeg([ffmpeg(), "-y", "-i", str(src), "-vn", "-ac", "2", "-c:a", "aac", "-b:a", "128k", str(audio)])
+        # A mono sound stays mono: the preview plays it on both sides at full level, as the export
+        # does (pan=stereo|c0=c0|c1=c0); ffmpeg's -ac 2 would put it 3 dB under
+        sound = next((s for s in (await probe_video(str(src))).get("streams") or [] if s.get("codec_type") == "audio"), {})
+        channels = "1" if int(sound.get("channels") or 2) == 1 else "2"
+        rc, err = await _run_ffmpeg([ffmpeg(), "-y", "-i", str(src), "-vn", "-ac", channels, "-c:a", "aac", "-b:a", "128k", str(audio)])
         if rc != 0:
             raise RuntimeError(f"Taking out the sound failed: {err[-500:]}")
     return {"thumb": str(thumb), "preview": str(preview), "audio": str(audio) if audio else None}
@@ -170,3 +196,14 @@ async def prepare_asset(asset_id: str, sessionmaker) -> None:
         asset.status = status
         asset.error = error
         await s.commit()
+
+
+async def resume_interrupted(sessionmaker) -> None:
+    """Prepare again the media left preparing when the app quit (its tile would wait for ever)."""
+    try:
+        async with sessionmaker() as s:
+            ids = (await s.execute(select(MediaAsset.id).where(MediaAsset.status == "preparing"))).scalars().all()
+        for asset_id in ids:
+            await prepare_asset(asset_id, sessionmaker)
+    except Exception:  # noqa: BLE001 — not fatal: the next launch tries again
+        logger.exception("Couldn't prepare the media left preparing")
