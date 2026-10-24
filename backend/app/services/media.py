@@ -108,6 +108,13 @@ def fit_template(items: list[dict], episode_secs: float, existing: list[dict]) -
     return made
 
 
+def export_limit_message(clips: int) -> str | None:
+    """Why an episode can't be exported, or None: each media clip is an ffmpeg input (256 open files from Finder)."""
+    if clips <= MAX_EXPORT_CLIPS:
+        return None
+    return f"This episode has {clips} media clips; at most {MAX_EXPORT_CLIPS} can be exported."
+
+
 def flags_from(raw) -> Flags:
     """Each media track's switches from jobs.media_track_flags (JSON text, or a parsed dict)."""
     if not raw:

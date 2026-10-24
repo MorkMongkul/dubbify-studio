@@ -17,13 +17,13 @@ from pydantic import BaseModel
  
 from app.core.database import get_db
 from app.core.config import settings
-from app.models.models import Segment, Speaker, Job, JobStatus, Voice, VoiceMode, Overlay, StemPiece
+from app.models.models import Segment, Speaker, Job, JobStatus, Voice, VoiceMode, StemPiece, MediaAsset, MediaClip
 from app.schemas.schemas import TTSResponse
 from app.services.tts_client import tts_client
 from app.services.audio_extractor import mix_dubbed_audio, probe_video
-from app.services.video_overlay import build_subtitle_track, render_subtitle_pngs
 from app.services.pipeline_common import RUNNING_STATUSES
 from app.services import stem_pieces, timeline, voice_level
+from app.services import media as media_rules
 from app.services import auto_voice
 from app.core.paths import resolve_media_path, resolve_existing
 
@@ -584,15 +584,16 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
         )
         segments = result.scalars().all()
 
-        overlay_result = await db.execute(
-            select(Overlay).where(Overlay.job_id == job_id).order_by(Overlay.z_index)
-        )
-        job_overlays = overlay_result.scalars().all()
+        # The episode's media clips (the Media tab, 0.4.0), lower tracks first. The
+        # old Elements overlays (subtitles, cover box, logo) aren't exported any more.
+        media_rows = (await db.execute(
+            select(MediaClip, MediaAsset).join(MediaAsset, MediaAsset.id == MediaClip.asset_id)
+            .where(MediaClip.job_id == job_id).order_by(MediaClip.lane_index, MediaClip.start_time)
+        )).all()
 
-        # Muted tracks' voices aren't exported, hidden tracks' subtitles aren't
-        # burned in (the track headers' switches)
+        # Muted tracks' voices aren't exported (the track headers' switches)
         all_voiced = segments
-        segments, subtitle_segments = timeline.export_lines(all_voiced, timeline.flags_from(job.track_flags))
+        segments, _ = timeline.export_lines(all_voiced, timeline.flags_from(job.track_flags))
 
         # Stored paths may be relative (older rows) — resolve them here so the
         # export works regardless of the process's working directory.
@@ -651,60 +652,43 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
         bgm_wav = job_dir / "no_vocals.wav"
 
         try:
-            # Built in z-index order (job_overlays is already queried that way) so
-            # shapes/images/subtitle lines interleave correctly — e.g. a shape meant
-            # to cover the original video's subtitle only reads right if it stays
-            # positioned below the new subtitle text in this same ordered list, not
-            # grouped separately by kind.
-            video_layers: list = []
+            # Media: hidden tracks aren't drawn, muted ones aren't heard (media track switches)
+            media_flags = media_rules.flags_from(job.media_track_flags)
+            media_list: list = []
+            channels: dict[str, int] = {}
+            for clip, asset in media_rows:
+                path = resolve_existing(asset.path)
+                if not path:
+                    logger.warning(f"Mix: media {asset.name!r} is missing on disk — skipped")
+                    continue
+                switches = media_flags.get(clip.lane_index, {})
+                draw = not switches.get("hidden")
+                sound = asset.kind == "video" and bool(asset.has_audio) and not switches.get("muted")
+                if not (draw or sound):
+                    continue
+                if sound and str(path) not in channels:
+                    probe = await probe_video(str(path))
+                    audio = next((st for st in probe.get("streams", []) if st.get("codec_type") == "audio"), {})
+                    channels[str(path)] = int(audio.get("channels") or 2)
+                media_list.append({
+                    "kind": asset.kind, "path": str(path), "source_in": clip.source_in or 0.0,
+                    "length": clip.end_time - clip.start_time, "start": clip.start_time, "end": clip.end_time,
+                    "x": clip.x, "y": clip.y, "width": clip.width, "height": clip.height,
+                    "draw": draw, "sound": sound, "volume_db": clip.volume_db or 0.0,
+                    "channels": channels.get(str(path), 2),
+                })
+            limit = media_rules.export_limit_message(len(media_list))
+            if limit:
+                job.status = JobStatus.COMPLETED
+                job.error_msg = limit
+                await db.commit()
+                return
             video_width = video_height = None
-            if job_overlays:
+            if any(m["draw"] for m in media_list):
                 probe = await probe_video(source_video)
-                video_stream = next((s for s in probe.get("streams", []) if s.get("codec_type") == "video"), None)
+                video_stream = next((st for st in probe.get("streams", []) if st.get("codec_type") == "video"), None)
                 video_width = int(video_stream["width"]) if video_stream else 1080
                 video_height = int(video_stream["height"]) if video_stream else 1920
-
-                for ov in job_overlays:
-                    if ov.type == "image":
-                        overlay_media = resolve_existing(ov.media_path)
-                        if not overlay_media:
-                            continue
-                        video_layers.append({
-                            "kind": "image",
-                            "media_path": str(overlay_media),
-                            "x": ov.x, "y": ov.y, "width": ov.width, "height": ov.height,
-                            "opacity": ov.opacity,
-                            "start_time": ov.start_time, "end_time": ov.end_time,
-                        })
-                    elif ov.type == "shape":
-                        video_layers.append({
-                            "kind": "shape",
-                            "x": ov.x, "y": ov.y, "width": ov.width, "height": ov.height,
-                            "color": ov.color, "opacity": ov.opacity, "blur": ov.blur,
-                            "start_time": ov.start_time, "end_time": ov.end_time,
-                        })
-                    elif ov.type == "subtitle":
-                        # Pillow text rendering is CPU-bound — keep it off the event loop.
-                        # All lines go into ONE image stream (one ffmpeg input).
-                        subs_dir = job_dir / "subs"
-                        shutil.rmtree(subs_dir, ignore_errors=True)
-                        subtitle_lines = await asyncio.to_thread(
-                            render_subtitle_pngs,
-                            subtitle_segments,
-                            box={"x": ov.x, "y": ov.y, "width": ov.width, "height": ov.height},
-                            video_width=video_width,
-                            video_height=video_height,
-                            out_dir=subs_dir,
-                            font_size=ov.font_size,
-                            color=ov.color,
-                            outline_color=ov.outline_color,
-                            background_color=ov.background_color,
-                        )
-                        track = await asyncio.to_thread(
-                            build_subtitle_track, subtitle_lines, video_width, video_height, subs_dir / "track",
-                        )
-                        if track:
-                            video_layers.append(track)
 
             # Release the DB connection for the duration of the (long) ffmpeg run
             await db.commit()
@@ -715,7 +699,7 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
                 output_path=output_path,
                 mute_original=mute_original,
                 bgm_path=str(bgm_wav) if bgm_wav.exists() else None,
-                video_layers=video_layers or None,
+                media=media_list or None,
                 video_width=video_width,
                 video_height=video_height,
                 on_progress=lambda fraction: _set_mix_progress(job_id, fraction),

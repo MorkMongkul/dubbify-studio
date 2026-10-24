@@ -476,6 +476,7 @@ async def mix_dubbed_audio(
     music_expr: str | None = None,
     voices_path: str | None = None,
     voices_expr: str | None = None,
+    media: list | None = None,
 ) -> str:
     """
     Mix TTS audio segments back onto the video timeline using ffmpeg, and
@@ -528,6 +529,14 @@ async def mix_dubbed_audio(
                        x/y/width/height are fractions (0-1) of the video's
                        own dimensions; start_time/end_time may be None for
                        "visible the whole video".
+        media:         The episode's media clips (the Media tab, 0.4.0), lower
+                       tracks first: {kind 'video'|'image', path (the original),
+                       source_in, length, start, end, x, y, width, height
+                       (fractions), draw, sound, volume_db, channels}. A video
+                       clip is one input cut to its window; an image file is
+                       one input however often it's used. Drawn with its
+                       transparency (`draw`); a video's sound (`sound`) is
+                       delayed to its clip and mixed in with the voices.
         on_progress:   Optional async callback(fraction 0-1).
 
     Returns:
@@ -547,7 +556,7 @@ async def mix_dubbed_audio(
         return await _mix_with_parts(
             video_path, tts_segments, output_path, mute_original, bgm_path,
             video_layers, video_width, video_height, work_dir, report, duck_expr,
-            music_expr, voices_path, voices_expr,
+            music_expr, voices_path, voices_expr, media,
         )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -557,6 +566,7 @@ async def _mix_with_parts(
     video_path, tts_segments, output_path, mute_original, bgm_path,
     video_layers, video_width, video_height, work_dir: Path, report, duck_expr: str | None = None,
     music_expr: str | None = None, voices_path: str | None = None, voices_expr: str | None = None,
+    media: list | None = None,
 ) -> str:
     parts = await build_dub_parts(
         tts_segments, work_dir, on_progress=lambda f: report(0.05 + 0.35 * f),
@@ -593,6 +603,24 @@ async def _mix_with_parts(
         f"{''.join(part_labels)}amix=inputs={len(part_labels)}:normalize=0:duration=longest[dubmix]"
     )
 
+    # Media (0.4.0): one input per video clip, cut to its own window, and one per
+    # image file however often it's used (a still that `overlay` repeats)
+    next_input_idx = part_offset + len(parts)
+    media = [m for m in (media or []) if m.get("draw") or m.get("sound")]
+    media_inputs: list[int] = []
+    image_inputs: dict[str, int] = {}
+    for m in media:
+        if m["kind"] == "image":
+            if m["path"] not in image_inputs:
+                inputs += ["-i", m["path"]]
+                image_inputs[m["path"]] = next_input_idx
+                next_input_idx += 1
+            media_inputs.append(image_inputs[m["path"]])
+        else:
+            inputs += ["-ss", f"{m['source_in']:.3f}", "-t", f"{m['length']:.3f}", "-i", m["path"]]
+            media_inputs.append(next_input_idx)
+            next_input_idx += 1
+
     # Pad the combined dub track to the video's length so -shortest cuts at
     # the VIDEO's end, not at the last TTS clip's end. Not endlessly: an
     # endless apad keeps generating silence once the video has ended, and
@@ -604,6 +632,23 @@ async def _mix_with_parts(
     # them 3 dB lower against the (stereo) music than the user heard.
     filter_parts.append(f"[dubmix]{pad},pan=stereo|c0=c0|c1=c0[dubbed]")
 
+    # A media video's own sound joins the (already stereo) voices — a mono one
+    # at full level on both sides, as the preview plays it; the music doesn't dip under it
+    sound_labels = []
+    for j, (m, k) in enumerate(zip(media, media_inputs)):
+        if m["kind"] != "video" or not m.get("sound"):
+            continue
+        to_stereo = "pan=stereo|c0=c0|c1=c0" if m.get("channels", 2) == 1 else "aformat=channel_layouts=stereo"
+        filter_parts.append(
+            f"[{k}:a]{to_stereo},aresample=48000,volume={m.get('volume_db', 0.0):.2f}dB,"
+            f"adelay=delays={round(m['start'] * 1000)}:all=1[ms{j}]")
+        sound_labels.append(f"[ms{j}]")
+    dub = "[dubbed]"
+    if sound_labels:
+        filter_parts.append(
+            f"[dubbed]{''.join(sound_labels)}amix=inputs={len(sound_labels) + 1}:normalize=0:duration=first[dubbedm]")
+        dub = "[dubbedm]"
+
     # Determine final audio:
     #   bgm_path provided  → BGM (full volume) + dubbed TTS (full volume)
     #   mute_original=True → dubbed TTS only (no background)
@@ -611,10 +656,10 @@ async def _mix_with_parts(
     if voices_input_idx is not None:
         # Only the switched-on pieces of the actors' own voices are heard
         filter_parts.append(f"[{voices_input_idx}:a]volume='{voices_expr}':eval=frame[origpieces]")
-        filter_parts.append("[dubbed][origpieces]amix=inputs=2:normalize=0:duration=first[dubbed2]")
+        filter_parts.append(f"{dub}[origpieces]amix=inputs=2:normalize=0:duration=first[dubbed2]")
         dubbed = "[dubbed2]"
     else:
-        dubbed = "[dubbed]"
+        dubbed = dub
     if bgm_input_idx is not None:
         music = f"[{bgm_input_idx}:a]"
         if music_expr:
@@ -640,7 +685,6 @@ async def _mix_with_parts(
     # kind always landing above the other regardless of z-index.
     # Stream-copying the video (-c:v copy) is only possible when no video
     # filter is applied — adding any layer means decoding/re-encoding.
-    next_input_idx = part_offset + len(parts)
     video_map = "0:v"
     needs_video_encode = False
     video_chain_label = "0:v"
@@ -709,6 +753,35 @@ async def _mix_with_parts(
                 )
 
             video_chain_label = out_label
+        needs_video_encode = True
+
+    # Media pictures over everything, lower tracks first, with their transparency
+    drawn = [(j, m, k) for j, (m, k) in enumerate(zip(media, media_inputs)) if m.get("draw")]
+    if drawn:
+        if not video_width or not video_height:
+            raise ValueError("video_width/video_height are required when media is drawn")
+        uses: dict[int, list[str]] = {}
+        for j, m, k in drawn:
+            uses.setdefault(k, []).append(f"mi{j}")
+        for k, labels in uses.items():
+            if len(labels) > 1:          # one image file in several clips
+                filter_parts.append(f"[{k}:v]split={len(labels)}{''.join(f'[{lab}]' for lab in labels)}")
+        for j, m, k in drawn:
+            src = f"[mi{j}]" if len(uses[k]) > 1 else f"[{k}:v]"
+            w = max(2, round(video_width * m["width"]))
+            h = max(2, round(video_height * m["height"]))
+            px, py = round(video_width * m["x"]), round(video_height * m["y"])
+            start, end = m["start"], m["end"]
+            if m["kind"] == "video":
+                # Its frames start at its clip; after its last one the picture shows through
+                filter_parts.append(f"{src}setpts=PTS-STARTPTS+{start:.3f}/TB,scale={w}:{h},format=yuva420p[mv{j}]")
+                tail = ":eof_action=pass"
+            else:
+                filter_parts.append(f"{src}scale={w}:{h},format=yuva420p[mv{j}]")
+                tail = ""
+            filter_parts.append(f"[{video_chain_label}][mv{j}]overlay=x={px}:y={py}"
+                                f":enable='between(t,{start:.3f},{end:.3f})'{tail}[vm{j}]")
+            video_chain_label = f"vm{j}"
         needs_video_encode = True
 
     if needs_video_encode:

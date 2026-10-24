@@ -28,7 +28,6 @@ from app.services.pipeline_common import vocals_path_for
 from app.core.paths import resolve_existing
 from app.services.subtitle_pipeline import run_subtitle_pipeline, run_subtitle_analysis_pipeline
 from app.services.audio_extractor import extract_subtitle, frame_rate_of, list_subtitle_tracks, probe_video
-from app.api.routes.overlays import apply_default_overlay_template
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -107,7 +106,6 @@ async def upload_and_start(
 
     # Stamp the default overlay template (logo/brand kit) so every new
     # episode starts with the same layout — no per-episode logo placement.
-    await apply_default_overlay_template(job, db)
 
     # Auto-detect embedded subtitles
     subtitle_path = await extract_subtitle(
@@ -209,7 +207,6 @@ async def upload_with_subtitle(
 
     # Stamp the default overlay template (logo/brand kit) so every new
     # episode starts with the same layout — no per-episode logo placement.
-    await apply_default_overlay_template(job, db)
 
     # Launch subtitle pipeline in background
     background_tasks.add_task(
