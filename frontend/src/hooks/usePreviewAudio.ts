@@ -13,7 +13,7 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import type { Segment } from '@/types'
 import {
-  anchorAt, fadePoints, heardAt, holdFor, LEAD, learnedDelay, loadOrder, previewVoiceUrl, shiftAnchor, soundKey, stillAnchor, toCtx, toMedia,
+  anchorAt, fadePoints, heardAt, LEAD, learnedDelay, loadOrder, previewVoiceUrl, shiftAnchor, soundKey, startTimes, stillAnchor, toCtx, toMedia,
   upcoming, voiceStart, type Anchor,
 } from '@/lib/audioPlan'
 import { fadeGainAt, isVoiced, voiceUrl } from '@/lib/clipRules'
@@ -325,8 +325,8 @@ class PreviewSound {
       return
     }
     const latency = outputDelay(ctx)
-    const hold = holdFor(latency, videoDelayFor(latency))
-    this.anchor = stillAnchor(ctx.currentTime, video.currentTime, this.input.playbackRate || 1)
+    const { soundLead, hold } = startTimes(latency, videoDelayFor(latency))
+    this.anchor = stillAnchor(ctx.currentTime, video.currentTime, this.input.playbackRate || 1, soundLead)
     this.anchoredAt = performance.now() + hold * 1000
     this.learning = true
     this.holding = setTimeout(() => {
@@ -344,11 +344,17 @@ class PreviewSound {
     void this.start()
   }
 
-  /** Picture − sound heard (s): on the last frame shown when there is one, else on the video's position. */
-  private drift(ctx: AudioContext, video: HTMLVideoElement, a: Anchor, latency: number): number {
+  /**
+   * Picture − sound heard (s), on the last frame shown; null until one has been
+   * shown since the start. Only a browser that can't tell its frames is judged
+   * on the video's position: right after a start, Safari's ran ~0.3 s ahead of
+   * the frames on screen (measured 2026-10-24).
+   */
+  private drift(ctx: AudioContext, video: HTMLVideoElement, a: Anchor, latency: number): number | null {
     const f = this.frame
     const nowMs = performance.now()
     if (f && nowMs - f.at < 200) return f.media - toMedia(a, ctx.currentTime + (f.at - nowMs) / 1000 - latency)
+    if (typeof (video as { requestVideoFrameCallback?: unknown }).requestVideoFrameCallback === 'function') return null
     return video.currentTime - heardAt(a, ctx.currentTime, latency)
   }
 
@@ -387,8 +393,8 @@ class PreviewSound {
 
     // The sound follows the picture, never the other way: measured on the frames
     // it shows; too far apart, the sound crosses over to where the picture is
-    if (!this.holding) {
-      const drift = this.drift(ctx, video, a, latency)
+    const drift = this.holding ? null : this.drift(ctx, video, a, latency)
+    if (drift != null) {
       const settled = performance.now() - this.anchoredAt
       if (this.learning && settled >= SETTLE_MS) {
         // The first look after a start: how long this Mac's picture really took (a stall isn't a start)

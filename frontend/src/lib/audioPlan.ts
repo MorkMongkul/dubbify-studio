@@ -101,21 +101,24 @@ export function heardAt(a: Anchor, ctxNow: number, latency: number): number {
 }
 
 /**
- * Playing from a still picture: the sound starts at once from the playhead…
- * (anchored on where the video is, its first word isn't skipped — Bluetooth
- * earbuds are heard ~0.4 s after the sound is sent).
+ * Playing from a still picture: the sound of the playhead, scheduled `lead`
+ * seconds from now (its first word isn't skipped — Bluetooth earbuds are heard
+ * ~0.4 s after the sound is sent)…
  */
-export function stillAnchor(ctxNow: number, position: number, rate: number): Anchor {
-  return { ctx: ctxNow + LEAD, media: position, rate }
+export function stillAnchor(ctxNow: number, position: number, rate: number, lead = LEAD): Anchor {
+  return { ctx: ctxNow + lead, media: position, rate }
 }
 
 /**
- * …and the picture is released this long after (s): when that sound is heard,
- * less the time this Mac's video takes to start moving after play() — 20 ms in
- * one WebKit, ~190 ms in the user's Safari (2026-10-24), so it is learned.
+ * …and when to send it and release the picture so that the first sound is
+ * heard as the first frame shows, whichever needs longer: the sound `LEAD +
+ * latency`, the picture `videoDelay` — how long this Mac's video takes to start
+ * moving after play(): 20 ms in one WebKit, ~0.5 s in the user's Safari
+ * (2026-10-24), so it is learned.
  */
-export function holdFor(latency: number, videoDelay: number): number {
-  return Math.max(0, LEAD + latency - videoDelay)
+export function startTimes(latency: number, videoDelay: number): { soundLead: number; hold: number } {
+  const both = Math.max(LEAD + latency, videoDelay)
+  return { soundLead: both - latency, hold: both - videoDelay }
 }
 
 /** The longest a picture can take to start: anything slower is a stall, not a start. */

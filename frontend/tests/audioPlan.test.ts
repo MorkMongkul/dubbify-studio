@@ -2,8 +2,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  anchorAt, fadePoints, heardAt, holdFor, LEAD, learnedDelay, loadOrder, previewVoiceUrl, shiftAnchor, soundKey, stillAnchor, stretchOf,
-  toCtx, toMedia, upcoming, voiceStart,
+  anchorAt, fadePoints, heardAt, LEAD, learnedDelay, loadOrder, previewVoiceUrl, shiftAnchor, soundKey, startTimes, stillAnchor,
+  stretchOf, toCtx, toMedia, upcoming, voiceStart,
 } from '../src/lib/audioPlan.ts'
 import { voiceUrl } from '../src/lib/clipRules.ts'
 import type { Segment } from '../src/types/index.ts'
@@ -59,13 +59,19 @@ test('what is heard right after starting is where the video is, whatever the out
   near(heardAt(fast, 6, 0.03), 14.3)
 })
 
-test('playing from a still picture: the playhead is heard first, and the picture waits until it is', () => {
+test('a start: the first sound is heard as the first frame shows, whichever needs longer', () => {
   const latency = 0.39                       // Bluetooth earbuds (measured 2026-10-24)
-  const a = stillAnchor(5, 13.175, 1)
-  near(heardAt(a, 5 + LEAD + latency, latency), 13.175)
-  // The picture is released early by however long this Mac's video takes to start moving
-  near(holdFor(latency, 0.19), LEAD + latency - 0.19)
-  assert.equal(holdFor(0.01, 0.19), 0)
+  // A quick picture (0.19 s): the sound goes at once, the picture is held back
+  let t = startTimes(latency, 0.19)
+  near(t.soundLead, LEAD); near(t.hold, LEAD + latency - 0.19)
+  // The user's Safari (~0.5 s): the picture goes at once, the sound waits for it
+  t = startTimes(latency, 0.55)
+  near(t.hold, 0); near(t.soundLead, 0.55 - latency)
+  // Either way, the playhead is what is heard when the first frame shows
+  const a = stillAnchor(5, 13.175, 1, t.soundLead)
+  near(heardAt(a, 5 + 0.55, latency), 13.175)
+  // The Mac's speakers
+  near(startTimes(0.01, 0.55).soundLead, 0.54)
 })
 
 test('each start teaches how long the picture takes to start; a guess off either way is corrected', () => {
