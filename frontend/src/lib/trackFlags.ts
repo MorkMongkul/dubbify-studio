@@ -1,21 +1,21 @@
 // src/lib/trackFlags.ts
 // Each voice track's switches, like CapCut's track headers (the server keeps
 // them in jobs.track_flags, backend/app/services/timeline.py): locked = no
-// edits; hidden = its subtitles aren't shown or exported; muted = its voices
-// aren't played or exported. A track is "audio" once one of its lines has a
+// edits; muted = its voices aren't played or exported (hide went with the
+// subtitles, 0.4.0). A track is "audio" once one of its lines has a
 // voice, "text" before that. Pure — covered by `npm test`.
 import type { LayoutChange } from './tracks.ts'
 
-export interface TrackSwitches { locked: boolean; hidden: boolean; muted: boolean }
+export interface TrackSwitches { locked: boolean; muted: boolean }
 /** lane_index → switches; only tracks with a switch on. */
 export type TrackFlagMap = Record<string, TrackSwitches>
 export type SwitchKey = keyof TrackSwitches
 
-export const NO_SWITCHES: TrackSwitches = { locked: false, hidden: false, muted: false }
+export const NO_SWITCHES: TrackSwitches = { locked: false, muted: false }
 
 type Lined = { lane_index?: number | null; tts_audio_url?: string | null; tts_duration_secs?: number | null }
 const laneOf = (s: { lane_index?: number | null }) => s.lane_index ?? 0
-const anyOn = (f: TrackSwitches) => f.locked || f.hidden || f.muted
+const anyOn = (f: TrackSwitches) => f.locked || f.muted
 
 export function switchesOf(map: TrackFlagMap | null | undefined, lane: number): TrackSwitches {
   return { ...NO_SWITCHES, ...(map?.[String(lane)] ?? {}) }
@@ -61,10 +61,7 @@ export function shiftSwitches(map: TrackFlagMap | null | undefined, from: number
 export function exportWarnings(rows: number[], map: TrackFlagMap | null | undefined): string[] {
   const out: string[] = []
   rows.forEach((lane, i) => {
-    const { hidden, muted } = switchesOf(map, lane)
-    if (muted && hidden) out.push(`Track ${i + 1} is muted and hidden: its voices and subtitles won't be in the export`)
-    else if (muted) out.push(`Track ${i + 1} is muted: its voices won't be in the export`)
-    else if (hidden) out.push(`Track ${i + 1} is hidden: its subtitles won't be in the export`)
+    if (switchesOf(map, lane).muted) out.push(`Track ${i + 1} is muted: its voices won't be in the export`)
   })
   return out
 }

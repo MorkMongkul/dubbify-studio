@@ -450,7 +450,7 @@ async def tidy_segment_lanes(job_id: str, db: AsyncSession = Depends(get_db, sco
     left-to-right greedy assignment — each clip drops into the first lane
     whose previous clip has already ended, opening a new lane only for true
     time overlaps. Non-overlapping tracks collapse back to a single lane.
-    A track with a switch on (locked, hidden or muted) keeps its clips, and
+    A track with a switch on (locked or muted) keeps its clips, and
     the others are packed around it.
     """
     result = await db.execute(

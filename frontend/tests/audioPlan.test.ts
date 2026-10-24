@@ -2,8 +2,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  anchorAt, fadePoints, heardAt, LEAD, learnedDelay, loadOrder, previewVoiceUrl, shiftAnchor, soundKey, startTimes, stillAnchor,
-  stretchOf, toCtx, toMedia, upcoming, voiceStart,
+  anchorAt, fadePoints, heardAt, LEAD, learnedDelay, loadOrder, mediaSoundStart, previewVoiceUrl, shiftAnchor, soundKey, startTimes,
+  stillAnchor, stretchOf, toCtx, toMedia, upcoming, voiceStart,
 } from '../src/lib/audioPlan.ts'
 import { voiceUrl } from '../src/lib/clipRules.ts'
 import type { Segment } from '../src/types/index.ts'
@@ -110,4 +110,11 @@ test('an episode\'s voices load from the playhead on, then the ones before it, n
   const at = (id: string, start: number) => clip({ id, start_time: start, end_time: start + 1 })
   const segs = [at('a', 1), at('b', 9), at('c', 4.5), at('d', 6), at('e', 2), clip({ id: 'text', tts_audio_url: null })]
   assert.deepEqual(loadOrder(segs, 5).map((s) => s.id), ['c', 'd', 'b', 'e', 'a'])   // c is still playing at 5
+})
+
+test("a media clip's own sound starts at its start from where the clip begins in the file, or mid-way; never once over", () => {
+  const media = { start_time: 10, end_time: 17, source_in: 0.5 }
+  assert.deepEqual(mediaSoundStart(media, 8), { at: 10, offset: 0.5 })
+  assert.deepEqual(mediaSoundStart(media, 12.25), { at: 12.25, offset: 2.75 })
+  assert.equal(mediaSoundStart(media, 17), null)
 })

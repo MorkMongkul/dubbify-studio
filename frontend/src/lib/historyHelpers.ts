@@ -6,8 +6,8 @@
 // so the UI reflects the reverted/reapplied server state.
 
 import type { QueryClient } from '@tanstack/react-query'
-import { jobs as jobsApi, segments as segmentsApi, speakers as speakersApi, stemPieces as stemPiecesApi } from '@/api/client'
-import type { LayoutChange, Stem, StemPiece, Segment, SegmentCreate, SegmentUpdate, SpeakerMergeResponse, SpeakerUpdate, SplitResult, TrackFlagMap } from '@/types'
+import { jobs as jobsApi, media as mediaApi, segments as segmentsApi, speakers as speakersApi, stemPieces as stemPiecesApi } from '@/api/client'
+import type { LayoutChange, MediaClipList, Stem, StemPiece, Segment, SegmentCreate, SegmentUpdate, SpeakerMergeResponse, SpeakerUpdate, SplitResult, TrackFlagMap } from '@/types'
 import { invalidateSpeakerLines, putSegments } from '@/hooks/useApi'
 import { useHistoryStore } from '@/store/historyStore'
 import { splitUndoPatch } from '@/lib/undoPatches'
@@ -241,6 +241,14 @@ export function recordPiecesChange(
   const send = async (pieces: StemPiece[]) => {
     const stored = await stemPiecesApi.put(jobId, stem, pieces)
     qc.setQueryData<StemPieceLists>(['stem-pieces', jobId], (old) => old && { ...old, [stem]: stored })
+  }
+  useHistoryStore.getState().push({ label, undo: () => send(before), redo: () => send(after) })
+}
+
+/** The episode's media clips changed (a drop, trim, paste, template, a track switch): undo and redo each send the whole list once. */
+export function recordMediaChange(qc: QueryClient, jobId: string, before: MediaClipList, after: MediaClipList, label: string) {
+  const send = async (list: MediaClipList) => {
+    qc.setQueryData(['media-clips', jobId], await mediaApi.setClips(jobId, list.clips, list.track_flags))
   }
   useHistoryStore.getState().push({ label, undo: () => send(before), redo: () => send(after) })
 }

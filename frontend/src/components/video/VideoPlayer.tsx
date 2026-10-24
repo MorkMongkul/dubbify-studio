@@ -1,16 +1,17 @@
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Maximize2, Minimize2, VolumeX, Play, Pause, SkipBack, SkipForward } from 'lucide-react'
-import type { Segment, Speaker, Overlay, StemPiece, TrackFlagMap } from '@/types'
+import type { Segment, Speaker, StemPiece, TrackFlagMap } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { formatTime, cn, originalVoicesReplaced } from '@/lib/utils'
-import { OverlayCanvas } from './OverlayCanvas'
-import { heldByEngine, usePreviewAudio, type Stem } from '@/hooks/usePreviewAudio'
+import { MediaCanvas } from './MediaCanvas'
+import { heldByEngine, usePreviewAudio, type MediaSound, type Stem } from '@/hooks/usePreviewAudio'
 import { frameSecs, isTypingTarget, nextEdge, seekVideoTo, shuttle } from '@/lib/transport'
 import { switchesOf } from '@/lib/trackFlags'
 import { duckGainAt, duckSpans } from '@/lib/ducking'
 import { pieceAt, stemLevelAt } from '@/lib/stemPieces'
-import { useStemPieces } from '@/hooks/useApi'
+import { useMediaAssets, useMediaClips, useStemPieces } from '@/hooks/useApi'
+import { mediaSwitchesOf } from '@/lib/media'
 
 interface VideoPlayerProps {
   videoUrl?: string
@@ -20,7 +21,6 @@ interface VideoPlayerProps {
   jobId?: string
   projectId?: string
   jobStatus?: string
-  overlays?: Overlay[]
   bgmVolumeDb?: number
   // Changes when the music/voices tracks are made again (Try again)
   stemsVersion?: number
@@ -28,11 +28,11 @@ interface VideoPlayerProps {
   frameRate?: number | null
   /** The music & effects dip under the voices (job.duck_music). */
   duckMusic?: boolean
-  /** Each voice track's switches: a muted track isn't heard (nor dips the music), a hidden one shows no subtitles. */
+  /** Each voice track's switches: a muted track isn't heard (nor dips the music). */
   trackFlags?: TrackFlagMap
 }
 
-export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus, overlays, bgmVolumeDb, stemsVersion, frameRate, duckMusic, trackFlags }: VideoPlayerProps) {
+export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus, bgmVolumeDb, stemsVersion, frameRate, duckMusic, trackFlags }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -42,10 +42,6 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
   // are known, then size the player to match — a portrait video gets a
   // portrait box instead of shrinking to a sliver inside a landscape frame.
   const [videoAspectRatio, setVideoAspectRatio] = useState(16 / 9)
-  // Intrinsic pixel width of the clip. Subtitle font_size is stored in REAL
-  // video pixels (that's what the ffmpeg export renders at), so the preview
-  // needs this to scale the same size down to the on-screen canvas.
-  const [videoPixelWidth, setVideoPixelWidth] = useState(0)
   const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   // Per-field selectors — this component legitimately re-renders on playhead
@@ -76,12 +72,9 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     segmentsRef.current = segments
   }, [segments])
 
-  // What the export plays and shows: muted tracks' voices aren't heard, hidden
-  // tracks' subtitles aren't shown (the track headers' switches)
+  // What the export plays: muted tracks' voices aren't heard (the track headers' switches)
   const voiceSegments = useMemo(
     () => segments.filter((s) => !switchesOf(trackFlags, s.lane_index ?? 0).muted), [segments, trackFlags])
-  const subtitleSegments = useMemo(
-    () => segments.filter((s) => !switchesOf(trackFlags, s.lane_index ?? 0).hidden), [segments, trackFlags])
 
   // ── Transport keys ────────────────────────────────────────────────────
   // J / K / L: back, stop, forward (again: 2×, then 4×). The window can't
@@ -181,7 +174,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       setDuration(video.duration)
       if (video.videoWidth > 0 && video.videoHeight > 0) {
         setVideoAspectRatio(video.videoWidth / video.videoHeight)
-        setVideoPixelWidth(video.videoWidth)
+        useEditorStore.getState().setVideoSize({ width: video.videoWidth, height: video.videoHeight })
       }
     }
     const onPlay  = () => setPlaying(true)
@@ -272,11 +265,23 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       : volume * stemLevelAt(pieces, 'voices', t, vocalsMuted) * live(pieces?.voices, t)
   }, [duckSpansMemo, volume, mutedTrackIds, pieces, vocalsMuted])
 
+  // The media clips' own sound, as the export mixes it: muted media tracks left out
+  const { data: mediaList } = useMediaClips(jobId)
+  const { data: mediaAssets } = useMediaAssets(projectId)
+  const mediaSounds = useMemo((): MediaSound[] => {
+    const assets = new Map((mediaAssets ?? []).map((a) => [a.id, a]))
+    return (mediaList?.clips ?? []).flatMap((c) => {
+      const a = assets.get(c.asset_id)
+      if (!a?.has_audio || !a.audio_url || mediaSwitchesOf(mediaList?.track_flags, c.lane_index).muted) return []
+      return [{ id: c.id, url: a.audio_url, start_time: c.start_time, end_time: c.end_time, source_in: c.source_in, volume_db: c.volume_db }]
+    })
+  }, [mediaList, mediaAssets])
+
   // Everything heard: the voices (every clip under the playhead plays its window,
-  // as in the export), the music & effects and the original voices — on one clock
+  // as in the export), the music & effects, the original voices and the media's own sound — on one clock
   usePreviewAudio({
     videoRef, videoUrl, isPlaying, playbackRate, volume,
-    segments: voiceSegments, muted: mutedTrackIds, stems: hasStemAudio ? stemFiles : null, stemLevel,
+    segments: voiceSegments, muted: mutedTrackIds, stems: hasStemAudio ? stemFiles : null, stemLevel, mediaSounds,
   })
 
   // Playback rate
@@ -351,9 +356,8 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
             preload="auto"
             playsInline
           />
-          {jobId && overlays && overlays.length > 0 && (
-            <OverlayCanvas overlays={overlays} segments={subtitleSegments} jobId={jobId} currentTime={currentTime} videoPixelWidth={videoPixelWidth} />
-          )}
+          {/* The episode's media, drawn over the picture with its transparency */}
+          {jobId && <MediaCanvas jobId={jobId} projectId={projectId} videoRef={videoRef} containerRef={containerRef} />}
         </>
       ) : (
         <div className="flex flex-col items-center justify-center w-full h-full text-center p-8">
@@ -369,7 +373,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       <AnimatePresence>
         {showControls && videoUrl && (
           <motion.div
-            className="absolute inset-0 flex flex-col justify-end"
+            className="absolute inset-0 z-40 flex flex-col justify-end pointer-events-none"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -379,7 +383,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
             <div className="absolute bottom-0 left-0 right-0 h-24 bg-gradient-to-t from-black/85 to-transparent pointer-events-none" />
 
             {/* Bottom control bar */}
-            <div className="relative z-10 px-3 pb-3 flex flex-col gap-1.5">
+            <div className="relative z-10 px-3 pb-3 flex flex-col gap-1.5 pointer-events-auto">
               {/* Progress bar */}
               <div
                 className="relative h-[3px] rounded-full bg-white/20 cursor-pointer group/prog"

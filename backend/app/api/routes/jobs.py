@@ -17,7 +17,7 @@ from typing import List
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.models.models import Job, Project, JobStatus, Segment, StemPiece
+from app.models.models import Job, Project, JobStatus, Segment, StemPiece, MediaClip
 from app.schemas.schemas import JobResponse, PipelineStartResponse, BgmVolumeUpdate, JobTitleUpdate, JobFinishedUpdate, JobDuckingUpdate, TrackFlagsUpdate
 from app.services import picture_strip, story_learning, timeline
 from app.services.pipeline import (
@@ -28,7 +28,6 @@ from app.services.pipeline_common import vocals_path_for
 from app.core.paths import resolve_existing
 from app.services.subtitle_pipeline import run_subtitle_pipeline, run_subtitle_analysis_pipeline
 from app.services.audio_extractor import extract_subtitle, frame_rate_of, list_subtitle_tracks, probe_video
-from app.api.routes.overlays import apply_default_overlay_template
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -107,7 +106,6 @@ async def upload_and_start(
 
     # Stamp the default overlay template (logo/brand kit) so every new
     # episode starts with the same layout — no per-episode logo placement.
-    await apply_default_overlay_template(job, db)
 
     # Auto-detect embedded subtitles
     subtitle_path = await extract_subtitle(
@@ -209,7 +207,6 @@ async def upload_with_subtitle(
 
     # Stamp the default overlay template (logo/brand kit) so every new
     # episode starts with the same layout — no per-episode logo placement.
-    await apply_default_overlay_template(job, db)
 
     # Launch subtitle pipeline in background
     background_tasks.add_task(
@@ -602,5 +599,6 @@ async def delete_job(job_id: str, db: AsyncSession = Depends(get_db, scope="func
     # cascade and any FK ordering issues), then the job.
     await db.execute(delete(Segment).where(Segment.job_id == job_id))
     await db.execute(delete(StemPiece).where(StemPiece.job_id == job_id))
+    await db.execute(delete(MediaClip).where(MediaClip.job_id == job_id))
     await db.delete(job)
     await db.commit()

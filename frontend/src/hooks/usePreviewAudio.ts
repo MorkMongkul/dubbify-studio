@@ -13,8 +13,8 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import type { Segment } from '@/types'
 import {
-  anchorAt, fadePoints, heardAt, LEAD, learnedDelay, loadOrder, previewVoiceUrl, shiftAnchor, soundKey, startTimes, stillAnchor, toCtx, toMedia,
-  upcoming, voiceStart, type Anchor,
+  anchorAt, fadePoints, heardAt, LEAD, learnedDelay, loadOrder, mediaSoundStart, previewVoiceUrl, shiftAnchor, soundKey, startTimes,
+  stillAnchor, toCtx, toMedia, upcoming, voiceStart, type Anchor,
 } from '@/lib/audioPlan'
 import { fadeGainAt, isVoiced, voiceUrl } from '@/lib/clipRules'
 import { SETTLE_MS, syncAction } from '@/lib/playbackSync'
@@ -72,6 +72,12 @@ function videoDelayFor(latency: number): number {
 }
 function rememberVideoDelay(latency: number, delay: number): void {
   try { localStorage.setItem(delayKey(latency), delay.toFixed(3)) } catch { /* this session only */ }
+}
+
+/** How long a video takes to start moving after play() on this Mac (s): the media players start that much early. */
+export function pictureStartDelay(): number {
+  const ctx = audioContext()
+  return ctx ? videoDelayFor(outputDelay(ctx)) : FIRST_VIDEO_DELAY
 }
 
 // Videos the engine paused itself, to start them again in step with the sound
@@ -241,7 +247,22 @@ export interface PreviewAudioInput {
   stems: Record<Stem, string[]> | null
   /** A stem's level at a media time: its pieces, the dip under the voices, its switch, the volume. */
   stemLevel: RefObject<(stem: Stem, t: number) => number>
+  /** The media clips' own sound (muted media tracks already left out). */
+  mediaSounds?: MediaSound[]
 }
+
+/** A media clip's own sound (0.4.0): its file from `source_in`, for the clip's length, at its volume. */
+export interface MediaSound {
+  id: string
+  url: string
+  start_time: number
+  end_time: number
+  source_in: number
+  volume_db: number
+}
+
+/** Everything that changes what a media clip plays (not its volume): a change starts it again. */
+const mediaKey = (m: MediaSound) => [m.url, m.start_time, m.end_time, m.source_in].join('|')
 
 class PreviewSound {
   input: PreviewAudioInput | null = null
@@ -261,6 +282,7 @@ class PreviewSound {
   private starts = 0
   private voices = new Map<string, VoiceSound>()
   private stems = new Map<Stem, StemSound>()
+  private media = new Map<string, VoiceSound>()
 
   /** Silence everything; the next frame of playback starts again from where the video is. */
   stop(): void {
@@ -268,8 +290,10 @@ class PreviewSound {
     if (this.holding) { clearTimeout(this.holding); this.holding = null }
     for (const s of this.voices.values()) stopSound(s)
     for (const s of this.stems.values()) stopSound(s)
+    for (const s of this.media.values()) stopSound(s)
     this.voices.clear()
     this.stems.clear()
+    this.media.clear()
     this.anchor = null
     this.lastVideoTime = null
     this.starting = false
@@ -288,12 +312,16 @@ class PreviewSound {
     const ctx = audioContext()
     const video = this.input?.videoRef.current
     if (!ctx || !video) return
-    queueVoices(ctx, loadOrder(this.heard(), video.currentTime).map(previewVoiceUrl))
+    const near = (this.input?.mediaSounds ?? []).filter((m) => m.end_time > video.currentTime).map((m) => m.url)
+    queueVoices(ctx, [...near, ...loadOrder(this.heard(), video.currentTime).map(previewVoiceUrl)])
   }
 
   /** The sounds of the first READY_SPAN s from `t`, loaded — or READY_WAIT s gone by. */
   private async ready(ctx: AudioContext, t: number): Promise<void> {
     const loads: Promise<unknown>[] = upcoming(this.heard(), t, READY_SPAN).map((seg) => loadVoice(ctx, previewVoiceUrl(seg)))
+    for (const m of this.input?.mediaSounds ?? []) {
+      if (m.end_time > t && m.start_time < t + READY_SPAN) loads.push(loadVoice(ctx, m.url))
+    }
     const stems = this.input?.stems
     if (stems) for (const urls of [stems.music, stems.voices]) loads.push(stemLoads.get(urls.join(' ')) ?? Promise.resolve())
     await Promise.race([Promise.all(loads), new Promise((r) => setTimeout(r, READY_WAIT * 1000))])
@@ -363,8 +391,10 @@ class PreviewSound {
     const when = ctx.currentTime + LEAD
     for (const s of this.voices.values()) fadeOutSound(s, when)
     for (const s of this.stems.values()) fadeOutSound(s, when)
+    for (const s of this.media.values()) fadeOutSound(s, when)
     this.voices.clear()
     this.stems.clear()
+    this.media.clear()
     this.crossAll = true
   }
 
@@ -480,6 +510,39 @@ class PreviewSound {
       src.start(when, plan.offset)
       src.stop(toCtx(a, seg.end_time))
       this.voices.set(seg.id, { src, level: gain, nodes: [src, fade, gain], lastLevel: level, key: soundKey(seg) })
+    }
+
+    // The media clips' own sound: like a voice, from where the clip begins in its file, at its
+    // volume (the file is the media's own sound, so the clip's volume is applied here, as the export does)
+    const sounds = input.mediaSounds ?? []
+    for (const m of sounds) if (m.end_time > now && m.start_time < now + LOAD_AHEAD) loadVoice(ctx, m.url)
+    const wantedMedia = new Map(sounds.filter((m) => m.end_time > now && m.start_time < now + START_AHEAD).map((m) => [m.id, m]))
+    const crossingMedia = new Set<string>()
+    for (const [id, s] of this.media) {
+      const m = wantedMedia.get(id)
+      if (m && s.key === mediaKey(m)) continue
+      // Moved or trimmed while it plays: the new sound takes over from the old one
+      if (m) { fadeOutSound(s, startAt(now)); crossingMedia.add(id) } else stopSound(s)
+      this.media.delete(id)
+    }
+    for (const m of wantedMedia.values()) {
+      const level = input.volume * 10 ** (m.volume_db / 20)
+      const playing = this.media.get(m.id)
+      if (playing) { setLevel(ctx, playing, level); continue }
+      const buffer = voiceBuffers.get(m.url)
+      if (!buffer) continue        // still loading: it comes in, mid-way, once it's here
+      const when = startAt(m.start_time)
+      const plan = mediaSoundStart(m, toMedia(a, when))
+      if (!plan || plan.offset >= buffer.duration) continue
+      const src = ctx.createBufferSource()
+      src.buffer = buffer
+      src.playbackRate.value = rate
+      const gain = ctx.createGain()
+      startLevel(gain, level, when, this.crossAll || crossingMedia.has(m.id))
+      src.connect(gain).connect(ctx.destination)
+      src.start(when, plan.offset)
+      src.stop(toCtx(a, m.end_time))
+      this.media.set(m.id, { src, level: gain, nodes: [src, gain], lastLevel: level, key: mediaKey(m) })
     }
     this.crossAll = false
   }

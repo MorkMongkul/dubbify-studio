@@ -3,11 +3,12 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { AxiosError } from 'axios'
-import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions, chat, appSettings, story, stemPieces } from '@/api/client'
+import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions, chat, appSettings, story, stemPieces, media } from '@/api/client'
 import type { VoiceCreateInput } from '@/api/client'
 import { useEditorStore } from '@/store/editorStore'
 import { standInMessage, withTurn } from '@/lib/chatMessages'
 import type { StemPieceLists } from '@/lib/stemPieces'
+import type { MediaAsset, MediaClip, MediaClipList, MediaTemplate, MediaTrackFlagMap } from '@/types'
 import type {
   Segment, LayoutChange, Stem, StemPiece, ProjectCreate, ProjectUpdate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice, OverlayUpdate, AppSettingsUpdate, GeminiModelSetting,
   ChatLineRef, ChatMessage, StoryEdit, TrackFlagMap,
@@ -391,6 +392,111 @@ export function useSetStemPieces() {
       qc.setQueryData<StemPieceLists>(['stem-pieces', jobId], (old) => old && { ...old, [stem]: stored })
     },
     onError: (_, { jobId }) => qc.invalidateQueries({ queryKey: ['stem-pieces', jobId] }),
+  })
+}
+
+// ── Media (0.4.0) ─────────────────────────────────────────────
+
+/** The project's media library; asked again while any of it is still being prepared. */
+export function useMediaAssets(projectId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['media', projectId],
+    queryFn: () => media.list(projectId!),
+    enabled: !!projectId,
+    refetchInterval: (q) => ((q.state.data as MediaAsset[] | undefined)?.some((a) => a.status === 'preparing') ? 1500 : false),
+  })
+}
+
+export function useUploadMedia() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ projectId, file, onProgress }: { projectId: string; file: File; onProgress?: (f: number) => void }) =>
+      media.upload(projectId, file, onProgress),
+    onSuccess: (_, { projectId }) => qc.invalidateQueries({ queryKey: ['media', projectId] }),
+  })
+}
+
+/** Remove media: its clips leave every episode, so every episode's clips are asked again. */
+export function useDeleteMedia() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ assetId }: { assetId: string; projectId: string }) => media.remove(assetId),
+    onSuccess: (_, { projectId }) => {
+      qc.invalidateQueries({ queryKey: ['media', projectId] })
+      qc.invalidateQueries({ queryKey: ['media-clips'] })
+      qc.invalidateQueries({ queryKey: ['media-templates', projectId] })
+    },
+  })
+}
+
+export function useMediaClips(jobId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['media-clips', jobId],
+    queryFn: () => media.clips(jobId!),
+    enabled: !!jobId,
+  })
+}
+
+/** Replace the episode's media clips: shown at once, then what the server stored. */
+export function useSetMediaClips() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ jobId, clips, trackFlags }: { jobId: string; clips: MediaClip[]; trackFlags?: MediaTrackFlagMap }) =>
+      media.setClips(jobId, clips, trackFlags),
+    onMutate: ({ jobId, clips, trackFlags }) => {
+      qc.setQueryData<MediaClipList>(['media-clips', jobId], (old) =>
+        old && { ...old, clips, track_flags: trackFlags ?? old.track_flags })
+    },
+    onSuccess: (stored, { jobId }) => qc.setQueryData(['media-clips', jobId], stored),
+    onError: (_, { jobId }) => qc.invalidateQueries({ queryKey: ['media-clips', jobId] }),
+  })
+}
+
+export function useMediaTemplates(projectId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['media-templates', projectId],
+    queryFn: () => media.templates(projectId!),
+    enabled: !!projectId,
+  })
+}
+
+export function useSaveMediaTemplate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ projectId, jobId, name }: { projectId: string; jobId: string; name: string }) =>
+      media.saveTemplate(projectId, jobId, name),
+    onSuccess: (_, { projectId }) => qc.invalidateQueries({ queryKey: ['media-templates', projectId] }),
+  })
+}
+
+export function useRenameMediaTemplate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ templateId, name }: { templateId: string; name: string; projectId: string }) =>
+      media.renameTemplate(templateId, name),
+    onSuccess: (_, { projectId }) => qc.invalidateQueries({ queryKey: ['media-templates', projectId] }),
+  })
+}
+
+export function useDeleteMediaTemplate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ templateId }: { templateId: string; projectId: string }) => media.removeTemplate(templateId),
+    onMutate: ({ templateId, projectId }) => {
+      qc.setQueryData<MediaTemplate[]>(['media-templates', projectId], (old) => old?.filter((t) => t.id !== templateId))
+    },
+    onSettled: (_, __, { projectId }) => qc.invalidateQueries({ queryKey: ['media-templates', projectId] }),
+  })
+}
+
+/** Add a template's clips to the episode; the caller records the undo step from the lists before and after. */
+export function useApplyMediaTemplate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ templateId, jobId }: { templateId: string; jobId: string }) => media.applyTemplate(templateId, jobId),
+    onSuccess: ({ clips }, { jobId }) => {
+      qc.setQueryData<MediaClipList>(['media-clips', jobId], (old) => old && { ...old, clips })
+    },
   })
 }
 

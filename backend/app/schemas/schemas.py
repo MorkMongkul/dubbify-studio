@@ -3,6 +3,7 @@ app/schemas/schemas.py
 Pydantic v2 schemas for all API request bodies and responses.
 """
 from pydantic import BaseModel, Field, computed_field, field_validator
+import json
 import re as _re
 
 # Overlay colours end up inside an ffmpeg filter graph — allow only a plain
@@ -67,10 +68,9 @@ class ProjectResponse(BaseModel):
 
 # ── Job schemas ───────────────────────────────────────────────
 class TrackFlags(BaseModel):
-    """A voice track's switches (timeline.FLAG_KEYS): locked = no edits; hidden =
-    its subtitles aren't shown or exported; muted = its voices aren't played or exported."""
+    """A voice track's switches (timeline.FLAG_KEYS): locked = no edits; muted = its
+    voices aren't played or exported. (Hide went with the subtitles, 0.4.0.)"""
     locked: bool = False
-    hidden: bool = False
     muted: bool = False
 
 
@@ -778,3 +778,151 @@ class StoryEdit(BaseModel):
         if value and any(len(text) > 400 for text in value.values()):
             raise ValueError("A summary can be at most 400 characters")
         return value
+
+
+# ── Media (0.4.0) ─────────────────────────────────────────────
+def _uploads_url(path: Optional[str]) -> Optional[str]:
+    """A stored file's address under /uploads (never the server path itself)."""
+    if not path:
+        return None
+    parts = Path(path).parts
+    if "uploads" in parts:
+        return "/" + "/".join(parts[parts.index("uploads"):])
+    return None
+
+
+class MediaBox(BaseModel):
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class MediaAssetResponse(BaseModel):
+    id: str
+    project_id: str
+    name: str
+    kind: str
+    width: int = 0
+    height: int = 0
+    duration_secs: Optional[float] = None
+    has_alpha: bool = False
+    alpha_kept: bool = False
+    has_audio: bool = False
+    last_box: Optional[MediaBox] = None
+    status: str
+    error: Optional[str] = None
+    created_at: Optional[datetime] = None
+    # How many episodes have clips of it (the delete confirmation says so)
+    used_in: int = 0
+    path: str = Field("", exclude=True)
+    preview_path: Optional[str] = Field(None, exclude=True)
+    thumb_path: Optional[str] = Field(None, exclude=True)
+    audio_path: Optional[str] = Field(None, exclude=True)
+
+    @field_validator("last_box", mode="before")
+    @classmethod
+    def _box(cls, v):
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except ValueError:
+                return None
+        return v
+
+    @computed_field
+    def url(self) -> Optional[str]:
+        return _uploads_url(self.path)
+
+    @computed_field
+    def preview_url(self) -> Optional[str]:
+        """What the editor shows: the preview copy of a video, the image itself."""
+        return _uploads_url(self.preview_path) if self.kind == "video" else _uploads_url(self.path)
+
+    @computed_field
+    def thumb_url(self) -> Optional[str]:
+        return _uploads_url(self.thumb_path)
+
+    @computed_field
+    def audio_url(self) -> Optional[str]:
+        return _uploads_url(self.audio_path)
+
+    model_config = {"from_attributes": True}
+
+
+class MediaClipIn(BaseModel):
+    """One media clip, as the editor sends the episode's whole list."""
+    id: Optional[str] = None
+    asset_id: str
+    lane_index: int = Field(0, ge=0)
+    start_time: float
+    end_time: float
+    source_in: float = 0.0
+    x: float = 0.0
+    y: float = 0.0
+    width: float = 1.0
+    height: float = 1.0
+    volume_db: float = 0.0
+
+
+class MediaClipResponse(MediaClipIn):
+    id: str
+    model_config = {"from_attributes": True}
+
+
+class MediaTrackFlags(BaseModel):
+    """A media track's switches: locked = no edits; hidden = not drawn; muted = its sound isn't heard."""
+    locked: bool = False
+    hidden: bool = False
+    muted: bool = False
+
+
+class MediaClipsUpdate(BaseModel):
+    clips: List[MediaClipIn]
+    track_flags: Optional[Dict[str, MediaTrackFlags]] = None
+
+
+class MediaClipList(BaseModel):
+    clips: List[MediaClipResponse]
+    track_flags: Dict[str, MediaTrackFlags] = {}
+    # The episode still has overlays from the old Elements tab (no longer in exports)
+    old_overlays: bool = False
+
+
+class MediaTemplateCreate(BaseModel):
+    job_id: str
+    name: str = Field(..., min_length=1, max_length=120)
+
+
+class MediaTemplateRename(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+
+
+class MediaTemplateResponse(BaseModel):
+    id: str
+    project_id: str
+    name: str
+    items: List[dict] = []
+    created_at: Optional[datetime] = None
+
+    @field_validator("items", mode="before")
+    @classmethod
+    def _items(cls, v):
+        if isinstance(v, str):
+            try:
+                return json.loads(v) or []
+            except ValueError:
+                return []
+        return v or []
+
+    model_config = {"from_attributes": True}
+
+
+class MediaTemplateApplied(BaseModel):
+    clips: List[MediaClipResponse]
+    skipped: int = 0
+
+
+class MediaDeleted(BaseModel):
+    removed_clips: int
+    episodes: int

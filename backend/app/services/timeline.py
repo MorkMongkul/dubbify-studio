@@ -182,13 +182,14 @@ def overlaps(a, b) -> bool:
     return a.start_time < b.end_time - EPS and b.start_time < a.end_time - EPS
 
 
-# ── Track switches: lock, hide, mute (like CapCut's track headers) ──
+# ── Track switches: lock, mute (like CapCut's track headers) ──
 # Stored per episode in jobs.track_flags as JSON, keyed by lane_index; only
 # tracks with a switch on. Locked: no edits (the editor enforces it) and the
-# server never moves another clip onto it. Hidden: its subtitles aren't shown
-# or exported. Muted: its voices aren't played or exported (export_lines).
+# server never moves another clip onto it. Muted: its voices aren't played or
+# exported (export_lines). Hide went with the subtitles (0.4.0).
 
-FLAG_KEYS = ("locked", "hidden", "muted")
+# Lock and mute; the hide switch went with the subtitles (0.4.0) and a saved one is dropped
+FLAG_KEYS = ("locked", "muted")
 Flags = dict[int, dict[str, bool]]
 
 
@@ -230,21 +231,18 @@ def prune_flags(flags: Flags, segs) -> Flags:
 
 
 def export_lines(segs, flags: Flags | None):
-    """What the export plays and shows: the voices of tracks that aren't muted,
-    and the subtitles of tracks that aren't hidden."""
-    voices = [s for s in segs if not flag(flags, lane_of(s), "muted")]
-    subtitles = [s for s in segs if not flag(flags, lane_of(s), "hidden")]
-    return voices, subtitles
+    """What the export plays: the voices of tracks that aren't muted."""
+    return [s for s in segs if not flag(flags, lane_of(s), "muted")]
 
 
 def free_lane(segs, seg, flags: Flags | None = None) -> int:
     """The track `seg` should be on: its own if nothing there overlaps it, else
     the existing track nearest to it where it fits (a tie goes to the lower
-    track) — never a locked one, and only one muted and hidden the way its own
-    is — else a new track below the last."""
+    track) — never a locked one, and only one muted the way its own is — else a
+    new track below the last."""
     others = [s for s in segs if s.id != seg.id]
     own = lane_of(seg)
-    kind = (flag(flags, own, "hidden"), flag(flags, own, "muted"))
+    muted = flag(flags, own, "muted")
 
     def fits(lane: int) -> bool:
         return not any(lane_of(s) == lane and overlaps(s, seg) for s in others)
@@ -255,7 +253,7 @@ def free_lane(segs, seg, flags: Flags | None = None) -> int:
     candidates = [
         lane for lane in lanes
         if lane != own and fits(lane) and not flag(flags, lane, "locked")
-        and (flag(flags, lane, "hidden"), flag(flags, lane, "muted")) == kind
+        and flag(flags, lane, "muted") == muted
     ]
     if candidates:
         return min(candidates, key=lambda lane: (abs(lane - own), -lane))
@@ -265,7 +263,7 @@ def free_lane(segs, seg, flags: Flags | None = None) -> int:
 def settle(segs, changed_ids: Iterable[str], flags: Flags | None = None) -> set[str]:
     """Move each changed clip that overlaps another on its track to the nearest
     track where it fits. Never touches times. A new track a clip moves to is
-    muted and hidden like the one it left (`flags` is updated). Returns the ids
+    muted like the one it left (`flags` is updated). Returns the ids
     it moved."""
     changed = set(changed_ids)
     moved: set[str] = set()
@@ -273,8 +271,8 @@ def settle(segs, changed_ids: Iterable[str], flags: Flags | None = None) -> set[
         own = lane_of(seg)
         lane = free_lane(segs, seg, flags)
         if lane != own:
-            if flags is not None and lane not in flags and (flag(flags, own, "hidden") or flag(flags, own, "muted")):
-                flags[lane] = {"locked": False, "hidden": flag(flags, own, "hidden"), "muted": flag(flags, own, "muted")}
+            if flags is not None and lane not in flags and flag(flags, own, "muted"):
+                flags[lane] = {"locked": False, "muted": True}
             seg.lane_index = lane
             moved.add(seg.id)
     return moved

@@ -42,6 +42,15 @@ export function voiceStart(seg: Planned, t: number): { at: number; offset: numbe
   return { at, offset: filePos / stretchOf(seg) }
 }
 
+/** What a media clip's own sound plays from media time `t` on: when it starts and where in its file; null once over. */
+export function mediaSoundStart(
+  clip: { start_time: number; end_time: number; source_in: number }, t: number,
+): { at: number; offset: number } | null {
+  if (t >= clip.end_time) return null
+  const at = Math.max(t, clip.start_time)
+  return { at, offset: round6(clip.source_in + (at - clip.start_time)) }
+}
+
 /** The clip's fade envelope from media time `t` on: [media time, gain] points joined by straight lines (the export's afade). */
 export function fadePoints(seg: Planned, t: number): [number, number][] {
   const { start_time: start, end_time: end } = seg
