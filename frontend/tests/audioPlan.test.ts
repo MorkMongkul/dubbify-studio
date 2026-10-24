@@ -2,8 +2,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  anchorAt, fadePoints, heardAt, LEAD, loadOrder, pictureHold, previewVoiceUrl, soundKey, stillAnchor, stretchOf, toCtx, toMedia,
-  upcoming, voiceStart,
+  anchorAt, fadePoints, heardAt, holdFor, LEAD, learnedDelay, loadOrder, previewVoiceUrl, shiftAnchor, soundKey, stillAnchor, stretchOf,
+  toCtx, toMedia, upcoming, voiceStart,
 } from '../src/lib/audioPlan.ts'
 import { voiceUrl } from '../src/lib/clipRules.ts'
 import type { Segment } from '../src/types/index.ts'
@@ -63,8 +63,25 @@ test('playing from a still picture: the playhead is heard first, and the picture
   const latency = 0.39                       // Bluetooth earbuds (measured 2026-10-24)
   const a = stillAnchor(5, 13.175, 1)
   near(heardAt(a, 5 + LEAD + latency, latency), 13.175)
-  near(pictureHold(latency), LEAD + latency - 0.02)    // WebKit's video moves ~20 ms after play()
-  assert.equal(pictureHold(0), LEAD - 0.02)
+  // The picture is released early by however long this Mac's video takes to start moving
+  near(holdFor(latency, 0.19), LEAD + latency - 0.19)
+  assert.equal(holdFor(0.01, 0.19), 0)
+})
+
+test('each start teaches how long the picture takes to start; a guess off either way is corrected', () => {
+  // Drift = picture − sound. Started 0.17 s later than guessed: the sound ran ahead (drift −0.17)
+  near(learnedDelay(0.02, -0.17), 0.19)
+  // Started earlier than guessed (the picture ahead)
+  near(learnedDelay(0.19, 0.05), 0.14)
+  // A stall isn't a start delay: the learning stays within reason
+  assert.equal(learnedDelay(0.2, -3), 0.8)
+  assert.equal(learnedDelay(0.05, 0.5), 0)
+})
+
+test('a correction moves the sound to the picture: what is heard next is where the picture is', () => {
+  const a = { ctx: 10, media: 30, rate: 1 }
+  const drift = -0.17                        // the picture is 0.17 s behind what is heard
+  near(heardAt(shiftAnchor(a, drift), 11, 0.39), heardAt(a, 11, 0.39) + drift)
 })
 
 test('a clip is played again when what it plays changes', () => {

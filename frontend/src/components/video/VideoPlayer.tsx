@@ -5,7 +5,7 @@ import type { Segment, Speaker, Overlay, StemPiece, TrackFlagMap } from '@/types
 import { useEditorStore } from '@/store/editorStore'
 import { formatTime, cn, originalVoicesReplaced } from '@/lib/utils'
 import { OverlayCanvas } from './OverlayCanvas'
-import { usePreviewAudio, type Stem } from '@/hooks/usePreviewAudio'
+import { heldByEngine, usePreviewAudio, type Stem } from '@/hooks/usePreviewAudio'
 import { frameSecs, isTypingTarget, nextEdge, seekVideoTo, shuttle } from '@/lib/transport'
 import { switchesOf } from '@/lib/trackFlags'
 import { duckGainAt, duckSpans } from '@/lib/ducking'
@@ -185,7 +185,8 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       }
     }
     const onPlay  = () => setPlaying(true)
-    const onPause = () => setPlaying(false)
+    // Not when the preview's sound engine holds the picture to start it again in step
+    const onPause = () => { if (!heldByEngine(video)) setPlaying(false) }
     const onEnded = () => { setPlaying(false); setCurrentTime(0) }
 
     if (video.duration) setDuration(video.duration)
@@ -242,7 +243,10 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
   // the stems and the voices are (usePreviewAudio)
   useEffect(() => {
     const video = videoRef.current
-    if (video) video.volume = hasStemAudio ? 0 : volume
+    if (!video) return
+    // Muted, not just silent: Safari then doesn't ready its own sound output before the picture starts
+    video.muted = hasStemAudio
+    video.volume = hasStemAudio ? 0 : volume
   }, [volume, hasStemAudio, videoUrl])
 
   // The stems' levels follow the export (usePreviewAudio reads them every frame):

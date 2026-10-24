@@ -13,11 +13,11 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import type { Segment } from '@/types'
 import {
-  anchorAt, fadePoints, heardAt, LEAD, loadOrder, pictureHold, previewVoiceUrl, soundKey, stillAnchor, toCtx, toMedia,
+  anchorAt, fadePoints, heardAt, holdFor, LEAD, learnedDelay, loadOrder, previewVoiceUrl, shiftAnchor, soundKey, stillAnchor, toCtx, toMedia,
   upcoming, voiceStart, type Anchor,
 } from '@/lib/audioPlan'
 import { fadeGainAt, isVoiced, voiceUrl } from '@/lib/clipRules'
-import { syncAction } from '@/lib/playbackSync'
+import { SETTLE_MS, syncAction } from '@/lib/playbackSync'
 import { useEditorStore } from '@/store/editorStore'
 
 /** Every voice of the episode loads in the background, this many at a time
@@ -37,6 +37,10 @@ const SWAP_SECS = 0.012
 const MAX_VOICES = 200
 /** A failed load is tried again after this long (ms). */
 const RETRY_MS = 5000
+/** Playing waits at most this long (ms) for a picture that is still loading or seeking. */
+const PLAYABLE_WAIT_MS = 3000
+/** How long the picture takes to start moving after play() (s), until this Mac has shown us. */
+const FIRST_VIDEO_DELAY = 0.12
 
 export type Stem = 'music' | 'voices'
 
@@ -53,6 +57,58 @@ function audioContext(): AudioContext | null {
 /** How long after it is sent a sound is heard (Bluetooth earbuds: ~0.4 s). */
 function outputDelay(ctx: AudioContext): number {
   return (ctx.baseLatency || 0) + ((ctx as AudioContext & { outputLatency?: number }).outputLatency || 0)
+}
+
+// The picture's start delay is learned on each start and kept on this Mac, per
+// output delay (Bluetooth earbuds and the Mac's speakers differ)
+const delayKey = (latency: number) => `movelo.pictureStart.${Math.round(latency * 10)}`
+function videoDelayFor(latency: number): number {
+  try {
+    const v = parseFloat(localStorage.getItem(delayKey(latency)) ?? '')
+    return Number.isFinite(v) ? v : FIRST_VIDEO_DELAY
+  } catch {
+    return FIRST_VIDEO_DELAY
+  }
+}
+function rememberVideoDelay(latency: number, delay: number): void {
+  try { localStorage.setItem(delayKey(latency), delay.toFixed(3)) } catch { /* this session only */ }
+}
+
+// Videos the engine paused itself, to start them again in step with the sound
+const held = new WeakSet<HTMLMediaElement>()
+
+/** The engine paused this video to start it again with the sound: not the editor's pause (VideoPlayer). */
+export function heldByEngine(video: HTMLMediaElement): boolean {
+  return held.has(video)
+}
+
+function holdPicture(video: HTMLMediaElement): void {
+  held.add(video)
+  if (!video.paused) video.pause()
+}
+
+function releasePicture(video: HTMLMediaElement): void {
+  // Held until this play's own event: the pause's event, if still queued, comes first
+  const done = () => held.delete(video)
+  video.addEventListener('play', done, { once: true })
+  video.play().catch(done)
+}
+
+/** Until the picture can play — not loading, not seeking — or `ms` have gone by. */
+function playable(video: HTMLVideoElement, ms: number): Promise<void> {
+  if (video.readyState >= 3 && !video.seeking) return Promise.resolve()
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer)
+      video.removeEventListener('canplay', check)
+      video.removeEventListener('seeked', check)
+      resolve()
+    }
+    const check = () => { if (video.readyState >= 3 && !video.seeking) done() }
+    const timer = setTimeout(done, ms)
+    video.addEventListener('canplay', check)
+    video.addEventListener('seeked', check)
+  })
 }
 
 async function fetchDecode(ctx: AudioContext, url: string): Promise<AudioBuffer | null> {
@@ -194,6 +250,14 @@ class PreviewSound {
   private lastVideoTime: number | null = null
   /** The picture is waiting for the first sound to be heard. */
   private holding: ReturnType<typeof setTimeout> | null = null
+  /** A start is waiting for its sounds or its picture to be ready. */
+  private starting = false
+  /** The first look after a start teaches the picture's start delay. */
+  private learning = false
+  /** Every sound starting next takes over from one fading out (a correction). */
+  private crossAll = false
+  /** The last frame the picture showed: its media time and when it was shown (performance.now). */
+  frame: { media: number; at: number } | null = null
   private starts = 0
   private voices = new Map<string, VoiceSound>()
   private stems = new Map<Stem, StemSound>()
@@ -208,6 +272,10 @@ class PreviewSound {
     this.stems.clear()
     this.anchor = null
     this.lastVideoTime = null
+    this.starting = false
+    this.learning = false
+    this.crossAll = false
+    this.frame = null
   }
 
   private heard(): Segment[] {
@@ -231,32 +299,67 @@ class PreviewSound {
     await Promise.race([Promise.all(loads), new Promise((r) => setTimeout(r, READY_WAIT * 1000))])
   }
 
-  /** Play from the still picture: the sound at once from the playhead, the picture once that sound is heard. */
+  /**
+   * Play from the still picture: once its sounds and the picture are ready, the
+   * sound starts at once from the playhead, and the picture is released so that
+   * its first frame shows as that sound is heard. Every start goes this way — a
+   * press of play, a seek or a stall while playing, a new speed (restart).
+   */
   async start(): Promise<void> {
     const ctx = audioContext()
     const video = this.input?.videoRef.current
     if (!video) return
     this.stop()
     const start = this.starts
+    this.starting = true
     if (ctx && ctx.state !== 'running') {
       await Promise.race([ctx.resume().catch(() => {}), new Promise((r) => setTimeout(r, 300))])
     }
     if (ctx) await this.ready(ctx, video.currentTime)
+    await playable(video, PLAYABLE_WAIT_MS)
     if (start !== this.starts || !this.input?.isPlaying) return        // stopped meanwhile
-    if (!ctx || ctx.state !== 'running' || video.readyState < 3) {
-      // No sound clock yet, or the picture must load first (it would stall while the
-      // sound ran on): the picture plays, and the sound joins once it moves (tick)
-      video.play().catch(() => {})
+    this.starting = false
+    if (!ctx || ctx.state !== 'running') {
+      // No sound clock: the picture plays alone, and the sound joins once it runs (tick)
+      releasePicture(video)
       return
     }
-    const hold = pictureHold(outputDelay(ctx))
+    const latency = outputDelay(ctx)
+    const hold = holdFor(latency, videoDelayFor(latency))
     this.anchor = stillAnchor(ctx.currentTime, video.currentTime, this.input.playbackRate || 1)
     this.anchoredAt = performance.now() + hold * 1000
+    this.learning = true
     this.holding = setTimeout(() => {
       this.holding = null
-      video.play().catch(() => {})
+      releasePicture(video)
     }, hold * 1000)
     this.tick()
+  }
+
+  /** Playing, but the picture has to start over (a seek, a stall, a new speed): hold it, start again in step. */
+  restart(): void {
+    const video = this.input?.videoRef.current
+    if (!video || !this.input?.isPlaying) return
+    holdPicture(video)
+    void this.start()
+  }
+
+  /** Picture − sound heard (s): on the last frame shown when there is one, else on the video's position. */
+  private drift(ctx: AudioContext, video: HTMLVideoElement, a: Anchor, latency: number): number {
+    const f = this.frame
+    const nowMs = performance.now()
+    if (f && nowMs - f.at < 200) return f.media - toMedia(a, ctx.currentTime + (f.at - nowMs) / 1000 - latency)
+    return video.currentTime - heardAt(a, ctx.currentTime, latency)
+  }
+
+  /** Every sound fades out where it is; this pass starts them again from the anchor, fading in. */
+  private crossOver(ctx: AudioContext): void {
+    const when = ctx.currentTime + LEAD
+    for (const s of this.voices.values()) fadeOutSound(s, when)
+    for (const s of this.stems.values()) fadeOutSound(s, when)
+    this.voices.clear()
+    this.stems.clear()
+    this.crossAll = true
   }
 
   /** One frame of playback. */
@@ -264,31 +367,38 @@ class PreviewSound {
     const ctx = audioContext()
     const input = this.input
     const video = input?.videoRef.current
-    if (!ctx || !input || !video) return
-    if ((video.paused && !this.holding) || video.ended) { if (this.anchor) this.stop(); return }
+    if (!ctx || !input || !video || this.starting) return
+    if ((video.paused && !this.holding && !held.has(video)) || video.ended) { if (this.anchor) this.stop(); return }
     if (ctx.state !== 'running') { ctx.resume().catch(() => {}); return }
     const rate = input.playbackRate || 1
     const latency = outputDelay(ctx)
-    if (this.anchor && this.anchor.rate !== rate) this.stop()
+    // A new speed (J / K / L): start again in step
+    if (this.anchor && this.anchor.rate !== rate) { this.restart(); return }
 
     if (!this.anchor) {
-      // After a seek, a stall or a new speed while playing: start once the video
-      // is really moving (it takes WebKit a moment), from where it is
+      // Only without a sound clock at the start: join the picture once it is really moving
       if (video.seeking || video.readyState < 3) { this.lastVideoTime = null; return }
       const t = video.currentTime
       if (this.lastVideoTime === null || t <= this.lastVideoTime) { this.lastVideoTime = t; return }
       this.anchor = anchorAt(ctx.currentTime, t, rate, latency)
       this.anchoredAt = performance.now()
     }
-    const a = this.anchor
+    let a = this.anchor
 
-    // The sound follows the picture, never the other way: too far apart, it
-    // starts again from where the picture is
+    // The sound follows the picture, never the other way: measured on the frames
+    // it shows; too far apart, the sound crosses over to where the picture is
     if (!this.holding) {
-      const drift = video.currentTime - heardAt(a, ctx.currentTime, latency)
-      if (syncAction(drift, performance.now() - this.anchoredAt) === 'resync') {
-        this.stop()
-        return
+      const drift = this.drift(ctx, video, a, latency)
+      const settled = performance.now() - this.anchoredAt
+      if (this.learning && settled >= SETTLE_MS) {
+        // The first look after a start: how long this Mac's picture really took (a stall isn't a start)
+        if (Math.abs(drift) < 0.5) rememberVideoDelay(latency, learnedDelay(videoDelayFor(latency), drift))
+        this.learning = false
+      }
+      if (syncAction(drift, settled) === 'resync') {
+        a = this.anchor = shiftAnchor(a, drift)
+        this.anchoredAt = performance.now()
+        this.crossOver(ctx)
       }
     }
 
@@ -301,7 +411,7 @@ class PreviewSound {
         const buffer = stemBuffers.get(input.stems[stem].join(' '))
         let s = this.stems.get(stem)
         // Made again (a music level change): the old sound plays until the new one is loaded
-        let crossing = false
+        let crossing = this.crossAll
         if (s && buffer && s.buffer !== buffer) {
           fadeOutSound(s, startAt(now))
           this.stems.delete(stem)
@@ -359,12 +469,13 @@ class PreviewSound {
       fade.gain.setValueAtTime(points[0][1], when)
       for (const [m, g] of points.slice(1)) fade.gain.linearRampToValueAtTime(g, toCtx(a, m))
       const gain = ctx.createGain()
-      startLevel(gain, level, when, crossing.has(seg.id))
+      startLevel(gain, level, when, this.crossAll || crossing.has(seg.id))
       src.connect(fade).connect(gain).connect(ctx.destination)
       src.start(when, plan.offset)
       src.stop(toCtx(a, seg.end_time))
       this.voices.set(seg.id, { src, level: gain, nodes: [src, fade, gain], lastLevel: level, key: soundKey(seg) })
     }
+    this.crossAll = false
   }
 }
 
@@ -389,7 +500,8 @@ export function usePreviewAudio(input: PreviewAudioInput): void {
   useEffect(() => {
     if (!isPlaying) {
       sound.stop()
-      videoRef.current?.pause()
+      const video = videoRef.current
+      if (video) { held.delete(video); video.pause() }
       sound.preload()
       return
     }
@@ -402,6 +514,19 @@ export function usePreviewAudio(input: PreviewAudioInput): void {
   }, [isPlaying, videoUrl, videoRef, sound])
   useEffect(() => { if (!isPlaying) sound.preload() }, [segments, isPlaying, sound])
 
+  // The frames the picture shows (media time, when shown): the sound is kept with them
+  useEffect(() => {
+    const video = videoRef.current
+    if (!isPlaying || !video || !('requestVideoFrameCallback' in video)) return
+    let handle = 0
+    const onFrame: VideoFrameRequestCallback = (_now, meta) => {
+      sound.frame = { media: meta.mediaTime, at: meta.expectedDisplayTime }
+      handle = video.requestVideoFrameCallback(onFrame)
+    }
+    handle = video.requestVideoFrameCallback(onFrame)
+    return () => video.cancelVideoFrameCallback(handle)
+  }, [isPlaying, videoUrl, videoRef, sound])
+
   // Browsers start an AudioContext only from a key press or a click: wake it in one
   useEffect(() => {
     const wake = () => { if (context?.state === 'suspended') context.resume().catch(() => {}) }
@@ -413,19 +538,20 @@ export function usePreviewAudio(input: PreviewAudioInput): void {
     }
   }, [])
 
-  // A seek or a stall while playing: silence at once, start again once the video moves
+  // A seek or a stall while playing: silence at once; once the picture is there
+  // it starts again in step (held, then released after the sound)
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
-    const restart = () => sound.stop()
-    const preload = () => sound.preload()
-    video.addEventListener('seeking', restart)
-    video.addEventListener('waiting', restart)
-    video.addEventListener('seeked', preload)
+    const silence = () => sound.stop()
+    const again = () => { if (sound.input?.isPlaying) sound.restart(); else sound.preload() }
+    video.addEventListener('seeking', silence)
+    video.addEventListener('seeked', again)
+    video.addEventListener('waiting', again)
     return () => {
-      video.removeEventListener('seeking', restart)
-      video.removeEventListener('waiting', restart)
-      video.removeEventListener('seeked', preload)
+      video.removeEventListener('seeking', silence)
+      video.removeEventListener('seeked', again)
+      video.removeEventListener('waiting', again)
     }
   }, [videoRef, videoUrl, sound])
 

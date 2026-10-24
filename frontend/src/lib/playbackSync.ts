@@ -12,7 +12,7 @@ const EARLY = 0.045
 /** …or this far behind it, before anyone notices (ITU-R BT.1359). */
 const LATE = 0.125
 /** After a start, ms the picture gets to settle before it's judged. */
-const SETTLE_MS = 600
+export const SETTLE_MS = 600
 
 export type SyncAction = 'none' | 'resync'
 

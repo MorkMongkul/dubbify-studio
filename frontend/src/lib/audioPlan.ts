@@ -100,9 +100,6 @@ export function heardAt(a: Anchor, ctxNow: number, latency: number): number {
   return toMedia(a, ctxNow - latency)
 }
 
-/** WebKit's video starts moving ~20 ms after play() (measured 2026-10-24, every play after the first). */
-export const VIDEO_START = 0.02
-
 /**
  * Playing from a still picture: the sound starts at once from the playhead…
  * (anchored on where the video is, its first word isn't skipped — Bluetooth
@@ -112,7 +109,24 @@ export function stillAnchor(ctxNow: number, position: number, rate: number): Anc
   return { ctx: ctxNow + LEAD, media: position, rate }
 }
 
-/** …and the picture starts once that sound is heard (s to wait before play()). */
-export function pictureHold(latency: number): number {
-  return Math.max(0, LEAD + latency - VIDEO_START)
+/**
+ * …and the picture is released this long after (s): when that sound is heard,
+ * less the time this Mac's video takes to start moving after play() — 20 ms in
+ * one WebKit, ~190 ms in the user's Safari (2026-10-24), so it is learned.
+ */
+export function holdFor(latency: number, videoDelay: number): number {
+  return Math.max(0, LEAD + latency - videoDelay)
+}
+
+/** The longest a picture can take to start: anything slower is a stall, not a start. */
+const MAX_VIDEO_DELAY = 0.8
+
+/** The picture's start delay after one start: `drift` (picture − sound) shows how far the guess was off. */
+export function learnedDelay(guess: number, drift: number): number {
+  return Math.min(MAX_VIDEO_DELAY, Math.max(0, round6(guess - drift)))
+}
+
+/** Move the sound to the picture: from here on, what is heard is `drift` further on. */
+export function shiftAnchor(a: Anchor, drift: number): Anchor {
+  return { ...a, media: a.media + drift }
 }
