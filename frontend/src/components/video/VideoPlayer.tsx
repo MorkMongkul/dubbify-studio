@@ -1,10 +1,10 @@
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Maximize2, Minimize2, VolumeX, Play, Pause, SkipBack, SkipForward } from 'lucide-react'
-import type { Segment, Speaker, Overlay, StemPiece, TrackFlagMap } from '@/types'
+import type { Segment, Speaker, StemPiece, TrackFlagMap } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { formatTime, cn, originalVoicesReplaced } from '@/lib/utils'
-import { OverlayCanvas } from './OverlayCanvas'
+import { MediaCanvas } from './MediaCanvas'
 import { heldByEngine, usePreviewAudio, type Stem } from '@/hooks/usePreviewAudio'
 import { frameSecs, isTypingTarget, nextEdge, seekVideoTo, shuttle } from '@/lib/transport'
 import { switchesOf } from '@/lib/trackFlags'
@@ -20,7 +20,6 @@ interface VideoPlayerProps {
   jobId?: string
   projectId?: string
   jobStatus?: string
-  overlays?: Overlay[]
   bgmVolumeDb?: number
   // Changes when the music/voices tracks are made again (Try again)
   stemsVersion?: number
@@ -32,7 +31,7 @@ interface VideoPlayerProps {
   trackFlags?: TrackFlagMap
 }
 
-export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus, overlays, bgmVolumeDb, stemsVersion, frameRate, duckMusic, trackFlags }: VideoPlayerProps) {
+export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus, bgmVolumeDb, stemsVersion, frameRate, duckMusic, trackFlags }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -42,10 +41,6 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
   // are known, then size the player to match — a portrait video gets a
   // portrait box instead of shrinking to a sliver inside a landscape frame.
   const [videoAspectRatio, setVideoAspectRatio] = useState(16 / 9)
-  // Intrinsic pixel width of the clip. Subtitle font_size is stored in REAL
-  // video pixels (that's what the ffmpeg export renders at), so the preview
-  // needs this to scale the same size down to the on-screen canvas.
-  const [videoPixelWidth, setVideoPixelWidth] = useState(0)
   const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   // Per-field selectors — this component legitimately re-renders on playhead
@@ -178,7 +173,6 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       setDuration(video.duration)
       if (video.videoWidth > 0 && video.videoHeight > 0) {
         setVideoAspectRatio(video.videoWidth / video.videoHeight)
-        setVideoPixelWidth(video.videoWidth)
         useEditorStore.getState().setVideoSize({ width: video.videoWidth, height: video.videoHeight })
       }
     }
@@ -349,9 +343,8 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
             preload="auto"
             playsInline
           />
-          {jobId && overlays && overlays.length > 0 && (
-            <OverlayCanvas overlays={overlays} segments={segments} jobId={jobId} currentTime={currentTime} videoPixelWidth={videoPixelWidth} />
-          )}
+          {/* The episode's media, drawn over the picture with its transparency */}
+          {jobId && <MediaCanvas jobId={jobId} projectId={projectId} videoRef={videoRef} containerRef={containerRef} />}
         </>
       ) : (
         <div className="flex flex-col items-center justify-center w-full h-full text-center p-8">
@@ -367,7 +360,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       <AnimatePresence>
         {showControls && videoUrl && (
           <motion.div
-            className="absolute inset-0 flex flex-col justify-end"
+            className="absolute inset-0 z-40 flex flex-col justify-end pointer-events-none"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -377,7 +370,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
             <div className="absolute bottom-0 left-0 right-0 h-24 bg-gradient-to-t from-black/85 to-transparent pointer-events-none" />
 
             {/* Bottom control bar */}
-            <div className="relative z-10 px-3 pb-3 flex flex-col gap-1.5">
+            <div className="relative z-10 px-3 pb-3 flex flex-col gap-1.5 pointer-events-auto">
               {/* Progress bar */}
               <div
                 className="relative h-[3px] rounded-full bg-white/20 cursor-pointer group/prog"

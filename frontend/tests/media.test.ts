@@ -3,8 +3,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  addAt, defaultClip, drawOrder, dropNewClip, duplicateClip, fitBox, mediaExportWarnings, mediaRows, pasteClips, planMediaDrop,
-  splitClip, trimMediaEnd, trimMediaStart,
+  addAt, defaultClip, drawOrder, dropNewClip, duplicateClip, fitBox, mediaExportWarnings, mediaRows, mediaVideoStep, mediaWindow,
+  pasteClips, planMediaDrop, resizeBox, splitClip, trimMediaEnd, trimMediaStart,
 } from '../src/lib/media.ts'
 import type { MediaAsset, MediaClip } from '../src/types/index.ts'
 
@@ -160,4 +160,46 @@ test('a tile dropped on the timeline: onto a free track, else a new track above 
 test('a paste never lands on a locked track', () => {
   const pasted = pasteClips([clip(10, 15, 0)], 30, [clip(0, 2, 0)], new Set([0]))
   assert.equal(pasted[0].lane_index, 1)
+})
+
+test('a video clip gets its player 2 s before it starts, until it ends', () => {
+  const clips = [clip(10, 17, 0, { id: 'v' }), clip(30, 35, 0, { id: 'i', asset_id: 'i' })]
+  const kinds = new Map([['v', 'video'], ['i', 'image']]) as Map<string, 'video' | 'image'>
+  assert.deepEqual(mediaWindow(clips, kinds, 7.9), [])
+  assert.deepEqual(mediaWindow(clips, kinds, 8), ['v'])
+  assert.deepEqual(mediaWindow(clips, kinds, 16.9), ['v'])
+  assert.deepEqual(mediaWindow(clips, kinds, 17), [])
+  assert.deepEqual(mediaWindow(clips, kinds, 31), [])
+})
+
+test("a clip's player waits paused on its first frame, plays when the clip starts, and is fixed once when it drifts", () => {
+  const c = clip(10, 17, 0, { source_in: 0.5 })
+  // playing, the clip ahead: parked on its first frame
+  assert.deepEqual(mediaVideoStep(c, 9, true, { paused: true, currentTime: 0 }, 5000), { kind: 'pause', seek: 0.5 })
+  assert.deepEqual(mediaVideoStep(c, 9.5, true, { paused: true, currentTime: 0.5 }, 5000), { kind: 'none' })
+  // the clip starts: play (from where the picture is, if late)
+  assert.deepEqual(mediaVideoStep(c, 10, true, { paused: true, currentTime: 0.5 }, 5000), { kind: 'play', seek: null })
+  assert.deepEqual(mediaVideoStep(c, 10.2, true, { paused: true, currentTime: 0.5 }, 5000), { kind: 'play', seek: 0.7 })
+  // playing in step, or a little off: left alone (a seek stalls a playing video)
+  assert.deepEqual(mediaVideoStep(c, 12, true, { paused: false, currentTime: 2.3 }, 5000), { kind: 'none' })
+  // more than 0.3 s off: fixed, but not again within a second
+  assert.deepEqual(mediaVideoStep(c, 12, true, { paused: false, currentTime: 2.9 }, 5000), { kind: 'refit', seek: 2.5 })
+  assert.deepEqual(mediaVideoStep(c, 12, true, { paused: false, currentTime: 2.9 }, 400), { kind: 'none' })
+  // the clip ends: paused
+  assert.deepEqual(mediaVideoStep(c, 17, true, { paused: false, currentTime: 7.5 }, 5000), { kind: 'pause', seek: null })
+  // stopped: the exact frame
+  assert.deepEqual(mediaVideoStep(c, 12, false, { paused: false, currentTime: 2.6 }, 5000), { kind: 'pause', seek: 2.5 })
+  assert.deepEqual(mediaVideoStep(c, 12, false, { paused: true, currentTime: 2.5 }, 5000), { kind: 'none' })
+})
+
+test('a box dragged by a corner keeps its shape; the opposite corner stays put', () => {
+  const box = { x: 0.2, y: 0.2, width: 0.4, height: 0.2 }
+  // bottom-right outwards by 0.1 of the frame's width (the width leads)
+  const br = resizeBox(box, 'se', 0.1)
+  assert.deepEqual(br, { x: 0.2, y: 0.2, width: 0.5, height: 0.25 })
+  // top-left inwards: the bottom-right corner stays
+  const tl = resizeBox(box, 'nw', 0.2)
+  assert.deepEqual(tl, { x: 0.4, y: 0.3, width: 0.2, height: 0.1 })
+  // never smaller than a sliver
+  assert.ok(resizeBox(box, 'se', -1).height >= 0.02)
 })

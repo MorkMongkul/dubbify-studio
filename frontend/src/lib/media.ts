@@ -214,3 +214,56 @@ export function mediaExportWarnings(rows: number[], flags: MediaTrackFlagMap | n
   })
   return out
 }
+
+// ── The preview (MediaCanvas) ────────────────────────────────────────────
+// Each video clip near the playhead has a hidden player of its own. WebKit
+// stalls a playing video whenever it is seeked or its speed changes, so a
+// player is set up while stopped — parked on its first frame PRELOAD_SECS
+// ahead, its speed set — and started when its clip starts; once playing it is
+// left alone unless it drifts more than DRIFT_SECS, and then fixed once.
+export const PRELOAD_SECS = 2
+export const DRIFT_SECS = 0.3
+export const REFIT_GAP_MS = 1000
+const FRAME_EPS = 0.02
+const MIN_BOX = 0.02
+
+/** The video clips that need a player at `t`: from PRELOAD_SECS before each starts until it ends. */
+export function mediaWindow(clips: MediaClip[], kinds: Map<string, MediaAsset['kind']>, t: number): string[] {
+  return clips
+    .filter((c) => kinds.get(c.asset_id) === 'video' && t >= c.start_time - PRELOAD_SECS && t < c.end_time)
+    .map((c) => c.id)
+}
+
+export type MediaVideoStep =
+  | { kind: 'none' }
+  | { kind: 'play'; seek: number | null }
+  | { kind: 'pause'; seek: number | null }
+  | { kind: 'refit'; seek: number }
+
+/** What a clip's player does when the picture is at `t` (`playing`: the picture is moving). */
+export function mediaVideoStep(
+  c: MediaClip, t: number, playing: boolean, v: { paused: boolean; currentTime: number }, msSinceFix: number,
+): MediaVideoStep {
+  const target = round6(c.source_in + (t - c.start_time))
+  const active = t >= c.start_time && t < c.end_time
+  if (playing && active) {
+    if (v.paused) return { kind: 'play', seek: Math.abs(v.currentTime - target) > FRAME_EPS ? target : null }
+    if (Math.abs(v.currentTime - target) > DRIFT_SECS && msSinceFix >= REFIT_GAP_MS) return { kind: 'refit', seek: target }
+    return { kind: 'none' }
+  }
+  // Stopped, or not on screen yet / any more: paused on the frame to show — its first while it waits
+  const want = active ? target : t < c.start_time ? c.source_in : null
+  const seek = want != null && Math.abs(v.currentTime - want) > FRAME_EPS ? want : null
+  return !v.paused || seek != null ? { kind: 'pause', seek } : { kind: 'none' }
+}
+
+/** A box dragged by a corner by `dx` (a fraction of the frame's width): its shape kept, the opposite corner still. */
+export function resizeBox(box: MediaBox, corner: 'nw' | 'ne' | 'sw' | 'se', dx: number): MediaBox {
+  const grow = corner === 'ne' || corner === 'se' ? dx : -dx
+  const s = Math.max((box.width + grow) / box.width, MIN_BOX / box.width, MIN_BOX / box.height)
+  const width = round6(box.width * s)
+  const height = round6(box.height * s)
+  const x = corner === 'nw' || corner === 'sw' ? round6(box.x + box.width - width) : box.x
+  const y = corner === 'nw' || corner === 'ne' ? round6(box.y + box.height - height) : box.y
+  return { x, y, width, height }
+}

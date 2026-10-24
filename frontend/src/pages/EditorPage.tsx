@@ -24,7 +24,7 @@ import {
   useProjectJobs,
   useCreateProject, useUploadVideo, useUploadWithSubtitle,
   useAnalyzeJob, useMixFinalAudio,
-  useProject, useUpdateProject,
+  useProject, useUpdateProject, useMediaClips,
 } from '@/hooks/useApi'
 import { useEditorStore } from '@/store/editorStore'
 
@@ -43,6 +43,7 @@ import { StoryPanel } from '@/components/panels/StoryPanel'
 import { Button } from '@/components/ui/Button'
 import { Modal, InputField } from '@/components/ui/Modal'
 import { exportWarnings } from '@/lib/trackFlags'
+import { MAX_EXPORT_CLIPS, mediaExportWarnings, mediaRows } from '@/lib/media'
 import { trackRows } from '@/lib/tracks'
 import { layoutPlan, type Area, type LayoutName } from '@/lib/layouts'
 import { MoveloStudioLogo } from '@/components/brand/Movelo'
@@ -228,6 +229,7 @@ export default function EditorPage() {
   const { data: spks = []  } = useSpeakers(projectId ?? null)
   const { data: projectJobs = [], isLoading: loadingJobs, refetch: refetchJobs } = useProjectJobs(projectId ?? null)
   const { data: currentProject } = useProject(projectId ?? null)
+  const { data: mediaClips } = useMediaClips(jobId ?? null)
   const updateProject = useUpdateProject()
   // Inline project rename in the header — null = not editing.
   const [editingProjectName, setEditingProjectName] = useState<string | null>(null)
@@ -406,7 +408,16 @@ export default function EditorPage() {
 
   const handleExport = () => {
     if (!jobId) return
-    const leftOut = exportWarnings(trackRows(displaySegs), job?.track_flags)
+    const media = mediaClips?.clips ?? []
+    if (media.length > MAX_EXPORT_CLIPS) {
+      toast.error(`This episode has ${media.length} media clips; at most ${MAX_EXPORT_CLIPS} can be exported.`)
+      return
+    }
+    const leftOut = [
+      ...exportWarnings(trackRows(displaySegs), job?.track_flags),
+      ...mediaExportWarnings(mediaRows(media), mediaClips?.track_flags),
+      ...(mediaClips?.old_overlays ? ["This episode's subtitles, logo and blur box from the old Elements tab won't be in the export"] : []),
+    ]
     if (leftOut.length) setExportLeftOut(leftOut)
     else proceedExport()
   }
@@ -897,7 +908,7 @@ export default function EditorPage() {
       <Modal
         open={!!exportLeftOut}
         onClose={() => setExportLeftOut(null)}
-        title="Some tracks won't be exported"
+        title="Not everything will be in the export"
         size="md"
       >
         <div className="space-y-4">
