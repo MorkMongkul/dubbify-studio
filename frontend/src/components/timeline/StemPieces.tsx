@@ -5,16 +5,18 @@
 // next piece — deleted (silence there), given a volume line and fades; never
 // dragged sideways. An original-voices piece can be switched into the export
 // (gold, with a star). Every edit sends the stem's whole list (one undo step).
+// Each piece draws its own part of the stem's waveform at its own volume, so
+// the volume line grows and shrinks it like CapCut (red past the limit).
 import { useState } from 'react'
 import { Star } from 'lucide-react'
 import type { Stem, StemPiece } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { cn, pixelsToTime, timeToPixels } from '@/lib/utils'
-import { clampFades, fractionToVolume, volumeToFraction } from '@/lib/clipRules'
+import { clampFades, volumeToFraction } from '@/lib/clipRules'
 import { newPieceId, splitPiece, trimPiece } from '@/lib/stemPieces'
+import { dbLabel, gainFor, levelBars, slicePeaks, volumeAtPointer } from '@/lib/waveform'
 
-// Pixels of drag across the whole volume range: 2 px per dB, as on voice clips
-const VOLUME_DRAG_PX = 60
+const LOUD_COLOR = '#F87171'
 
 interface StemPiecesProps {
   stem: Stem
@@ -30,10 +32,13 @@ interface StemPiecesProps {
   /** A new list for the stem: one PUT + one undo step. */
   onCommit: (pieces: StemPiece[], label: string) => void
   onContextMenu: (piece: StemPiece, x: number, y: number, at: number) => void
+  /** The stem's levels (hooks/useStemPeaks), `perSec` per second; null while loading. */
+  peaks: number[] | null
+  perSec: number
 }
 
 export function StemPieces({
-  stem, pieces, duration, zoom, pxPerSec, activeTool, color, selectedId, onSelect, onCommit, onContextMenu,
+  stem, pieces, duration, zoom, pxPerSec, activeTool, color, selectedId, onSelect, onCommit, onContextMenu, peaks, perSec,
 }: StemPiecesProps) {
   // The list while an edge, a fade or a volume line is being dragged
   const [draft, setDraft] = useState<StemPiece[] | null>(null)
@@ -124,6 +129,20 @@ export function StemPieces({
             }}
             title={stem === 'music' ? 'Music & effects' : gold ? 'Original voice — in the export' : 'Original voice'}
           >
+            {/* Its part of the stem, at its own volume */}
+            {peaks && (() => {
+              const count = Math.max(1, Math.floor(width / 3))
+              const bars = levelBars(slicePeaks(peaks, perSec, p.start_time, p.end_time, count), gainFor(p.volume_db))
+              return (
+                <svg className="absolute inset-x-0 top-1 bottom-1 w-full h-[calc(100%-8px)] pointer-events-none opacity-90"
+                  preserveAspectRatio="none" viewBox={`0 0 ${Math.max(1, bars.length)} 1`}>
+                  {bars.map((bar, i) => (
+                    <rect key={i} x={i} y={(1 - bar.h) / 2} width={0.7} height={bar.h} rx={0.15}
+                      fill={bar.loud ? LOUD_COLOR : gold ? '#fbbf24' : color} />
+                  ))}
+                </svg>
+              )
+            })()}
             {gold && <Star size={11} className="absolute top-1 left-1.5 text-amber-300 fill-amber-300 pointer-events-none" />}
 
             {/* Fades: shaded slopes */}
@@ -145,24 +164,29 @@ export function StemPieces({
                   className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-white/15"
                   onPointerDown={(e) => drag(e, (dx) => trimPiece(pieces, p.id, 'end', p.end_time + pixelsToTime(dx, zoom, pxPerSec), duration), 'Trim end')}
                 />
-                {/* The volume line */}
+                {/* The volume line: it follows the pointer; the piece's waveform follows it */}
                 {width >= 40 && (
                   <div
                     className="absolute left-3 right-3 h-[9px] cursor-ns-resize group/vol"
                     style={{ top: `calc(${(1 - volumeToFraction(p.volume_db)) * 100}% - 4px)` }}
-                    title="Volume"
-                    onPointerDown={(e) => drag(e, (_dx, dy) => {
-                      const db = fractionToVolume(volumeToFraction(p.volume_db) - dy / VOLUME_DRAG_PX)
-                      useEditorStore.getState().setLivePieceVolume({ id: p.id, db })
-                      return pieces.map((x) => (x.id === p.id ? { ...x, volume_db: db } : x))
-                    }, 'Change volume')}
+                    aria-label="Volume"
+                    onPointerDown={(e) => {
+                      const band = (e.currentTarget.parentElement ?? e.currentTarget).getBoundingClientRect()
+                      const y0 = e.clientY
+                      drag(e, (_dx, dy) => {
+                        const db = volumeAtPointer(y0 + dy, band.top, band.height)
+                        useEditorStore.getState().setLivePieceVolume({ id: p.id, db })
+                        return pieces.map((x) => (x.id === p.id ? { ...x, volume_db: db } : x))
+                      }, 'Change volume')
+                    }}
                   >
                     <div className="absolute inset-x-0 top-1/2 h-px bg-white/45 group-hover/vol:bg-white/90" />
-                    {draft && pieces.find((x) => x.id === p.id)?.volume_db !== p.volume_db && (
-                      <span className="absolute -top-4 left-1/2 -translate-x-1/2 rounded bg-ink-900 px-1 text-[10px] font-semibold text-white tabular-nums">
-                        {`${p.volume_db > 0 ? '+' : p.volume_db < 0 ? '−' : ''}${Math.abs(p.volume_db)} dB`}
-                      </span>
-                    )}
+                    <span className={cn(
+                      'absolute right-0 top-1/2 -translate-y-1/2 rounded bg-ink-900/90 px-1.5 text-[10.5px] font-semibold text-white tabular-nums pointer-events-none',
+                      draft && pieces.find((x) => x.id === p.id)?.volume_db !== p.volume_db ? 'block' : 'hidden group-hover/vol:block',
+                    )}>
+                      {dbLabel(p.volume_db)}
+                    </span>
                   </div>
                 )}
                 {/* Fade handles on the selected piece's top corners */}

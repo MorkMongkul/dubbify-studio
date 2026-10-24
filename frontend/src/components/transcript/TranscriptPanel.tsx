@@ -3,7 +3,7 @@ import { VoiceBrowser } from '@/components/voices/VoiceBrowser'
 import { VoiceTrigger } from '@/components/voices/VoiceTrigger'
 import { useRef, useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { AlignLeft, Loader2, ChevronLeft, ChevronRight, Sliders, Volume2, Type, RefreshCw, Mic, Plus, Languages, AudioLines, X } from 'lucide-react'
+import { AlignLeft, Loader2, ChevronLeft, ChevronRight, Volume2, Type, RefreshCw, Mic, Plus, Languages, AudioLines, X } from 'lucide-react'
 import type { Segment, SegmentUpdate, Speaker, Job } from '@/types'
 import { useEditorStore, useActiveSegmentId } from '@/store/editorStore'
 import { SegmentCardSkeleton } from '@/components/ui/Skeleton'
@@ -135,10 +135,9 @@ export function TranscriptPanel({
 
  
   // Inspector settings states
-  const [activeClipTab, setActiveClipTab] = useState<'basic' | 'filter' | 'speed'>('basic')
-  const [clipVolume, setClipVolume] = useState<number>(0) // dB
+  // A clip's volume and speed live on the timeline (its volume line, Speed ›);
+  // the clip panel keeps only the voice filter
   const [clipFilter, setClipFilter] = useState<string | null>(null)
-  const [clipSpeed, setClipSpeed] = useState<number>(1.0) // x
 
   const [fontSize, setFontSize] = useState<number>(14)
   const [textAlignment, setTextAlignment] = useState<'left' | 'center' | 'right'>('center')
@@ -447,33 +446,12 @@ export function TranscriptPanel({
   // whenever those values change underneath (undo, another tab), not only on
   // clip change. Adjusted during render rather than in an effect; while a
   // slider is being dragged the saved values don't move, so it isn't fought.
-  const savedEffects = activeSeg ? {
-    id: activeSeg.id,
-    volume: activeSeg.volume_db ?? 0,
-    filter: activeSeg.voice_filter ?? null,
-    // The speed heard: the voice file's own speed × the clip's (kept from an
-    // older episode's fit); a change sets it as the file's speed
-    speed: Math.round(effectiveSpeed(activeSeg) * 1000) / 1000,
-  } : null
-  // Starts empty so the first render with a clip also syncs (the local
-  // states above start at neutral defaults).
-  const [syncedEffects, setSyncedEffects] = useState<typeof savedEffects>(null)
-  if (savedEffects && (
-    savedEffects.id !== syncedEffects?.id || savedEffects.volume !== syncedEffects.volume
-    || savedEffects.filter !== syncedEffects.filter || savedEffects.speed !== syncedEffects.speed
-  )) {
-    setSyncedEffects(savedEffects)
-    setClipVolume(savedEffects.volume)
-    setClipFilter(savedEffects.filter)
-    setClipSpeed(savedEffects.speed)
-  }
-
-  // A slider saves when released; releasing without a change saves nothing.
-  const commitVolume = (value: number) => {
-    if (activeSeg && value !== (activeSeg.volume_db ?? 0)) handleVolumeChange(activeSeg.id, value)
-  }
-  const commitSpeed = (value: number) => {
-    if (activeSeg && Math.abs(value - effectiveSpeed(activeSeg)) > 0.0005) handleSpeedChange(activeSeg.id, value)
+  const savedFilter = activeSeg ? { id: activeSeg.id, filter: activeSeg.voice_filter ?? null } : null
+  // Starts empty so the first render with a clip also syncs
+  const [syncedFilter, setSyncedFilter] = useState<typeof savedFilter>(null)
+  if (savedFilter && (savedFilter.id !== syncedFilter?.id || savedFilter.filter !== syncedFilter.filter)) {
+    setSyncedFilter(savedFilter)
+    setClipFilter(savedFilter.filter)
   }
 
   // Clip effects target the WHOLE multi-selection when the edited clip is
@@ -524,14 +502,8 @@ export function TranscriptPanel({
     }
   }
 
-  const handleVolumeChange = (segmentId: string, val: number) =>
-    applyClipEffect(segmentId, { volume_db: val }, 'Change volume', 'Failed to update volume')
-
   const handleFilterChange = (segmentId: string, val: string | null) =>
     applyClipEffect(segmentId, { voice_filter: val || '' }, 'Change voice filter', 'Failed to update voice filter')
-
-  const handleSpeedChange = (segmentId: string, val: number) =>
-    applyClipEffect(segmentId, { voice_speed: val }, 'Change voice speed', 'Failed to update voice speed')
 
   return (
     <div
@@ -974,161 +946,38 @@ export function TranscriptPanel({
                 Changes apply to all {selectedSegmentIds.length} selected clips
               </div>
             )}
-            {/* Horizontal Sub-tabs */}
-            <div className="flex border-b border-ink-800 pb-1 gap-4">
-              {(['basic', 'filter', 'speed'] as const).map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => setActiveClipTab(tab)}
-                  className={cn(
-                    "pb-1 text-[11px] font-semibold uppercase tracking-wider relative transition-colors",
-                    activeClipTab === tab ? "text-brand-400" : "text-ink-500 hover:text-ink-300"
-                  )}
-                >
-                  {tab === 'basic' ? 'Basic' : tab === 'filter' ? 'Voice Filter' : 'Voice Speed'}
-                  {activeClipTab === tab && (
-                    <motion.div
-                      layoutId="clipTabIndicator"
-                      className="absolute bottom-0 left-0 right-0 h-[2px] bg-brand-500"
-                      transition={{ type: 'spring', stiffness: 380, damping: 30 }}
-                    />
-                  )}
-                </button>
-              ))}
-            </div>
-
-            {/* Tab contents */}
-            <div className="flex-1 min-h-0 py-2">
-              <AnimatePresence mode="wait">
-                {activeClipTab === 'basic' && (
-                  <motion.div
-                    key="basic-tab"
-                    initial={{ opacity: 0, y: 4 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -4 }}
-                    transition={{ duration: 0.15 }}
-                    className="space-y-4"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-semibold text-ink-400 flex items-center gap-1">
-                        <Sliders size={12} /> Volume Level
-                      </span>
-                      <span className="font-mono text-brand-400 font-bold">{clipVolume > 0 ? `+${clipVolume}` : clipVolume} dB</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="range"
-                        min="-20"
-                        max="10"
-                        step="1"
-                        value={clipVolume}
-                        onChange={(e) => setClipVolume(Number(e.target.value))}
-                        // Saved on release — pointer or keyboard (arrow keys used to change it without saving)
-                        onPointerUp={(e) => commitVolume(Number(e.currentTarget.value))}
-                        onKeyUp={(e) => commitVolume(Number(e.currentTarget.value))}
-                        className="flex-1 accent-brand-500 bg-ink-800 rounded-lg cursor-pointer h-1"
-                      />
-                      <button
-                        onClick={() => {
-                          setClipVolume(0)
-                          if (activeSeg) handleVolumeChange(activeSeg.id, 0)
-                        }}
-                        className="px-2 py-0.5 rounded bg-ink-900 border border-ink-800 hover:border-ink-700 text-[10px] text-ink-400 hover:text-white transition-colors"
-                      >
-                        Reset
-                      </button>
-                    </div>
-                  </motion.div>
-                )}
-
-                {activeClipTab === 'filter' && (
-                  <motion.div
-                    key="filter-tab"
-                    initial={{ opacity: 0, y: 4 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -4 }}
-                    transition={{ duration: 0.15 }}
-                    className="space-y-3"
-                  >
-                    <span className="font-semibold text-ink-400 block mb-1">Vocal Sound Profiles</span>
-                    <div className="grid grid-cols-2 gap-2">
-                      {[
-                        { id: 'echo', name: 'Studio Echo', desc: 'Warm acoustic space' },
-                        { id: 'synth', name: 'Robotic Synth', desc: 'Electronic voice tone' },
-                        { id: 'bass', name: 'Deep Bass Booster', desc: 'Heavy low-end power' },
-                        { id: 'phone', name: 'Telephone Effect', desc: 'Retro radio bandpass' },
-                      ].map((filter) => {
-                        const isSelected = clipFilter === filter.id
-                        return (
-                          <button
-                            key={filter.id}
-                            onClick={() => {
-                              const newVal = clipFilter === filter.id ? null : filter.id
-                              setClipFilter(newVal)
-                              if (activeSeg) handleFilterChange(activeSeg.id, newVal)
-                            }}
-                            className={cn(
-                              "p-2.5 rounded text-left border transition-all flex flex-col gap-0.5",
-                              isSelected
-                                ? "border-brand-500/50 bg-brand-500/5 text-brand-400 shadow-glow-sm"
-                                : "border-ink-800/80 bg-ink-900/60 hover:border-ink-700 text-ink-300"
-                            )}
-                          >
-                            <span className="font-semibold text-[11px]">{filter.name}</span>
-                            <span className="text-[9px] text-ink-500">{filter.desc}</span>
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </motion.div>
-                )}
-
-                {activeClipTab === 'speed' && (
-                  <motion.div
-                    key="speed-tab"
-                    initial={{ opacity: 0, y: 4 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -4 }}
-                    transition={{ duration: 0.15 }}
-                    className="space-y-4"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-semibold text-ink-400">Duration Speed</span>
-                      <span className="font-mono text-brand-400 font-bold">{clipSpeed.toFixed(2)}x</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0.5"
-                      max="2.0"
-                      step="0.05"
-                      value={clipSpeed}
-                      onChange={(e) => setClipSpeed(Number(e.target.value))}
-                      onPointerUp={(e) => commitSpeed(Number(e.currentTarget.value))}
-                      onKeyUp={(e) => commitSpeed(Number(e.currentTarget.value))}
-                      className="w-full accent-brand-500 bg-ink-800 rounded-lg cursor-pointer h-1"
-                    />
-                    <div className="flex gap-1.5">
-                      {[0.5, 1.0, 1.5, 2.0].map((val) => (
-                        <button
-                          key={val}
-                          onClick={() => {
-                            setClipSpeed(val)
-                            if (activeSeg) handleSpeedChange(activeSeg.id, val)
-                          }}
-                          className={cn(
-                            "flex-1 py-1 rounded text-[10px] font-mono border transition-colors",
-                            clipSpeed === val
-                              ? "bg-brand-500/10 border-brand-500/30 text-brand-400"
-                              : "bg-ink-900 border-ink-800 hover:border-ink-700 text-ink-400"
-                          )}
-                        >
-                          {val.toFixed(1)}x
-                        </button>
-                      ))}
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+            {/* The voice filter — volume and speed are set on the timeline */}
+            <div className="space-y-3">
+              <span className="font-semibold text-ink-400 block mb-1">Voice filter</span>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { id: 'echo', name: 'Studio Echo', desc: 'Warm acoustic space' },
+                  { id: 'synth', name: 'Robotic Synth', desc: 'Electronic voice tone' },
+                  { id: 'bass', name: 'Deep Bass Booster', desc: 'Heavy low-end power' },
+                  { id: 'phone', name: 'Telephone Effect', desc: 'Retro radio bandpass' },
+                ].map((filter) => {
+                  const isSelected = clipFilter === filter.id
+                  return (
+                    <button
+                      key={filter.id}
+                      onClick={() => {
+                        const newVal = clipFilter === filter.id ? null : filter.id
+                        setClipFilter(newVal)
+                        if (activeSeg) handleFilterChange(activeSeg.id, newVal)
+                      }}
+                      className={cn(
+                        "p-2.5 rounded text-left border transition-all flex flex-col gap-0.5",
+                        isSelected
+                          ? "border-brand-500/50 bg-brand-500/5 text-brand-400 shadow-glow-sm"
+                          : "border-ink-800/80 bg-ink-900/60 hover:border-ink-700 text-ink-300"
+                      )}
+                    >
+                      <span className="font-semibold text-[11px]">{filter.name}</span>
+                      <span className="text-[9px] text-ink-500">{filter.desc}</span>
+                    </button>
+                  )
+                })}
+              </div>
             </div>
           </div>
         ) : (

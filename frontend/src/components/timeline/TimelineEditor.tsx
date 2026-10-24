@@ -11,8 +11,9 @@ import {
 import { toast } from 'sonner'
 import type { Segment, SegmentUpdate, Speaker, Job, LayoutChange, Stem, StemPiece } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
-import { useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useSetBgmVolume, useLayoutSegments, useSplitSegment, useDuplicateSegment, useSetDucking, useStemPieces, useSetStemPieces, useFrames, putSegments } from '@/hooks/useApi'
+import { useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useLayoutSegments, useSplitSegment, useDuplicateSegment, useSetDucking, useStemPieces, useSetStemPieces, useFrames, putSegments } from '@/hooks/useApi'
 import { useScrubAudio } from '@/hooks/useScrubAudio'
+import { PEAKS_PER_SEC, useStemPeaks } from '@/hooks/useStemPeaks'
 import { segments as segmentsApi } from '@/api/client'
 import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, cn, isJobRunning, originalVoicesReplaced } from '@/lib/utils'
 import { recordDuckingChange, recordLayoutChange, recordPiecesChange, recordSegmentChange, recordSegmentDelete, recordSegmentsChange, recordSegmentsDelete, recordSegmentDuplicate, recordSegmentSplit } from '@/lib/historyHelpers'
@@ -149,25 +150,12 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const { mutate: regenerateSegment, isPending: isRegenerating, variables: regenVariables } = useSynthesizeSegment()
   const autofitSegments = useAutofitSegments()
   const tidyLanes = useTidyLanes()
-  const { mutate: setBgmVolume, isPending: isSettingBgmVolume } = useSetBgmVolume()
   const qc = useQueryClient()
   // The music's and the original voices' pieces (0.3.2)
   const { data: stemPieceLists } = useStemPieces(jobId)
   // The picture strip, made in the background
   const { data: frames } = useFrames(jobId, !!job?.video_url)
 
-  // BGM & SFX gain — mirrors job.bgm_volume_db while dragging, committed on
-  // release (see handleVolumeChange). Re-synced whenever the confirmed
-  // server value changes (job switch, or the mutation's own response).
-  const serverBgmVolume = job?.bgm_volume_db ?? 0
-  const [bgmVolume, setBgmVolumeLocal] = useState<number>(serverBgmVolume)
-  // Re-sync during render when the confirmed value or the job changes (React's
-  // "adjust state when a prop changes" pattern — no extra effect pass).
-  const [syncedBgm, setSyncedBgm] = useState({ jobId: job?.id, value: serverBgmVolume })
-  if (syncedBgm.jobId !== job?.id || syncedBgm.value !== serverBgmVolume) {
-    setSyncedBgm({ jobId: job?.id, value: serverBgmVolume })
-    setBgmVolumeLocal(serverBgmVolume)
-  }
   // The music dips under the voices — one undo step
   const { mutate: setDucking, isPending: isSettingDucking } = useSetDucking()
   const handleToggleDucking = useCallback(() => {
@@ -180,16 +168,6 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   }, [jobId, job?.duck_music, setDucking, qc])
   const scrubAudio = useEditorStore((s) => s.scrubAudio)
   const toggleScrubAudio = useEditorStore((s) => s.toggleScrubAudio)
-
-  const handleBgmVolumeCommit = useCallback((value: number) => {
-    if (!jobId || value === (job?.bgm_volume_db ?? 0)) return
-    setBgmVolume({ jobId, volumeDb: value }, {
-      onError: () => {
-        toast.error('Failed to update BGM volume')
-        setBgmVolumeLocal(job?.bgm_volume_db ?? 0)
-      },
-    })
-  }, [jobId, job?.bgm_volume_db, setBgmVolume])
 
   // Auto-fit: one undo step puts every voice back at the speed (and on the
   // track) it had — the server re-renders them from their raw voices.
@@ -296,6 +274,9 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const vocalsPreviewPath   = jobId && projectId
     ? `uploads/${projectId}/${jobId}/vocals.preview.wav?v=${job?.stems_version ?? 0}`
     : null
+  // Each stem's levels, so its pieces draw their own part at their own volume
+  const musicPeaks = useStemPeaks(noVocalsPreviewPath && !isStage1Processing ? `/${noVocalsPreviewPath}` : null)
+  const voicesPeaks = useStemPeaks(vocalsPreviewPath && !isStage1Processing ? `/${vocalsPreviewPath}` : null)
 
   // Timeline rows are free lanes, independent of speaker. Only lanes that hold
   // a clip are drawn (an emptied track disappears, like CapCut's); a drop above,
@@ -1111,7 +1092,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
               className="relative border-b border-timeline-grid bg-ink-900/30"
               style={{ height: STEM_HEIGHT }}
             >
-              {/* Music & effects header: its icon, mute, volume */}
+              {/* Music & effects header: its icon, the dip, mute — volume lives on the pieces' lines */}
               <div
                 className="sticky left-0 z-10 h-full flex items-center gap-1.5 px-2.5 shrink-0 bg-ink-900/95 backdrop-blur-sm border-r border-white/[0.06]"
                 style={{ float: 'left', width: 'var(--speaker-width)' }}
@@ -1146,25 +1127,6 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                     {mutedTrackIds['__bgm__'] ? <VolumeX size={13} /> : <Volume2 size={13} />}
                   </button>
                 </Tooltip>
-                {/* Volume — re-encodes the music stem server-side, so the slider
-                    stages locally and only commits (PATCH) on release. */}
-                <input
-                  type="range"
-                  min={-24}
-                  max={12}
-                  step={1}
-                  value={bgmVolume}
-                  disabled={!jobId || isSettingBgmVolume}
-                  onChange={(e) => setBgmVolumeLocal(Number(e.target.value))}
-                  onMouseUp={() => handleBgmVolumeCommit(bgmVolume)}
-                  onTouchEnd={() => handleBgmVolumeCommit(bgmVolume)}
-                  title="Volume"
-                  aria-label="Music volume"
-                  className="flex-1 accent-sky-500 bg-ink-800 rounded-lg cursor-pointer h-1 min-w-0 disabled:opacity-40 disabled:cursor-not-allowed"
-                />
-                <span className="text-[9px] font-mono text-white/40 shrink-0 w-9 text-right tabular-nums">
-                  {isSettingBgmVolume ? '…' : `${bgmVolume > 0 ? '+' : ''}${bgmVolume}dB`}
-                </span>
               </div>
 
               {/* BGM audio block */}
@@ -1182,7 +1144,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                   </div>
                 ) : (
                   <div className="absolute inset-0 rounded bg-sky-500/10 border border-sky-500/25">
-                    {noVocalsPreviewPath && (
+                    {noVocalsPreviewPath && !(stemPieceLists?.made && musicPeaks) && (
                       <StemWaveform
                         audioUrl={noVocalsPreviewPath}
                         color="#38bdf8"
@@ -1192,6 +1154,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                     {stemPieceLists?.made && (
                       <StemPieces
                         stem="music" pieces={stemPieceLists.music} duration={duration} zoom={zoom} pxPerSec={PX_PER_SEC}
+                        peaks={musicPeaks} perSec={PEAKS_PER_SEC}
                         activeTool={activeTool} color="#38bdf8"
                         selectedId={selectedPiece?.stem === 'music' ? selectedPiece.id : null}
                         onSelect={(id) => selectPiece('music', id)}
@@ -1292,7 +1255,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                       ? "bg-ink-800/40 border-ink-700/30 opacity-40"
                       : "bg-emerald-500/10 border-emerald-500/25"
                   )}>
-                    {vocalsPreviewPath && (
+                    {vocalsPreviewPath && !(stemPieceLists?.made && voicesPeaks) && (
                       <StemWaveform
                         audioUrl={vocalsPreviewPath}
                         color={vocalsReplaced ? "#5A6185" : "#34d399"}
@@ -1304,6 +1267,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                 {!isStage1Processing && stemPieceLists?.made && (
                   <StemPieces
                     stem="voices" pieces={stemPieceLists.voices} duration={duration} zoom={zoom} pxPerSec={PX_PER_SEC}
+                    peaks={voicesPeaks} perSec={PEAKS_PER_SEC}
                     activeTool={activeTool} color="#34d399"
                     selectedId={selectedPiece?.stem === 'voices' ? selectedPiece.id : null}
                     onSelect={(id) => selectPiece('voices', id)}

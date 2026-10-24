@@ -10,15 +10,17 @@ import type { Segment, SegmentUpdate, LayoutChange } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { timeToPixels, pixelsToTime, hexToRgba, cn } from '@/lib/utils'
 import {
-  clampFades, effectiveSpeed, fractionToVolume, isVoiceOutdated, isVoiced, trimEnd, trimStart, voiceUrl, volumeToFraction,
-  waveformSlice,
+  clampFades, effectiveSpeed, isVoiceOutdated, isVoiced, trimEnd, trimStart, voiceUrl, waveformSlice,
 } from '@/lib/clipRules'
+import { dbLabel, gainFor, levelBars, peaksFrom, volumeAtPointer, volumeTop } from '@/lib/waveform'
 import { dropSpot, planDrop, type DropSpot } from '@/lib/tracks'
 import { previewClip } from '@/hooks/useVoicePlayback'
 
 export const LANE_HEIGHT = 64  // clip row height — also the divisor for drop-target row math
-// Pixels of drag across the whole volume range (VOLUME_MIN_DB..MAX_DB): 2 px per dB
-const VOLUME_DRAG_PX = 60
+// The waveform band at the bottom of a clip (px) — the volume line moves inside it
+const WAVE_BAND_PX = 21
+// Bars past the export's loudness limit (lib/waveform.ts CEILING)
+const LOUD_COLOR = '#F87171'
 
 interface InteractiveSegmentProps {
   seg: Segment
@@ -139,19 +141,19 @@ export const InteractiveSegment = memo(function InteractiveSegment({
     window.addEventListener('pointerup', up)
   }
 
-  // Drag the volume line up or down: the preview follows at once, saved on release
+  // Drag the volume line up or down — it follows the pointer inside the waveform
+  // band, like CapCut; the waveform and the preview follow at once, saved on release
   const startVolumeDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return
     e.stopPropagation()
     e.preventDefault()
     const el = e.currentTarget
+    const band = (el.parentElement ?? el).getBoundingClientRect()
     el.setPointerCapture(e.pointerId)
-    const startY = e.clientY
     const from = seg.volume_db ?? 0
-    const startFraction = volumeToFraction(from)
     let db = from
     const move = (ev: PointerEvent) => {
-      // 2 px per dB, whatever the clip's height
-      db = fractionToVolume(startFraction - (ev.clientY - startY) / VOLUME_DRAG_PX)
+      db = volumeAtPointer(ev.clientY, band.top, band.height)
       setVolumeDraft(db)
       useEditorStore.getState().setLiveClipVolume({ id: seg.id, db })
     }
@@ -494,6 +496,7 @@ export const InteractiveSegment = memo(function InteractiveSegment({
           audioPath={versionedAudioPath}
           width={width}
           slice={slice}
+          gain={gainFor(shownVolume - (seg.volume_db ?? 0))}
         />
       )}
 
@@ -525,23 +528,27 @@ export const InteractiveSegment = memo(function InteractiveSegment({
         </>
       )}
 
-      {/* The volume line: drag it up or down */}
+      {/* The volume line: it follows the pointer, and the waveform grows and
+          shrinks with it; its dB shows on hover and while dragging */}
       {voiced && onPatch && width >= 40 && activeTool === 'select' && (
-        <div
-          className="absolute left-3 right-3 z-20 h-[9px] cursor-ns-resize group/vol"
-          style={{ bottom: `${3 + volumeToFraction(shownVolume) * 21 - 4}px` }}
-          title="Volume"
-          onPointerDown={startVolumeDrag}
-        >
-          <div className={cn(
-            'absolute inset-x-0 top-1/2 h-px',
-            volumeDraft != null ? 'bg-brand-300' : 'bg-white/45 group-hover/vol:bg-white/90',
-          )} />
-          {volumeDraft != null && (
-            <span className="absolute -top-5 left-1/2 -translate-x-1/2 rounded bg-ink-900 px-1.5 text-[10.5px] font-semibold text-white tabular-nums">
-              {`${volumeDraft > 0 ? '+' : volumeDraft < 0 ? '−' : ''}${Math.abs(volumeDraft)} dB`}
+        <div className="absolute inset-x-2.5 bottom-[3px] z-20 pointer-events-none" style={{ height: WAVE_BAND_PX }}>
+          <div
+            className="absolute inset-x-0 h-[9px] -translate-y-1/2 cursor-ns-resize pointer-events-auto group/vol"
+            style={{ top: volumeTop(shownVolume, WAVE_BAND_PX) }}
+            aria-label="Volume"
+            onPointerDown={startVolumeDrag}
+          >
+            <div className={cn(
+              'absolute inset-x-0 top-1/2 h-px',
+              volumeDraft != null ? 'bg-brand-300' : 'bg-white/45 group-hover/vol:bg-white/90',
+            )} />
+            <span className={cn(
+              'absolute right-0 top-1/2 -translate-y-1/2 rounded bg-ink-900/90 px-1.5 text-[10.5px] font-semibold text-white tabular-nums pointer-events-none',
+              volumeDraft != null ? 'block' : 'hidden group-hover/vol:block',
+            )}>
+              {dbLabel(shownVolume)}
             </span>
-          )}
+          </div>
         </div>
       )}
 
@@ -646,24 +653,12 @@ function acquireWaveformSlot(): Promise<() => void> {
   })
 }
 
+// Absolute peaks (the loudest channel), about `numPeaks` per file — not scaled to
+// the clip's own loudest point, so the waveform shows the voice's real level and
+// can follow its volume line (lib/waveform.ts).
 function extractPeaks(buffer: AudioBuffer, numPeaks = 60): number[] {
-  const channelData = buffer.getChannelData(0)
-  const step = Math.floor(channelData.length / numPeaks)
-  const peaks: number[] = []
-
-  for (let i = 0; i < numPeaks; i++) {
-    const start = i * step
-    const end = start + step
-    let max = 0
-    for (let j = start; j < end; j++) {
-      const val = Math.abs(channelData[j])
-      if (val > max) max = val
-    }
-    peaks.push(max)
-  }
-
-  const maxPeak = Math.max(...peaks, 0.01)
-  return peaks.map((p) => p / maxPeak)
+  const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c))
+  return peaksFrom(channels, buffer.length, numPeaks)   // the whole file as one "second"
 }
 
 // Cheap synchronous resample of already-decoded peaks to fit the current
@@ -691,9 +686,11 @@ interface SegmentWaveformProps {
   slice?: { from: number; to: number }
   color?: string   // hex or CSS color — defaults to white (matches segment block)
   loading?: boolean // external loading hint (e.g. stem is being generated)
+  /** Amplitude factor while the volume line is dragged (the file already carries the saved volume). */
+  gain?: number
 }
 
-function SegmentWaveform({ audioPath, width, slice, color = 'white', loading: externalLoading }: SegmentWaveformProps) {
+function SegmentWaveform({ audioPath, width, slice, color = 'white', loading: externalLoading, gain = 1 }: SegmentWaveformProps) {
   const [highResPeaks, setHighResPeaks] = useState<number[] | null>(() => {
     return (audioPath && decodedPeaksCache[audioPath]) || null
   })
@@ -773,6 +770,7 @@ function SegmentWaveform({ audioPath, width, slice, color = 'white', loading: ex
     const b = Math.max(a + 1, Math.ceil(to * highResPeaks.length))
     return downsamplePeaks(highResPeaks.slice(a, b), numPeaks)
   }, [highResPeaks, numPeaks, from, to])
+  const bars = useMemo(() => (peaks ? levelBars(peaks, gain) : null), [peaks, gain])
 
   const isLoading = externalLoading || (fetching && !peaks && !error)
 
@@ -792,7 +790,7 @@ function SegmentWaveform({ audioPath, width, slice, color = 'white', loading: ex
   }
 
   // Error or still null — faint dashed line in the waveform band
-  if (error || !peaks) {
+  if (error || !peaks || !bars) {
     return (
       <div className="absolute inset-x-2.5 bottom-[3px] h-[21px] flex items-center justify-center opacity-[0.12] pointer-events-none">
         <div className="w-full border-t border-dashed" style={{ borderColor: color }} />
@@ -807,23 +805,18 @@ function SegmentWaveform({ audioPath, width, slice, color = 'white', loading: ex
       preserveAspectRatio="none"
       viewBox={`0 0 ${peaks.length} 1`}
     >
-      {peaks.map((peak, i) => {
-        // Floor the bar height so quiet passages still read as audio rather
-        // than vanishing into the clip background.
-        const barHeight = Math.max(0.14, peak * 0.92)
-        const y = (1 - barHeight) / 2
-        return (
-          <rect
-            key={i}
-            x={i}
-            y={y}
-            width={0.72}
-            height={barHeight}
-            fill={color}
-            rx={0.18}
-          />
-        )
-      })}
+      {bars.map((bar, i) => (
+        // At the voice's real level; red where it passes the export's limit
+        <rect
+          key={i}
+          x={i}
+          y={(1 - bar.h) / 2}
+          width={0.72}
+          height={bar.h}
+          fill={bar.loud ? LOUD_COLOR : color}
+          rx={0.18}
+        />
+      ))}
     </svg>
   )
 }
