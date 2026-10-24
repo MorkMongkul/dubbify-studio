@@ -19,6 +19,7 @@ from app.models.models import (
 )
 from app.services import asr, story_notes
 from app.services.diarizer import build_voice_design_prompt
+from app.services.timeline import actor_span
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +263,9 @@ async def build_speaker_references(
             continue
         if job.id != exclude_job_id and text not in said.setdefault(seg.speaker_id, []):
             said[seg.speaker_id].append(text)
-        duration = seg.end_time - seg.start_time
+        # Where the actor spoke, not where the (perhaps moved) clip is
+        span_start, span_end = actor_span(seg)
+        duration = span_end - span_start
         if not asr.REFERENCE_MIN_SECONDS <= duration <= asr.REFERENCE_MAX_SECONDS:
             continue
         if seg.speaker_id not in best or duration > best[seg.speaker_id][0]:
@@ -276,7 +279,7 @@ async def build_speaker_references(
             continue
         clip = os.path.join(tmp_dir, f"ref_{speaker_id}.flac")
         try:
-            await asr._slice_chunk(source, seg.start_time, seg.end_time, clip)
+            await asr._slice_chunk(source, *actor_span(seg), clip)
         except Exception as e:
             logger.warning(f"Could not cut a reference clip for speaker {confirmed[speaker_id].label}: {e}")
             continue

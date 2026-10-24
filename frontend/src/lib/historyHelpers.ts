@@ -6,10 +6,12 @@
 // so the UI reflects the reverted/reapplied server state.
 
 import type { QueryClient } from '@tanstack/react-query'
-import { segments as segmentsApi, speakers as speakersApi } from '@/api/client'
-import type { Segment, SegmentCreate, SegmentUpdate, SpeakerMergeResponse, SpeakerUpdate } from '@/types'
-import { invalidateSpeakerLines } from '@/hooks/useApi'
+import { jobs as jobsApi, segments as segmentsApi, speakers as speakersApi, stemPieces as stemPiecesApi } from '@/api/client'
+import type { LayoutChange, Stem, StemPiece, Segment, SegmentCreate, SegmentUpdate, SpeakerMergeResponse, SpeakerUpdate, SplitResult } from '@/types'
+import { invalidateSpeakerLines, putSegments } from '@/hooks/useApi'
 import { useHistoryStore } from '@/store/historyStore'
+import { splitUndoPatch } from '@/lib/undoPatches'
+import type { StemPieceLists } from '@/lib/stemPieces'
 
 export function recordSegmentChange(
   qc: QueryClient,
@@ -164,44 +166,91 @@ export function recordSegmentCreate(
   })
 }
 
-// Splitting is two API calls (shorten the original + create the tail), so its
-// undo has to reverse both — a plain recordSegmentChange would leave the new
-// clip orphaned on the timeline.
+/**
+ * A drop, trim or track change: undo and redo each send ONE layout request
+ * with every clip's place before / after — including clips the server moved
+ * to another track to make room — so one undo puts every clip back exactly.
+ */
+export function recordLayoutChange(
+  qc: QueryClient,
+  jobId: string,
+  changes: { id: string; before: LayoutChange; after: LayoutChange }[],
+  label: string,
+) {
+  if (!changes.length) return
+  const send = async (side: 'before' | 'after') => {
+    const updated = await segmentsApi.layout(jobId, changes.map((c) => c[side]))
+    putSegments(qc, jobId, updated)
+    qc.invalidateQueries({ queryKey: ['segments', jobId] })
+  }
+  useHistoryStore.getState().push({ label, undo: () => send('before'), redo: () => send('after') })
+}
+
+/**
+ * A split is one server call (POST /segments/{id}/split): undo removes the
+ * second half and gives the first back its text, length and track; redo splits
+ * again at the same time. The second half gets a new id each time — boxed.
+ */
 export function recordSegmentSplit(
   qc: QueryClient,
   jobId: string,
-  originalId: string,
-  originalEnd: number,
-  splitTime: number,
-  createdSegment: Segment,
-  label = 'Split clip'
+  before: Segment,
+  result: SplitResult,
+  at: number,
+  label = 'Split clip',
 ) {
-  const box = { currentId: createdSegment.id }
-  const snapshot: SegmentCreate = {
-    speaker_id: createdSegment.speaker_id ?? null,
-    voice_id: createdSegment.voice_id ?? null,
-    lane_index: createdSegment.lane_index ?? 0,
-    start_time: createdSegment.start_time,
-    end_time: createdSegment.end_time,
-    source_text: createdSegment.source_text,
-    english_text: createdSegment.english_text,
-    khmer_text: createdSegment.khmer_text,
-    notes: createdSegment.notes,
-  }
-
+  const box = { secondId: result.second.id }
   useHistoryStore.getState().push({
     label,
     undo: async () => {
-      await segmentsApi.delete(box.currentId)
-      await segmentsApi.update(originalId, { end_time: originalEnd })
+      await segmentsApi.delete(box.secondId)
+      await segmentsApi.update(before.id, splitUndoPatch(before))
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
     },
     redo: async () => {
-      await segmentsApi.update(originalId, { end_time: splitTime })
-      const created = await segmentsApi.create(jobId, snapshot)
-      box.currentId = created.id
+      const again = await segmentsApi.split(before.id, at)
+      box.secondId = again.second.id
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
     },
+  })
+}
+
+/** Duplicate (with its own copy of the voice): undo deletes the copy, redo copies again. */
+export function recordSegmentDuplicate(qc: QueryClient, jobId: string, created: Segment, sourceId: string) {
+  const box = { currentId: created.id }
+  useHistoryStore.getState().push({
+    label: 'Duplicate clip',
+    undo: async () => {
+      await segmentsApi.delete(box.currentId)
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    },
+    redo: async () => {
+      box.currentId = (await segmentsApi.duplicate(sourceId)).id
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    },
+  })
+}
+
+/** A stem's pieces cut, trimmed, deleted or reshaped: undo and redo each send the whole list once. */
+export function recordPiecesChange(
+  qc: QueryClient, jobId: string, stem: Stem, before: StemPiece[], after: StemPiece[], label: string,
+) {
+  const send = async (pieces: StemPiece[]) => {
+    const stored = await stemPiecesApi.put(jobId, stem, pieces)
+    qc.setQueryData<StemPieceLists>(['stem-pieces', jobId], (old) => old && { ...old, [stem]: stored })
+  }
+  useHistoryStore.getState().push({ label, undo: () => send(before), redo: () => send(after) })
+}
+
+/** The music dipping under the voices switched on or off: one undo step. */
+export function recordDuckingChange(qc: QueryClient, jobId: string, before: boolean, after: boolean) {
+  const send = async (on: boolean) => {
+    qc.setQueryData(['job', jobId], await jobsApi.setDucking(jobId, on))
+  }
+  useHistoryStore.getState().push({
+    label: after ? 'Music dips under voices' : 'Music stays level',
+    undo: () => send(before),
+    redo: () => send(after),
   })
 }
 

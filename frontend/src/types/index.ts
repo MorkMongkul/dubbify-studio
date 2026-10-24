@@ -128,6 +128,10 @@ export interface Job {
   completed_at?: string | null
   /** Marked finished by the user (its translation is right); the story notes learn from it. */
   finished_at?: string | null
+  /** The video's frame rate (one ← / → step); null until read. */
+  frame_rate?: number | null
+  /** The music & effects dip under the voices (off for episodes analysed before 0.3.1). */
+  duck_music?: boolean
 }
 
 export interface SubtitleTrack {
@@ -233,6 +237,17 @@ export interface Segment {
   volume_db: number       // dB gain applied to the synthesised clip, 0 = unchanged
   voice_filter: string    // ffmpeg preset name ("" | "echo" | "synth" | "bass" | "phone")
   voice_speed: number     // atempo multiplier applied to the synthesised clip, 1.0 = unchanged
+  /** Where the actor spoke in the original; null for a line added by hand. */
+  source_start?: number | null
+  source_end?: number | null
+  /** The clip plays its voice file from voice_offset for (end − start) s at fit_rate. */
+  voice_offset: number
+  fit_rate: number
+  /** The Khmer text the voice was made from (differs from khmer_text once edited). */
+  voice_text?: string | null
+  /** Linear fades on the clip as trimmed, in seconds. */
+  fade_in_secs: number
+  fade_out_secs: number
 }
 
 export interface SegmentUpdate {
@@ -250,6 +265,37 @@ export interface SegmentUpdate {
   volume_db?: number
   voice_filter?: string
   voice_speed?: number
+  source_start?: number | null
+  source_end?: number | null
+  voice_offset?: number
+  voice_text?: string | null
+  fade_in_secs?: number
+  fade_out_secs?: number
+}
+
+/** One clip's new place on the timeline (PUT /jobs/{id}/segments/layout). */
+export type { LayoutChange } from '@/lib/tracks'
+
+/** POST /segments/{id}/split: the original (shortened) and the new second half. */
+export interface SplitResult {
+  first: Segment
+  second: Segment
+}
+
+/** A stem of the episode that can be cut into pieces (0.3.2). */
+export type Stem = 'music' | 'voices'
+
+/** The part of a stem heard from start to end, at the same time as in the video (never moves). */
+export interface StemPiece {
+  id: string
+  stem: Stem
+  start_time: number
+  end_time: number
+  volume_db: number
+  fade_in_secs: number
+  fade_out_secs: number
+  /** Original voices only: this piece is in the export (drawn in gold). Music pieces always are. */
+  in_export: boolean
 }
 
 export interface SegmentCreate {

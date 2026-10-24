@@ -19,12 +19,13 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.models.models import Job, Project, Segment, JobStatus
-from app.services.audio_extractor import extract_audio, get_video_duration
+from app.services.audio_extractor import extract_audio, get_video_duration, video_frame_rate
 from app.services.source_separator import separate_vocals_bgm
 from app.services.subtitle_parser import parse_subtitle_file
 from app.services.asr import DEFAULT_SPEAKER, label_speech
 from app.services.diarizer import DiarizedSegment
 from app.services.translator import translate_batch_with_report
+from app.services.timeline import actor_span, follow_text, settle_job
 from app.services.pipeline_common import (
     update_job_status as _update_job,
     build_speaker_references,
@@ -78,6 +79,7 @@ async def run_subtitle_pipeline(job_id: str, subtitle_path: str) -> None:
                 job.duration_secs = await get_video_duration(job.video_path)
             except Exception as e:
                 logger.warning(f"Could not get video duration: {e}")
+            job.frame_rate = await video_frame_rate(job.video_path)
 
             audio_path = await extract_audio(job.video_path, output_dir=str(job_dir))
             job.audio_path = audio_path
@@ -109,6 +111,8 @@ async def run_subtitle_pipeline(job_id: str, subtitle_path: str) -> None:
                     speaker_id=None,
                     start_time=sub.start_time,
                     end_time=sub.end_time,
+                    source_start=sub.start_time,
+                    source_end=sub.end_time,
                     source_text=sub.text,
                     english_text="",
                     khmer_text="",
@@ -162,7 +166,7 @@ async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None =
                 select(Segment).where(Segment.job_id == job_id).order_by(Segment.start_time)
             )
             existing_segments = seg_result.scalars().all()
-            spans = [(s.start_time, s.end_time) for s in existing_segments]
+            spans = [actor_span(s) for s in existing_segments]   # the cue, not the moved clip
 
             taken_labels = await project_speaker_labels(db, project.id)
             with tempfile.TemporaryDirectory(prefix="speaker_refs_") as ref_dir:
@@ -227,9 +231,19 @@ async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None =
                     # back to Pending instead of exporting a mismatched voice.
                     db_seg.tts_audio_path = ""
                     db_seg.tts_duration_secs = 0.0
+                    db_seg.voice_offset = 0.0
+                    db_seg.fit_rate = 1.0
+                    db_seg.voice_text = None
                 db_seg.english_text = ""
                 db_seg.khmer_text   = new_text
+            # A line with no voice is as long as its text takes to say
+            for db_seg in existing_segments:
+                follow_text(db_seg)
+            line_ids = [s.id for s in existing_segments]
             await db.commit()
+            # Lines were put on a track per speaker and may have grown: no two
+            # may overlap on one track
+            await settle_job(db, job.id, line_ids)
             # Only lines that had no translation before are actually left empty.
             translation_report.failed = max(0, translation_report.failed - kept)
 
@@ -248,6 +262,8 @@ async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None =
                 )
             if translation_report.warning():
                 warnings.append(translation_report.warning())
+            if job.duck_music is None:
+                job.duck_music = True   # analysed from 0.3.1 on: the music dips under the voices
             await _update_job(db, job, JobStatus.COMPLETED, 100, " ".join(warnings))
             logger.info(f"Subtitle analysis complete for job {job_id[:8]} — {len(existing_segments)} segments.")
 

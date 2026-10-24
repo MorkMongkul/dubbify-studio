@@ -16,7 +16,8 @@ from app.core.data_folder import follow_moved_data_folder
 from app.core.database import init_db
 from app.services.pipeline_common import recover_orphaned_jobs
 from app.services.builtin_voices import seed_builtin_voices
-from app.api.routes import health, projects, jobs, segments, tts, voices, overlays, chat, story
+from app.services.timeline import convert_old_jobs
+from app.api.routes import health, projects, jobs, segments, tts, voices, overlays, chat, story, stem_pieces
 from app.api.routes import settings as settings_routes
 
 # ── Logging setup ─────────────────────────────────────────────
@@ -46,6 +47,14 @@ async def lifespan(app: FastAPI):
         # Not fatal: the editor works without them; the next launch retries.
         logger.exception("Couldn't install the built-in voices")
     await recover_orphaned_jobs()
+    try:
+        converted = await convert_old_jobs()
+        if converted:
+            logger.info(f"Gave {converted} episode(s) the 0.3.0 timeline.")
+    except Exception:
+        # Not fatal: an episode not converted yet still plays the same in the
+        # preview and the export; the next launch retries.
+        logger.exception("Couldn't convert older episodes to the new timeline")
     yield
     logger.info("Shutting down.")
 
@@ -107,6 +116,7 @@ app.include_router(projects.router,  prefix="/api/v1")
 app.include_router(story.router,     prefix="/api/v1")
 app.include_router(jobs.router,      prefix="/api/v1")
 app.include_router(segments.router,  prefix="/api/v1")
+app.include_router(stem_pieces.router, prefix="/api/v1")
 app.include_router(tts.router,       prefix="/api/v1")
 app.include_router(voices.router,    prefix="/api/v1")
 app.include_router(overlays.router,  prefix="/api/v1")

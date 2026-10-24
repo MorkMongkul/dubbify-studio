@@ -178,11 +178,26 @@ class Job(Base):
     # currently-applied value for the UI slider to read back.
     bgm_volume_db = Column(Float, default=0.0)
 
+    # Timeline rules the episode's clips follow: 1 = 0.3.0 (a clip is as long as
+    # its voice). NULL = made before 0.3.0, converted once at startup
+    # (timeline.convert_old_jobs). New jobs get 1.
+    timeline_version = Column(Integer, nullable=True, default=1)
+    # The video's frame rate (one ← / → step in the editor); NULL = not read yet.
+    frame_rate = Column(Float, nullable=True)
+    # The music & effects dip under the voices (timeline.duck_spans). NULL =
+    # analysed before 0.3.1: off, so its export doesn't change; analysis sets it.
+    duck_music = Column(Boolean, nullable=True)
+    # The music and the original voices were given their pieces (0.3.2): from
+    # then on a stem with no pieces is one the user emptied — silence.
+    stem_pieces_made = Column(Boolean, nullable=True)
+
     project  = relationship("Project", back_populates="jobs")
     segments = relationship("Segment", back_populates="job", cascade="all, delete",
                             order_by="Segment.start_time")
     overlays = relationship("Overlay", back_populates="job", cascade="all, delete",
                             order_by="Overlay.z_index")
+    stem_pieces = relationship("StemPiece", back_populates="job", cascade="all, delete",
+                               order_by="StemPiece.start_time")
 
 
 # ── Speaker ───────────────────────────────────────────────────
@@ -226,9 +241,14 @@ class Segment(Base):
     # speaker can share a lane or be spread across separate ones.
     lane_index = Column(Integer, nullable=True, default=0)
 
-    # Timing
+    # Timing: where the clip is on the timeline. A clip with a voice is exactly
+    # as long as the part of the voice it plays (app/services/timeline.py).
     start_time = Column(Float, nullable=False)   # seconds
     end_time   = Column(Float, nullable=False)   # seconds
+    # Where the actor spoke in the original (a fact about the video: stays put
+    # when the clip moves). NULL for a line added by hand.
+    source_start = Column(Float, nullable=True)
+    source_end   = Column(Float, nullable=True)
 
     # Text content
     source_text  = Column(Text, default="")     # original Chinese
@@ -238,6 +258,18 @@ class Segment(Base):
     # TTS output
     tts_audio_path    = Column(String, default="")   # synthesised .wav
     tts_duration_secs = Column(Float, default=0.0)
+    # The clip plays its voice file from voice_offset (seconds into the file)
+    # for (end_time - start_time) seconds at fit_rate on top of the speed baked
+    # into the file. NULL (rows from before 0.3.0) reads as 0.0 / 1.0.
+    voice_offset = Column(Float, nullable=True, default=0.0)
+    fit_rate     = Column(Float, nullable=True, default=1.0)
+    # The Khmer text the voice was made from; differs from khmer_text once the
+    # text is edited after the voice was made (the voice is kept).
+    voice_text   = Column(Text, nullable=True)
+    # Linear fades on the clip as trimmed, in seconds of timeline (0.3.1);
+    # NULL (rows from before 0.3.1) reads as 0 — no fade.
+    fade_in_secs  = Column(Float, nullable=True, default=0.0)
+    fade_out_secs = Column(Float, nullable=True, default=0.0)
 
     # Per-segment voice override — takes precedence over the speaker's voice.
     voice_id = Column(String, ForeignKey("voices.id"), nullable=True)
@@ -256,6 +288,32 @@ class Segment(Base):
 
     job     = relationship("Job", back_populates="segments")
     speaker = relationship("Speaker", back_populates="segments")
+
+
+# ── Stem pieces (0.3.2) ───────────────────────────────────────
+class StemPiece(Base):
+    """
+    A piece of the music & effects (stem "music") or of the original voices
+    (stem "voices"): the part of that stem heard from start_time to end_time,
+    at the same time as in the video (pieces never move — locked to the
+    picture), with its own volume and fades. Between pieces: silence. An
+    episode starts with one whole piece per stem (app/services/stem_pieces.py),
+    so it sounds as before. The original voices are only in the export where a
+    piece is switched on (in_export); the music always is.
+    """
+    __tablename__ = "stem_pieces"
+
+    id            = Column(String, primary_key=True, default=generate_uuid)
+    job_id        = Column(String, ForeignKey("jobs.id"), nullable=False, index=True)
+    stem          = Column(String(10), nullable=False)
+    start_time    = Column(Float, nullable=False)
+    end_time      = Column(Float, nullable=False)
+    volume_db     = Column(Float, default=0.0)
+    fade_in_secs  = Column(Float, default=0.0)
+    fade_out_secs = Column(Float, default=0.0)
+    in_export     = Column(Boolean, default=False)
+
+    job = relationship("Job", back_populates="stem_pieces")
 
 
 # ── Overlay ───────────────────────────────────────────────────

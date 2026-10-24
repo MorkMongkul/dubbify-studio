@@ -13,7 +13,7 @@ from typing import List
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.models.models import Project, Job, Segment, Speaker, Overlay, ChatMessage, ChatProposedEdit, ChatThread
+from app.models.models import Project, Job, Segment, Speaker, Overlay, ChatMessage, ChatProposedEdit, ChatThread, StemPiece
 from app.schemas.schemas import ProjectCreate, ProjectUpdate, ProjectResponse
 from app.services import story_notes
 
@@ -140,6 +140,7 @@ async def delete_project(project_id: str, db: AsyncSession = Depends(get_db, sco
     if job_ids:
         await db.execute(delete(Segment).where(Segment.job_id.in_(job_ids)))
         await db.execute(delete(Overlay).where(Overlay.job_id.in_(job_ids)))
+        await db.execute(delete(StemPiece).where(StemPiece.job_id.in_(job_ids)))
         await db.execute(delete(Job).where(Job.project_id == project_id))
     await db.execute(delete(Speaker).where(Speaker.project_id == project_id))
     await db.delete(project)

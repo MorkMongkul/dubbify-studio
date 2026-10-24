@@ -48,6 +48,8 @@ import { JobProgressRing } from '@/components/progress/JobProgressRing'
 import { useDoneFlash } from '@/hooks/useDoneFlash'
 import { LANGUAGE_OPTIONS } from '@/types'
 import { isJobRunning, cn } from '@/lib/utils'
+import { mergeOverlay } from '@/lib/segmentOverlay'
+import { redoWithToast, undoWithToast } from '@/lib/undoActions'
 import { UPLOADING_TITLE, jobProgress, uploadPercent } from '@/lib/jobProgress'
 import { chooseVideoSavePath, isDesktop } from '@/lib/desktop'
 import { useHistoryStore } from '@/store/historyStore'
@@ -144,17 +146,9 @@ export default function EditorPage() {
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'AUDIO' || (e.target as HTMLElement)?.isContentEditable) return
       e.preventDefault()
-      const { past, future, undo, redo } = useHistoryStore.getState()
       if (e.repeat) return   // holding the key down must not fire a burst of steps
-      const failed = (verb: string, label: string) => (err: unknown) =>
-        toast.error(`Couldn't ${verb} "${label}" — ${(err as Error)?.message || 'request failed'}. It was removed from history.`)
-      if (key === 'y' || (key === 'z' && e.shiftKey)) {
-        const label = future[future.length - 1]?.label
-        if (label) redo().then(() => toast.message(`Redid: ${label}`), failed('redo', label))
-      } else {
-        const label = past[past.length - 1]?.label
-        if (label) undo().then(() => toast.message(`Undid: ${label}`), failed('undo', label))
-      }
+      if (key === 'y' || (key === 'z' && e.shiftKey)) redoWithToast()
+      else undoWithToast()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -234,52 +228,12 @@ export default function EditorPage() {
     navigate(`/projects/${projectId}/jobs/${target.id}`, { replace: true })
   }, [projectId, jobId, projectJobs, loadingJobs, navigate])
 
-  // Merge optimistic segment position overrides.
-  // For tts_audio_path: always prefer the server value if it exists — the local
-  // override is only for the mock-simulation placeholder and must never hide a
-  // real synthesised path that came back from the API.
-  // Memoized so child trees (timeline, transcript, player) keep stable segment
-  // identities between unrelated re-renders — a fresh array of fresh objects
-  // every render defeats React.memo everywhere downstream.
-  const displaySegs = useMemo(() => segs.map(s => {
-    const pos = segmentPositions[s.id]
-    if (!pos) return s
-    return {
-      ...s,
-      ...pos,
-      tts_audio_path: s.tts_audio_path || pos.tts_audio_path || '',
-      tts_duration_secs: s.tts_audio_path ? s.tts_duration_secs : (pos.tts_duration_secs ?? s.tts_duration_secs),
-    }
-  }), [segs, segmentPositions])
-
-  // Sync segmentPositions whenever server data changes:
-  //   • New segments get an initial entry (timing + speaker only)
-  //   • Existing entries get their tts_audio_path/duration updated when synthesis completes
-  useEffect(() => {
-    if (segs.length === 0) return
-    const current = useEditorStore.getState().segmentPositions
-    let updated = false
-    const next = { ...current }
-    segs.forEach(s => {
-      const existing = current[s.id]
-      if (!existing) {
-        // First time we see this segment
-        next[s.id] = {
-          start_time: s.start_time,
-          end_time: s.end_time,
-          lane_index: s.lane_index ?? 0,
-          tts_duration_secs: s.tts_duration_secs,
-          tts_audio_path: s.tts_audio_path,
-        }
-        updated = true
-      } else if (s.tts_audio_path && existing.tts_audio_path !== s.tts_audio_path) {
-        // Synthesis completed — propagate the real audio path into positions
-        next[s.id] = { ...existing, tts_audio_path: s.tts_audio_path, tts_duration_secs: s.tts_duration_secs }
-        updated = true
-      }
-    })
-    if (updated) useEditorStore.setState({ segmentPositions: next })
-  }, [segs])
+  // The server's segments with the edits still in flight laid over them
+  // (a drop or trim waiting for the server, text being typed) — the voice
+  // always comes from the server. Memoized so child trees (timeline,
+  // transcript, player) keep stable segment identities between unrelated
+  // re-renders: an unchanged segment is the server's own object.
+  const displaySegs = useMemo(() => mergeOverlay(segs, segmentPositions), [segs, segmentPositions])
 
   // ── Mutations ─────────────────────────────────────────────────────────────
   const { mutate: analyze,   isPending: analyzing  } = useAnalyzeJob()
@@ -836,7 +790,7 @@ export default function EditorPage() {
                   // No fixed aspect-ratio wrapper here: VideoPlayer sizes itself
                   // to the clip's real dimensions (landscape or portrait/Reel),
                   // bounded by the available pane space via max-w/max-h.
-                  <VideoPlayer videoUrl={videoUrl} segments={displaySegs} speakers={spks} className="max-w-full max-h-full" jobId={jobId} projectId={projectId} jobStatus={job.status} overlays={jobOverlays} bgmVolumeDb={job.bgm_volume_db} stemsVersion={job.stems_version} />
+                  <VideoPlayer videoUrl={videoUrl} segments={displaySegs} speakers={spks} className="max-w-full max-h-full" jobId={jobId} projectId={projectId} jobStatus={job.status} overlays={jobOverlays} bgmVolumeDb={job.bgm_volume_db} stemsVersion={job.stems_version} frameRate={job.frame_rate} duckMusic={!!job.duck_music} />
                 ) : jobId && job && !videoUrl ? (
                   <div className="flex flex-col items-center gap-4 text-center max-w-xs">
                     <Loader2 size={20} className="animate-spin text-brand-300" />

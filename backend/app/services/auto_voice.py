@@ -33,13 +33,14 @@ from typing import Optional
 
 import numpy as np
 import soundfile as sf
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.models import AgeGroup, Gender, Job, Segment, Speaker, Voice
 from app.services.builtin_voices import PREFIX, load_manifest
 from app.services.source_separator import UNAVAILABLE_MARKER
+from app.services.timeline import actor_span
 from app.services.voice_tags import voice_section
 
 logger = logging.getLogger(__name__)
@@ -137,10 +138,12 @@ async def _speaker_kind(db: AsyncSession, speaker: Speaker) -> Optional[str]:
     rows = (await db.execute(
         select(Segment, Job).join(Job, Job.id == Segment.job_id)
         .where(Segment.speaker_id == speaker.id)
-        .order_by((Segment.end_time - Segment.start_time).desc())
+        .order_by(func.coalesce(Segment.source_end - Segment.source_start,
+                                Segment.end_time - Segment.start_time).desc())
         .limit(MAX_LINES)
     )).all()
-    spans = [(_separated_vocals(job), seg.start_time, seg.end_time) for seg, job in rows]
+    # Where the actor spoke (timeline.actor_span), not where the clip was moved
+    spans = [(_separated_vocals(job), *actor_span(seg)) for seg, job in rows]
     hz = await asyncio.to_thread(_pitch_of_spans, [s for s in spans if s[0]])
     return kind_from_pitch(hz)
 
@@ -211,5 +214,5 @@ async def ensure_speaker_voice(db: AsyncSession, speaker: Speaker, job_id: str) 
 async def voice_for_line(db: AsyncSession, seg: Segment) -> Optional[Voice]:
     """A fixed built-in voice for a line with no speaker, by the line's own pitch."""
     path = _separated_vocals(await db.get(Job, seg.job_id))
-    hz = await asyncio.to_thread(_pitch_of_spans, [(path, seg.start_time, seg.end_time)]) if path else None
+    hz = await asyncio.to_thread(_pitch_of_spans, [(path, *actor_span(seg))]) if path else None
     return await _pick(db, kind_from_pitch(hz), Counter())

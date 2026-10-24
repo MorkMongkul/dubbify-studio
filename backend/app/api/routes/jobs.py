@@ -17,9 +17,9 @@ from typing import List
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.models.models import Job, Project, JobStatus, Segment
-from app.schemas.schemas import JobResponse, PipelineStartResponse, BgmVolumeUpdate, JobTitleUpdate, JobFinishedUpdate
-from app.services import story_learning
+from app.models.models import Job, Project, JobStatus, Segment, StemPiece
+from app.schemas.schemas import JobResponse, PipelineStartResponse, BgmVolumeUpdate, JobTitleUpdate, JobFinishedUpdate, JobDuckingUpdate
+from app.services import picture_strip, story_learning
 from app.services.pipeline import (
     needs_translation, run_analysis_pipeline, run_pipeline, run_separation_retry, run_speaker_detection,
     run_translation,
@@ -27,7 +27,7 @@ from app.services.pipeline import (
 from app.services.pipeline_common import vocals_path_for
 from app.core.paths import resolve_existing
 from app.services.subtitle_pipeline import run_subtitle_pipeline, run_subtitle_analysis_pipeline
-from app.services.audio_extractor import extract_subtitle, list_subtitle_tracks
+from app.services.audio_extractor import extract_subtitle, frame_rate_of, list_subtitle_tracks, probe_video
 from app.api.routes.overlays import apply_default_overlay_template
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
@@ -233,7 +233,50 @@ async def get_job(job_id: str, db: AsyncSession = Depends(get_db, scope="functio
     job = result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    if job.frame_rate is None and job.id not in _frame_rate_tried:
+        # Episodes from before 0.3.0: read it once (this route is polled)
+        _frame_rate_tried.add(job.id)
+        video = resolve_existing(job.video_path)
+        if video:
+            try:
+                job.frame_rate = frame_rate_of(await probe_video(str(video)))
+                await db.commit()
+            except Exception as e:  # noqa: BLE001 — the editor steps 1/30 s without it
+                logger.warning(f"Couldn't read the frame rate of job {job_id[:8]}: {e}")
     return job
+
+
+# Jobs whose missing frame rate was already looked for since the app started
+_frame_rate_tried: set[str] = set()
+
+
+@router.get("/{job_id}/frames")
+async def get_frames(job_id: str, background_tasks: BackgroundTasks,
+                     db: AsyncSession = Depends(get_db, scope="function")):
+    """
+    The picture strip: frame URLs, one every `interval` seconds from 0. Not
+    ready yet: it's made in the background (once per job per app run) and the
+    answer comes at once.
+    """
+    job = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    folder = Path(settings.UPLOAD_DIR) / job.project_id / job_id / "frames"
+    state = picture_strip.frames_state(folder)
+    if state:
+        base = f"/uploads/{job.project_id}/{job_id}/frames"
+        return {"ready": True, "interval": state["interval"],
+                "urls": [f"{base}/f_{i:05d}.jpg" for i in range(1, state["count"] + 1)]}
+    interval = picture_strip.frame_interval(job.duration_secs or 0.0)
+    video = resolve_existing(job.video_path)
+    if video and job_id not in _frames_started:
+        _frames_started.add(job_id)
+        background_tasks.add_task(picture_strip.make_frames_quietly, str(video), folder, interval)
+    return {"ready": False, "interval": interval, "urls": []}
+
+
+# Jobs whose picture strip was started since the app started
+_frames_started: set[str] = set()
 
 
 @router.get("/{job_id}/subtitle-tracks")
@@ -446,6 +489,22 @@ async def update_job_title(
     return job
 
 
+@router.patch("/{job_id}/ducking", response_model=JobResponse)
+async def set_job_ducking(
+    job_id: str,
+    payload: JobDuckingUpdate,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """Switch the music dipping under the voices on or off, in the preview and the export."""
+    job = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job.duck_music = payload.duck_music
+    await db.commit()
+    await db.refresh(job)
+    return job
+
+
 @router.patch("/{job_id}/finished", response_model=JobResponse)
 async def set_job_finished(
     job_id: str,
@@ -523,5 +582,6 @@ async def delete_job(job_id: str, db: AsyncSession = Depends(get_db, scope="func
     # Delete child segments explicitly first (avoids relying on async ORM
     # cascade and any FK ordering issues), then the job.
     await db.execute(delete(Segment).where(Segment.job_id == job_id))
+    await db.execute(delete(StemPiece).where(StemPiece.job_id == job_id))
     await db.delete(job)
     await db.commit()

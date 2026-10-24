@@ -20,10 +20,11 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.models.models import Job, Project, Segment, Speaker, JobStatus
-from app.services.audio_extractor import extract_audio, get_video_duration
+from app.services.audio_extractor import extract_audio, get_video_duration, video_frame_rate
 from app.services.source_separator import render_bgm_volume, separate_vocals_bgm
 from app.services.asr import VOICES, labels_for_spans, transcribe_audio
 from app.services.translator import translate_batch_with_report
+from app.services.timeline import actor_span, follow_text, lay_out_new, settle_job
 from app.services.pipeline_common import (
     update_job_status as _update_job,
     build_speaker_references,
@@ -69,6 +70,7 @@ async def run_pipeline(job_id: str) -> None:
             except Exception as e:
                 logger.warning(f"Could not get video duration: {e}")
                 job.duration_secs = 0.0
+            job.frame_rate = await video_frame_rate(job.video_path)
 
             audio_path = await extract_audio(job.video_path, output_dir=str(job_dir))
             job.audio_path = audio_path
@@ -226,10 +228,15 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
                     lane_index=lane_by_speaker.setdefault(seg.speaker_label, len(lane_by_speaker)),
                     start_time=seg.start_time,
                     end_time=seg.end_time,
+                    source_start=seg.start_time,
+                    source_end=seg.end_time,
                     source_text=seg.source_text,
                     english_text="",
                     khmer_text=km_texts[i] if i < len(km_texts) else "",
                 ))
+            # Each line is as long as its Khmer text takes to say; the
+            # detected span stays as where the actor spoke
+            lay_out_new(new_segments)
             await replace_job_segments(db, job.id, new_segments)
             await remove_unused_auto_speakers(db, project.id)
 
@@ -244,6 +251,8 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
                 )
             if translation_report.warning():
                 warnings.append(translation_report.warning())
+            if job.duck_music is None:
+                job.duck_music = True   # analysed from 0.3.1 on: the music dips under the voices
             await _update_job(db, job, JobStatus.COMPLETED, 100, " ".join(warnings))
             logger.info(
                 f"Analysis complete for job {job_id[:8]} — {len(diarized)} segments, "
@@ -298,10 +307,15 @@ async def run_translation(job_id: str) -> None:
                     select(Segment).where(Segment.id.in_([seg_id for seg_id, _, _ in todo]))
                     .execution_options(populate_existing=True)
                 )).scalars().all()}
+                filled = []
                 for (seg_id, _, _), text in zip(todo, texts):
                     seg = current.get(seg_id)
                     if seg is not None and text and needs_translation(seg):
                         seg.khmer_text = text
+                        follow_text(seg)    # a line with no voice is as long as its text
+                        filled.append(seg_id)
+                await db.commit()
+                await settle_job(db, job.id, filled)
                 warning = report.warning()
             else:
                 warning = ""
@@ -336,7 +350,8 @@ async def run_speaker_detection(job_id: str) -> None:
             if not vocals_path:
                 raise RuntimeError("No extracted audio found for this session.")
             segment_ids = [s.id for s in segments]
-            spans = [(s.start_time, s.end_time) for s in segments]
+            # Where the actor spoke, not where the (perhaps moved) clip is
+            spans = [actor_span(s) for s in segments]
 
             taken_labels = await project_speaker_labels(db, project.id)
             with tempfile.TemporaryDirectory(prefix="speaker_refs_") as ref_dir:

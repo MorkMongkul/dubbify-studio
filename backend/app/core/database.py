@@ -126,6 +126,12 @@ async def init_db(bind: AsyncEngine | None = None):
             ("jobs", [("finished_at", datetime_type)]),          # 0.2.6
             ("chat_messages", [("line_ref", "JSON"), ("thread_id", "VARCHAR")]),   # 0.2.6
             ("segments", [("level_gain_db", float_type)]),       # 0.2.8
+            ("segments", [("source_start", float_type), ("source_end", float_type), ("voice_offset", float_type),
+                          ("fit_rate", float_type), ("voice_text", "TEXT")]),            # 0.3.0
+            ("jobs", [("timeline_version", "INTEGER"), ("frame_rate", float_type)]),  # 0.3.0
+            ("segments", [("fade_in_secs", float_type), ("fade_out_secs", float_type)]),   # 0.3.1
+            ("jobs", [("duck_music", "BOOLEAN")]),                                       # 0.3.1
+            ("jobs", [("stem_pieces_made", "BOOLEAN")]),                                 # 0.3.2
         ):
             for name in await add_missing_columns(conn, table, columns):
                 logger.info(f"Added column {name} to the {table} table.")

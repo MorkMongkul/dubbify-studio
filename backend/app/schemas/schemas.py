@@ -81,6 +81,14 @@ class JobResponse(BaseModel):
     created_at: datetime
     completed_at: Optional[datetime]
     finished_at: Optional[datetime] = None
+    frame_rate: Optional[float] = None
+    duck_music: bool = False
+
+    # NULL: analysed before 0.3.1 — the music doesn't dip
+    @field_validator("duck_music", mode="before")
+    @classmethod
+    def _duck_default(cls, v):
+        return bool(v)
 
     @computed_field
     def video_url(self) -> Optional[str]:
@@ -147,6 +155,11 @@ class BgmVolumeUpdate(BaseModel):
 
 class JobTitleUpdate(BaseModel):
     title: str = Field(..., max_length=255)
+
+
+class JobDuckingUpdate(BaseModel):
+    """Whether the music & effects dip under the voices."""
+    duck_music: bool
 
 
 class JobFinishedUpdate(BaseModel):
@@ -247,6 +260,12 @@ class SegmentUpdate(BaseModel):
     volume_db: Optional[float] = None
     voice_filter: Optional[str] = None
     voice_speed: Optional[float] = None
+    source_start: Optional[float] = None
+    source_end: Optional[float] = None
+    voice_offset: Optional[float] = None
+    voice_text: Optional[str] = None
+    fade_in_secs: Optional[float] = Field(None, ge=0)
+    fade_out_secs: Optional[float] = Field(None, ge=0)
 
 
 class SegmentResponse(BaseModel):
@@ -267,6 +286,30 @@ class SegmentResponse(BaseModel):
     volume_db: float
     voice_filter: str
     voice_speed: float
+    source_start: Optional[float] = None
+    source_end: Optional[float] = None
+    voice_offset: float = 0.0
+    fit_rate: float = 1.0
+    voice_text: Optional[str] = None
+    fade_in_secs: float = 0.0
+    fade_out_secs: float = 0.0
+
+    # Rows from before 0.3.0 / 0.3.1 hold NULL
+    @field_validator("fade_in_secs", "fade_out_secs", mode="before")
+    @classmethod
+    def _fade_default(cls, v):
+        return 0.0 if v is None else v
+
+    # Rows from before 0.3.0 hold NULL until they are converted
+    @field_validator("voice_offset", mode="before")
+    @classmethod
+    def _offset_default(cls, v):
+        return 0.0 if v is None else v
+
+    @field_validator("fit_rate", mode="before")
+    @classmethod
+    def _rate_default(cls, v):
+        return 1.0 if v is None else v
 
     @computed_field
     def tts_audio_url(self) -> Optional[str]:
@@ -281,6 +324,70 @@ class SegmentResponse(BaseModel):
             return f"/uploads/{p.name}"
         except Exception:
             return None
+
+    model_config = {"from_attributes": True}
+
+
+class LayoutChange(BaseModel):
+    """One clip's new place on the timeline (only the fields that change)."""
+    id: str
+    start_time: Optional[float] = Field(None, ge=0)
+    end_time: Optional[float] = Field(None, ge=0)
+    lane_index: Optional[int] = Field(None, ge=0)
+    voice_offset: Optional[float] = None
+    # Sent by an undo, so a trim that shortened the fades gives them back
+    fade_in_secs: Optional[float] = Field(None, ge=0)
+    fade_out_secs: Optional[float] = Field(None, ge=0)
+
+
+class LayoutRequest(BaseModel):
+    changes: List[LayoutChange]
+
+
+class LayoutResponse(BaseModel):
+    segments: List[SegmentResponse]
+
+
+class SplitRequest(BaseModel):
+    at: float
+
+
+class SplitResponse(BaseModel):
+    first: SegmentResponse
+    second: SegmentResponse
+
+
+class StemPieceIn(BaseModel):
+    """One piece of a stem, as the editor sends the stem's whole list."""
+    id: Optional[str] = None
+    start_time: float
+    end_time: float
+    volume_db: float = 0.0
+    fade_in_secs: float = 0.0
+    fade_out_secs: float = 0.0
+    in_export: bool = False
+
+
+class StemPiecesUpdate(BaseModel):
+    pieces: List[StemPieceIn]
+
+
+class StemPieceLists(BaseModel):
+    music: List["StemPieceResponse"]
+    voices: List["StemPieceResponse"]
+    # The pieces were given (false: no video length yet — each stem plays whole)
+    made: bool
+
+
+class StemPieceResponse(BaseModel):
+    id: str
+    stem: str
+    start_time: float
+    end_time: float
+    volume_db: float = 0.0
+    fade_in_secs: float = 0.0
+    fade_out_secs: float = 0.0
+    in_export: bool = False
 
     model_config = {"from_attributes": True}
 

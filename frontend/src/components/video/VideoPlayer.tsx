@@ -1,10 +1,15 @@
-import { useRef, useEffect, useCallback, useState } from 'react'
+import { useRef, useEffect, useCallback, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Maximize2, Minimize2, VolumeX, Play, Pause, SkipBack, SkipForward } from 'lucide-react'
-import type { Segment, Speaker, Overlay } from '@/types'
+import type { Segment, Speaker, Overlay, StemPiece } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { formatTime, cn, originalVoicesReplaced } from '@/lib/utils'
 import { OverlayCanvas } from './OverlayCanvas'
+import { gainFor, resumeAudio, useVoicePlayback } from '@/hooks/useVoicePlayback'
+import { frameSecs, isTypingTarget, nextEdge, shuttle } from '@/lib/transport'
+import { duckGainAt, duckSpans } from '@/lib/ducking'
+import { pieceAt, setLevel, stemLevelAt } from '@/lib/stemPieces'
+import { useStemPieces } from '@/hooks/useApi'
 
 interface VideoPlayerProps {
   videoUrl?: string
@@ -18,9 +23,13 @@ interface VideoPlayerProps {
   bgmVolumeDb?: number
   // Changes when the music/voices tracks are made again (Try again)
   stemsVersion?: number
+  /** The video's frame rate: one ← / → step (else 1/30 s). */
+  frameRate?: number | null
+  /** The music & effects dip under the voices (job.duck_music). */
+  duckMusic?: boolean
 }
 
-export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus, overlays, bgmVolumeDb, stemsVersion }: VideoPlayerProps) {
+export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus, overlays, bgmVolumeDb, stemsVersion, frameRate, duckMusic }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const bgmAudioRef = useRef<HTMLAudioElement>(null)
   const vocalsAudioRef = useRef<HTMLAudioElement>(null)
@@ -37,10 +46,6 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
   // needs this to scale the same size down to the on-screen canvas.
   const [videoPixelWidth, setVideoPixelWidth] = useState(0)
   const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-
-  // TTS segment playback — one dubbed clip plays at a time in sync with the video
-  const ttsAudioRef      = useRef<HTMLAudioElement | null>(null)
-  const ttsActiveSegId   = useRef<string | null>(null)
 
   // Per-field selectors — this component legitimately re-renders on playhead
   // ticks (progress bar/time display), but it must not also re-render on every
@@ -64,11 +69,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
   const setPlaybackRate = useEditorStore((s) => s.setPlaybackRate)
 
   // Stable refs so event callbacks always see the latest values
-  const isPlayingRef    = useRef(isPlaying)
-  const volumeRef       = useRef(volume)
   const mutedRef        = useRef(mutedTrackIds)
-  useEffect(() => { isPlayingRef.current    = isPlaying },    [isPlaying])
-  useEffect(() => { volumeRef.current       = volume },       [volume])
   useEffect(() => { mutedRef.current        = mutedTrackIds }, [mutedTrackIds])
 
   const segmentsRef = useRef(segments)
@@ -76,63 +77,72 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     segmentsRef.current = segments
   }, [segments])
 
-  // ── TTS helpers ───────────────────────────────────────────────────────
-  const stopTTS = useCallback(() => {
-    if (ttsAudioRef.current) {
-      ttsAudioRef.current.pause()
-      ttsAudioRef.current.src = ''
-      ttsAudioRef.current = null
-    }
-    ttsActiveSegId.current = null
+  // The dubbed voices: every clip under the playhead plays its window, as in the export
+  useVoicePlayback({ videoRef, segmentsRef, isPlaying, playbackRate, volume, mutedRef, videoUrl })
+
+  // ── Transport keys ────────────────────────────────────────────────────
+  // J / K / L: back, stop, forward (again: 2×, then 4×). The window can't
+  // play video backward, so J steps back in short jumps with the video paused.
+  // ← / →: one frame. ↑ / ↓: the previous / next clip edge. Never while typing.
+  const shuttleRef = useRef(0)
+  const backTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const stopBackStep = useCallback(() => {
+    if (backTimerRef.current) { clearInterval(backTimerRef.current); backTimerRef.current = null }
   }, [])
+  // Playing again (Space, the play button) ends a J
+  useEffect(() => {
+    if (isPlaying) { stopBackStep(); if (shuttleRef.current < 0) shuttleRef.current = 0 }
+  }, [isPlaying, stopBackStep])
+  useEffect(() => stopBackStep, [stopBackStep])
 
-  const startTTS = useCallback((seg: Segment, videoTime: number) => {
-    stopTTS()
-    const path = seg.tts_audio_url
-    if (!path) return
-    // Cache-bust: the backend overwrites the same file path on every
-    // re-synthesis, so a version query param is required to avoid the
-    // browser serving a stale cached response for a segment's audio.
-    const versioned = `${path}?v=${seg.tts_duration_secs ?? 0}`
-    const url  = versioned.startsWith('/') ? versioned : `/${versioned}`
-    const audio = new Audio(url)
-    const offset = Math.max(0, videoTime - seg.start_time)
-    if (offset > 0.05) audio.currentTime = offset
-
-    const videoRate = videoRef.current?.playbackRate ?? 1
-    let rate = videoRate
-
-    // If the user explicitly set a speed for this clip (Voice Speed slider,
-    // baked into the file via ffmpeg atempo on the backend), respect it as-is
-    // — don't let the auto-fit logic below silently re-speed it to chase the
-    // segment window, which would undo the user's own choice.
-    const hasManualSpeed = typeof seg.voice_speed === 'number' && Math.abs(seg.voice_speed - 1.0) > 0.001
-
-    if (!hasManualSpeed) {
-      // Auto-fit: speed up the clip so it finishes within the segment window.
-      // This keeps dubbed voices in sync with lip movements regardless of how
-      // long Gemini took to say the line — but only applies when the user
-      // hasn't already made an explicit speed choice for this segment.
-      const segDuration = Math.max(0.1, seg.end_time - seg.start_time)
-      const ttsDuration = seg.tts_duration_secs ?? 0
-      if (ttsDuration > 0) {
-        // fitRate > 1  → clip is longer than the slot, speed it up
-        // fitRate < 1  → clip is shorter, let it play naturally (don't slow down)
-        const fitRate = ttsDuration / segDuration
-        if (fitRate > 1.05) {
-          rate = Math.min(3.5, fitRate * videoRate)
+  useEffect(() => {
+    const seekTo = (t: number) => {
+      const video = videoRef.current
+      if (!video) return
+      const clamped = Math.max(0, Math.min(video.duration || t, t))
+      video.currentTime = clamped
+      setCurrentTime(clamped)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return
+      if (useEditorStore.getState().settingsOpen) return
+      const video = videoRef.current
+      if (!video) return
+      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key
+      if (key === 'j' || key === 'k' || key === 'l') {
+        e.preventDefault()
+        const rate = shuttle(shuttleRef.current, key)
+        shuttleRef.current = rate
+        stopBackStep()
+        if (rate > 0) {
+          setPlaybackRate(rate)
+          setPlaying(true)
+        } else {
+          setPlaying(false)
+          setPlaybackRate(1)
+          if (rate < 0) {
+            backTimerRef.current = setInterval(() => {
+              const v = videoRef.current
+              if (!v || v.currentTime <= 0) { stopBackStep(); return }
+              seekTo(v.currentTime - 0.05 * Math.abs(shuttleRef.current))
+            }, 50)
+          }
         }
+      } else if (key === 'ArrowLeft' || key === 'ArrowRight') {
+        e.preventDefault()
+        stopBackStep()
+        shuttleRef.current = 0
+        setPlaying(false)
+        seekTo(video.currentTime + (key === 'ArrowRight' ? 1 : -1) * frameSecs(frameRate))
+      } else if (key === 'ArrowUp' || key === 'ArrowDown') {
+        e.preventDefault()
+        const edge = nextEdge(segmentsRef.current, video.currentTime, key === 'ArrowDown' ? 1 : -1)
+        if (edge != null) seekTo(edge)
       }
     }
-    audio.playbackRate = rate
-
-    const key   = seg.speaker_id ?? '__none__'
-    const muted = mutedRef.current[key]
-    audio.volume = muted ? 0 : volumeRef.current
-    if (isPlayingRef.current) audio.play().catch(() => {})
-    ttsAudioRef.current    = audio
-    ttsActiveSegId.current = seg.id
-  }, [stopTTS])
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [frameRate, setCurrentTime, setPlaying, setPlaybackRate, stopBackStep])
 
   // Navigate to active segment start
   const goToSegmentStart = useCallback(() => {
@@ -151,7 +161,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     }
   }, [activeSegmentId, setCurrentTime])
 
-  // Sync video → store + drive TTS playback
+  // Sync video → store (the voices follow it in useVoicePlayback)
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
@@ -161,22 +171,6 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       setCurrentTime(t)
       const active = segmentsRef.current.find((s) => t >= s.start_time && t < s.end_time)
       setActiveSegment(active?.id ?? null)
-
-      if (active?.tts_audio_url) {
-        if (active.id !== ttsActiveSegId.current) {
-          // Entered a new dubbed segment — start its TTS audio
-          startTTS(active, t)
-        }
-        // Keep TTS mute/volume in sync with the current store state
-        if (ttsAudioRef.current) {
-          const key   = active.speaker_id ?? '__none__'
-          const muted = mutedRef.current[key]
-          ttsAudioRef.current.volume = muted ? 0 : volumeRef.current
-        }
-      } else {
-        // Left a dubbed segment (or gap between segments)
-        if (ttsActiveSegId.current) stopTTS()
-      }
     }
 
     const onLoadedMetadata = () => {
@@ -186,20 +180,9 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
         setVideoPixelWidth(video.videoWidth)
       }
     }
-    const onPlay  = () => { setPlaying(true);  ttsAudioRef.current?.play().catch(() => {}) }
-    const onPause = () => { setPlaying(false); ttsAudioRef.current?.pause() }
-    const onEnded = () => { setPlaying(false); setCurrentTime(0); stopTTS() }
-    const onSeeked = () => {
-      // After seeking, resync TTS to the new position
-      const t      = video.currentTime
-      const active = segmentsRef.current.find((s) => t >= s.start_time && t < s.end_time)
-      if (active?.tts_audio_url) {
-        startTTS(active, t)
-        if (!isPlayingRef.current) ttsAudioRef.current?.pause()
-      } else {
-        stopTTS()
-      }
-    }
+    const onPlay  = () => setPlaying(true)
+    const onPause = () => setPlaying(false)
+    const onEnded = () => { setPlaying(false); setCurrentTime(0) }
 
     if (video.duration) setDuration(video.duration)
 
@@ -208,17 +191,14 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     video.addEventListener('play',          onPlay)
     video.addEventListener('pause',         onPause)
     video.addEventListener('ended',         onEnded)
-    video.addEventListener('seeked',        onSeeked)
     return () => {
       video.removeEventListener('timeupdate',    onTimeUpdate)
       video.removeEventListener('loadedmetadata',onLoadedMetadata)
       video.removeEventListener('play',          onPlay)
       video.removeEventListener('pause',         onPause)
       video.removeEventListener('ended',         onEnded)
-      video.removeEventListener('seeked',        onSeeked)
-      stopTTS()
     }
-  }, [videoUrl, setCurrentTime, setDuration, setPlaying, setActiveSegment, startTTS, stopTTS])
+  }, [videoUrl, setCurrentTime, setDuration, setPlaying, setActiveSegment])
 
   // Store → video (play/pause)
   useEffect(() => {
@@ -264,7 +244,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     'synthesizing', 'mixing', 'completed',
   ].includes(jobStatus)
 
-  // Volume & Mute — BGM, Vocals, and active TTS clip
+  // Volume & Mute — BGM and Vocals (the voices: useVoicePlayback)
   useEffect(() => {
     const video = videoRef.current
     const bgm = bgmAudioRef.current
@@ -279,20 +259,54 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       if (bgm) bgm.volume = 0
       if (vocals) vocals.volume = 0
     }
-    // Keep active TTS clip in sync with volume/mute changes
-    if (ttsAudioRef.current && ttsActiveSegId.current) {
-      const seg = segmentsRef.current.find(s => s.id === ttsActiveSegId.current)
-      const key = seg?.speaker_id ?? '__none__'
-      ttsAudioRef.current.volume = mutedTrackIds[key] ? 0 : volume
-    }
   }, [volume, mutedTrackIds, jobStatus, hasStemAudio])
+
+  // The stems' levels follow the export every frame while playing:
+  // - the music: its pieces (silence between them) × the dip under the voices;
+  // - the original voices: their pieces — when the track is muted (as after
+  //   analysis) only the pieces switched into the export, which the export plays.
+  // Before the pieces are known (or with no video length yet) a stem is one whole piece.
+  const { data: pieces } = useStemPieces(jobId)
+  const duckSpansMemo = useMemo(() => (duckMusic ? duckSpans(segments) : []), [duckMusic, segments])
+  const vocalsMuted = mutedTrackIds['__vocals__'] ?? originalVoicesReplaced(jobStatus)
+  useEffect(() => {
+    const bgm = bgmAudioRef.current
+    const vocals = vocalsAudioRef.current
+    if (!hasStemAudio) return
+    const musicBase = mutedTrackIds['__bgm__'] ? 0 : volume
+    // Through gain nodes: a piece turned above 0 dB is heard above the file's level, as exported
+    const bgmGain = bgm && pieces?.made ? gainFor(bgm) : null
+    const vocalsGain = vocals && pieces?.made ? gainFor(vocals) : null
+    const live = (list: StemPiece[] | undefined, t: number) => {
+      const lv = useEditorStore.getState().livePieceVolume
+      const p = lv && list && pieceAt(list, t)
+      return p && p.id === lv.id ? 10 ** ((lv.db - p.volume_db) / 20) : 1
+    }
+    const apply = () => {
+      const t = videoRef.current?.currentTime ?? 0
+      if (isPlaying) resumeAudio()
+      if (bgm) {
+        const duck = duckSpansMemo.length ? duckGainAt(duckSpansMemo, t) : 1
+        setLevel(bgm, bgmGain, musicBase * stemLevelAt(pieces, 'music', t, vocalsMuted) * live(pieces?.music, t) * duck)
+      }
+      if (vocals) {
+        setLevel(vocals, vocalsGain, volume * stemLevelAt(pieces, 'voices', t, vocalsMuted) * live(pieces?.voices, t))
+      }
+    }
+    apply()
+    if (!isPlaying) return
+    let raf = requestAnimationFrame(function tick() {
+      apply()
+      raf = requestAnimationFrame(tick)
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [duckSpansMemo, isPlaying, volume, mutedTrackIds, hasStemAudio, currentTime, pieces, vocalsMuted])
 
   // Playback rate
   useEffect(() => {
     if (videoRef.current) videoRef.current.playbackRate = playbackRate
     if (bgmAudioRef.current) bgmAudioRef.current.playbackRate = playbackRate
     if (vocalsAudioRef.current) vocalsAudioRef.current.playbackRate = playbackRate
-    if (ttsAudioRef.current) ttsAudioRef.current.playbackRate = playbackRate
   }, [playbackRate, jobStatus])
 
   // Synchronize separate audio tracks (BGM & Vocals) with the main video tag
@@ -530,7 +544,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
                   className="h-6 px-1.5 rounded bg-black/40 text-[10px] font-mono font-bold text-white/70 hover:text-white border border-white/10 focus:outline-none cursor-pointer transition-all"
                   title="Playback speed"
                 >
-                  {[0.5, 0.75, 1, 1.25, 1.5, 2].map(r => (
+                  {[0.5, 0.75, 1, 1.25, 1.5, 2, 4].map(r => (
                     <option key={r} value={r}>{r}×</option>
                   ))}
                 </select>

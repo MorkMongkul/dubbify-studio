@@ -152,14 +152,18 @@ async def render_clip(seg, raw_path: Path, final_path: Path) -> float:
 async def level_new_voice(seg, raw_path: Path, final_path: Path) -> float:
     """
     A just-made voice: decide its level once — the loudness of the original line
-    where the line is now (0 when separation failed or nothing is said there) —
+    where the actor spoke (the clip, for a line added by hand; 0 when separation
+    failed or nothing is said there) —
     store it on the line, and render the clip. Returns the clip's duration.
     """
+    from app.services.timeline import actor_span
+
     gain = 0.0
     vocals = original_vocals(Path(final_path).parent.parent)
     if vocals:
         try:
-            gain = await asyncio.to_thread(match_gain_db, str(raw_path), vocals, seg.start_time, seg.end_time)
+            start, end = actor_span(seg)
+            gain = await asyncio.to_thread(match_gain_db, str(raw_path), vocals, start, end)
         except Exception as e:  # noqa: BLE001 — an unreadable stem just means "leave the level alone"
             logger.warning(f"Couldn't measure the original line's loudness: {e}")
     seg.level_gain_db = gain

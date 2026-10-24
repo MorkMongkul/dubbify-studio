@@ -16,10 +16,10 @@ from app.core.database import get_db
 from app.core.paths import resolve_media_path
 from app.models.models import Segment, Speaker, Job, Project, Voice
 from app.schemas.schemas import (
-    SegmentResponse, SegmentUpdate, SegmentCreate,
+    SegmentResponse, SegmentUpdate, SegmentCreate, LayoutRequest, LayoutResponse, SplitRequest, SplitResponse,
     SpeakerResponse, SpeakerUpdate, SpeakerCreate, SpeakerMerge, SpeakerMergeResponse, SpeakerUnmerge,
 )
-from app.services import story_notes, voice_level
+from app.services import story_notes, timeline, voice_level
 
 router = APIRouter(tags=["Segments & Speakers"])
 
@@ -52,10 +52,14 @@ async def create_segment(
         raise HTTPException(status_code=422, detail="end_time must be greater than start_time")
 
     seg = Segment(job_id=job_id, **payload.model_dump())
+    # A line with no voice is as long as its text; on a track where it would
+    # overlap another clip, it goes to the nearest free one (never in time)
+    timeline.follow_text(seg)
     db.add(seg)
     await db.flush()
-    await db.refresh(seg)
     await db.commit()
+    await timeline.settle_job(db, job_id, [seg.id])
+    await db.refresh(seg)
     return seg
 
 
@@ -78,6 +82,27 @@ async def _clip_path_in_session(db: AsyncSession, seg: Segment, path: str) -> st
     return str(resolved)
 
 
+def _apply_timing(seg: Segment, sent: set[str], moved_from: float | None = None) -> None:
+    """
+    The timeline's rules after an edit (app/services/timeline.py). A voiced
+    clip stays inside its voice: an edge cuts sound, never changes the speed;
+    a clip moved by its start alone keeps its length. A voiceless line is as
+    long as its text takes to say (an end sent for it is ignored), unless it
+    has no text. `sent`: the fields the client sent; `moved_from`: the start
+    before the edit.
+    """
+    if timeline.is_voiced(seg):
+        if "start_time" in sent and not ({"end_time", "voice_offset"} & sent) and moved_from is not None:
+            seg.end_time += seg.start_time - moved_from
+        timeline.clamp_voiced(seg)
+    elif not timeline.follow_text(seg) and seg.end_time < seg.start_time + timeline.MIN_CLIP_SECS:
+        seg.end_time = seg.start_time + timeline.MIN_CLIP_SECS
+
+
+# Fields whose change can make a clip overlap another on its track
+_LAYOUT_FIELDS = {"start_time", "end_time", "lane_index", "voice_offset", "khmer_text", "voice_speed", "tts_audio_path"}
+
+
 @router.patch("/segments/{segment_id}", response_model=SegmentResponse)
 async def update_segment(
     segment_id: str,
@@ -85,8 +110,11 @@ async def update_segment(
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """
-    Update a segment's text or approval status.
-    Used by the script editor — editors can fix translation errors.
+    Update a segment's text, timing, effects or approval.
+
+    Editing the Khmer text never touches the voice (the clip shows it was made
+    from older text). A clip that ends up overlapping another on its track
+    moves to the nearest track where it fits — never in time.
     """
     from pathlib import Path
     import shutil
@@ -99,18 +127,33 @@ async def update_segment(
     # Capture old parameters to check for changes
     old_volume = seg.volume_db
     old_filter = seg.voice_filter
-    old_speed = seg.voice_speed
+    old_speed = seg.voice_speed or 1.0
+    # The speed heard: the file's own × fit_rate (an upgraded voice can carry both)
+    old_total = timeline.total_speed(seg)
+    old_start = seg.start_time
 
     update_data = payload.model_dump(exclude_unset=True)
     if update_data.get("tts_audio_path"):
         update_data["tts_audio_path"] = await _clip_path_in_session(db, seg, update_data["tts_audio_path"])
     for field, value in update_data.items():
         setattr(seg, field, value)
+    if update_data.get("tts_audio_path") == "":
+        # The voice is gone: so is the part of it the clip played
+        seg.voice_offset, seg.fit_rate, seg.voice_text = 0.0, 1.0, None
+
+    # The editor sends the speed the user hears; it becomes the file's own speed
+    new_speed = seg.voice_speed or 1.0
+    speed_changed = "voice_speed" in update_data and (
+        abs(new_speed - old_total) > 1e-6 or abs(new_speed - old_speed) > 1e-6)
+    if speed_changed and timeline.is_voiced(seg):
+        # Keep the same words cut at the new speed (the file is re-rendered below)
+        seg.voice_speed = old_speed
+        timeline.rescale_for_speed(seg, new_speed)
 
     effects_changed = (
         seg.volume_db != old_volume or
         seg.voice_filter != old_filter or
-        seg.voice_speed != old_speed
+        speed_changed
     )
 
     if effects_changed and seg.tts_audio_path:
@@ -132,10 +175,150 @@ async def update_segment(
         # With the level decided when the voice was made (voice_level), not re-measured
         seg.tts_duration_secs = await voice_level.render_clip(seg, raw_path, Path(final_path))
 
+    _apply_timing(seg, set(update_data), moved_from=old_start)
+
     await db.flush()
-    await db.refresh(seg)
     await db.commit()
+    if _LAYOUT_FIELDS & set(update_data):
+        await timeline.settle_job(db, seg.job_id, [seg.id])
+    await db.refresh(seg)
     return seg
+
+
+@router.put("/jobs/{job_id}/segments/layout", response_model=LayoutResponse)
+async def update_layout(
+    job_id: str,
+    payload: LayoutRequest,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """
+    Move, trim and re-track several clips at once (a drag, a group move, an
+    undo): every change is applied before the tracks are settled, so clips can
+    swap places. Returns every clip whose place changed, including clips the
+    server moved to another track.
+    """
+    segs = (await db.execute(select(Segment).where(Segment.job_id == job_id))).scalars().all()
+    by_id = {s.id: s for s in segs}
+    missing = [c.id for c in payload.changes if c.id not in by_id]
+    if missing:
+        raise HTTPException(status_code=404, detail="Segment not found in this session")
+
+    def place(s: Segment) -> tuple:
+        return (s.start_time, s.end_time, s.lane_index or 0, timeline.offset_of(s), timeline.fades_of(s))
+
+    before = {s.id: place(s) for s in segs}
+    for change in payload.changes:
+        seg = by_id[change.id]
+        sent = change.model_dump(exclude_unset=True, exclude={"id"})
+        old_start = seg.start_time
+        for field, value in sent.items():
+            if value is not None:
+                setattr(seg, field, value)
+        _apply_timing(seg, {k for k, v in sent.items() if v is not None}, moved_from=old_start)
+    await db.commit()
+    await timeline.settle_job(db, job_id, [c.id for c in payload.changes])
+    changed = [s for s in segs if place(s) != before[s.id]]
+    return LayoutResponse(segments=sorted(changed, key=lambda s: (s.start_time, s.id)))
+
+
+def _copy_line(seg: Segment) -> Segment:
+    """A new line with every field of `seg` and its own copy of the voice files
+    (voices are stored and re-rendered per line)."""
+    from app.core.paths import resolve_media_path
+    from app.models.models import generate_uuid
+    import shutil
+
+    fields = {c.key: getattr(seg, c.key) for c in Segment.__table__.columns if c.key != "id"}
+    copy = Segment(id=generate_uuid(), **fields)
+    if seg.tts_audio_path:
+        final = Path(resolve_media_path(seg.tts_audio_path))
+        if final.exists():
+            new_final = final.with_name(f"seg_{copy.id}.wav")
+            shutil.copy2(final, new_final)
+            raw = final.with_name(f"seg_{seg.id}_raw.wav")
+            if raw.exists():
+                shutil.copy2(raw, final.with_name(f"seg_{copy.id}_raw.wav"))
+            copy.tts_audio_path = str(new_final)
+    return copy
+
+
+async def _segment_or_404(db: AsyncSession, segment_id: str) -> Segment:
+    seg = (await db.execute(select(Segment).where(Segment.id == segment_id))).scalar_one_or_none()
+    if not seg:
+        raise HTTPException(status_code=404, detail="Segment not found")
+    return seg
+
+
+@router.post("/segments/{segment_id}/split", response_model=SplitResponse)
+async def split_segment(
+    segment_id: str,
+    payload: SplitRequest,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """
+    Split a clip at `at`, like CapCut: a voiced clip's halves each play their
+    own part of the one voice (the second with its own copy of the files); the
+    texts are split at the phrase break nearest to the cut; the actor's span is
+    split at the cut. A voiceless clip's halves each follow their own text.
+    """
+    seg = await _segment_or_404(db, segment_id)
+    at = payload.at
+    if not (seg.start_time + timeline.MIN_CLIP_SECS < at < seg.end_time - timeline.MIN_CLIP_SECS):
+        raise HTTPException(status_code=422, detail="Split point is too close to the clip's edge")
+
+    share = (at - seg.start_time) / (seg.end_time - seg.start_time)
+    voiced = timeline.is_voiced(seg)
+    outdated = seg.voice_text is not None and seg.voice_text != seg.khmer_text
+    second = _copy_line(seg)
+    texts = {f: timeline.split_text(getattr(seg, f) or "", share) for f in ("khmer_text", "source_text", "english_text")}
+    for field, (left, right) in texts.items():
+        setattr(seg, field, left)
+        setattr(second, field, right)
+    if voiced and seg.voice_text is not None and not outdated:
+        seg.voice_text, second.voice_text = seg.khmer_text, second.khmer_text
+
+    # Where the actor spoke, cut at the same time; a half wholly outside it has none
+    if seg.source_start is not None and seg.source_end is not None:
+        src_start, src_end = seg.source_start, seg.source_end
+        seg.source_start, seg.source_end = (src_start, min(src_end, at)) if src_start < at else (None, None)
+        second.source_start, second.source_end = (max(src_start, at), src_end) if src_end > at else (None, None)
+
+    second.start_time = at
+    # Each half keeps its outer fade
+    seg.fade_out_secs = 0.0
+    second.fade_in_secs = 0.0
+    if voiced:
+        second.voice_offset = timeline.offset_of(seg) + (at - seg.start_time) * timeline.rate_of(seg)
+        seg.end_time = at
+        timeline.clamp_voiced(seg)
+        timeline.clamp_voiced(second)
+    else:
+        seg.end_time = at
+        timeline.follow_text(seg)
+        timeline.follow_text(second)
+    db.add(second)
+    await db.commit()
+    await timeline.settle_job(db, seg.job_id, [seg.id, second.id])
+    await db.refresh(seg)
+    await db.refresh(second)
+    return SplitResponse(first=seg, second=second)
+
+
+@router.post("/segments/{segment_id}/duplicate", response_model=SegmentResponse, status_code=status.HTTP_201_CREATED)
+async def duplicate_segment(segment_id: str, db: AsyncSession = Depends(get_db, scope="function")):
+    """A copy of the clip — voice included, with its own files — right after it."""
+    seg = await _segment_or_404(db, segment_id)
+    copy = _copy_line(seg)
+    length = seg.end_time - seg.start_time
+    copy.start_time = seg.end_time
+    copy.end_time = seg.end_time + length
+    # The copy wasn't spoken by the actor there
+    copy.source_start = copy.source_end = None
+    db.add(copy)
+    await db.commit()
+    await timeline.settle_job(db, seg.job_id, [copy.id])
+    await db.refresh(copy)
+    return copy
 
 
 @router.delete("/segments/{segment_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -177,66 +360,61 @@ async def approve_all_segments(job_id: str, db: AsyncSession = Depends(get_db, s
     return {"approved": len(segments), "job_id": job_id}
 
 
-AUTOFIT_SLOWEST = 0.9
-
-
 @router.post("/jobs/{job_id}/segments/autofit", status_code=status.HTTP_200_OK)
 async def autofit_segment_speeds(job_id: str, db: AsyncSession = Depends(get_db, scope="function")):
     """
-    Set each generated clip's voice_speed so its audio exactly fills its
-    timeline slot: audio longer than the slot speeds up, shorter slows down
-    (clamped to atempo's 0.5–2.0 range). The speed is applied to the RAW
-    synthesized clip (same re-apply path as the Voice Speed slider), so the
-    editor preview, the slider UI, and the export all agree afterwards.
+    Speed up each voice that runs into a later line — just enough to end
+    before it starts (an overlap the original already had doesn't count) and
+    never above timeline.AUTOFIT_FASTEST. Never slows a voice down, never
+    lowers a speed the user set. The new speed is rendered into the voice file
+    (as the speed control does) and the clip keeps the same words. Returns how
+    many voices it sped up and how many still run into the next line.
     """
-    from pathlib import Path
     import shutil
-    import soundfile as sf
     from app.core.paths import resolve_media_path
 
-    result = await db.execute(
-        select(Segment)
-        .where(Segment.job_id == job_id, Segment.tts_audio_path != "")
-        .order_by(Segment.start_time)
-    )
-    segments = result.scalars().all()
-    if not segments:
+    segs = (await db.execute(
+        select(Segment).where(Segment.job_id == job_id).order_by(Segment.start_time)
+    )).scalars().all()
+    voiced = [s for s in segs if timeline.is_voiced(s)]
+    if not voiced:
         raise HTTPException(status_code=404, detail="No generated clips to fit — synthesize voices first")
 
-    fitted = skipped = missing = 0
-    for seg in segments:
-        final_path = resolve_media_path(seg.tts_audio_path)
-        raw_path = Path(final_path).with_name(f"seg_{seg.id}_raw.wav")
+    fitted = left = 0
+    changed: list[str] = []
+    for seg in voiced:
+        target = timeline.overrun_target(seg, segs)
+        if target is None:
+            continue
+        current = timeline.total_speed(seg)
+        if current >= timeline.AUTOFIT_FASTEST - 0.005:
+            left += 1
+            continue
+        needed = current * (seg.end_time - seg.start_time) / max(timeline.MIN_CLIP_SECS, target - seg.start_time)
+        new_speed = round(min(timeline.AUTOFIT_FASTEST, needed), 3)
+
+        final_path = Path(resolve_media_path(seg.tts_audio_path))
+        raw_path = final_path.with_name(f"seg_{seg.id}_raw.wav")
         if not raw_path.exists():
-            if not Path(final_path).exists():
-                missing += 1
+            if not final_path.exists():
+                left += 1     # the voice is gone from disk: nothing to speed up
                 continue
             shutil.copy2(final_path, raw_path)
-
-        try:
-            raw_duration = sf.info(str(raw_path)).duration
-        except Exception:
-            missing += 1
-            continue
-        window = max(0.1, seg.end_time - seg.start_time)
-        # Slowed down at most to AUTOFIT_SLOWEST: voices made since 0.2.8 have
-        # their silence trimmed and are often shorter than their line, and
-        # stretching them to fill it (down to 0.65×) sounded wrong.
-        target = max(AUTOFIT_SLOWEST, min(2.0, raw_duration / window))
-
-        if abs(target - (seg.voice_speed or 1.0)) < 0.02:
-            skipped += 1
-            continue
-
-        seg.voice_speed = target
-        seg.tts_duration_secs = await voice_level.render_clip(seg, raw_path, Path(final_path))
+        # The file's own speed carries the whole speed from now on (fit_rate 1)
+        timeline.rescale_for_speed(seg, new_speed)
+        seg.tts_duration_secs = await voice_level.render_clip(seg, raw_path, final_path)
+        timeline.clamp_voiced(seg)
         fitted += 1
+        changed.append(seg.id)
+        if new_speed < needed - 0.005:
+            left += 1
         # Commit per clip: releases the (single, in SQLite dev) DB connection
         # between ffmpeg runs and lets polling clients see progress.
         await db.commit()
 
     await db.commit()
-    return {"fitted": fitted, "skipped": skipped, "missing": missing}
+    await timeline.settle_job(db, job_id, changed)
+    return {"fitted": fitted, "left": left}
 
 
 @router.post("/jobs/{job_id}/segments/tidy-lanes", status_code=status.HTTP_200_OK)

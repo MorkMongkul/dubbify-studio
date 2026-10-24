@@ -3,12 +3,13 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { AxiosError } from 'axios'
-import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions, chat, appSettings, story } from '@/api/client'
+import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions, chat, appSettings, story, stemPieces } from '@/api/client'
 import type { VoiceCreateInput } from '@/api/client'
 import { useEditorStore } from '@/store/editorStore'
 import { standInMessage, withTurn } from '@/lib/chatMessages'
+import type { StemPieceLists } from '@/lib/stemPieces'
 import type {
-  Segment, ProjectCreate, ProjectUpdate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice, OverlayUpdate, AppSettingsUpdate, GeminiModelSetting,
+  Segment, LayoutChange, Stem, StemPiece, ProjectCreate, ProjectUpdate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice, OverlayUpdate, AppSettingsUpdate, GeminiModelSetting,
   ChatLineRef, ChatMessage, StoryEdit,
 } from '@/types'
 
@@ -232,12 +233,62 @@ export function useUpdateSegment() {
     mutationFn: ({ segmentId, data }: { segmentId: string; data: SegmentUpdate }) =>
       segments.update(segmentId, data),
     onSuccess: (updated) => {
-      // Write the PATCH response straight into the cache instead of
-      // invalidating — this fires after every drag/trim/edit, and refetching
-      // the full segment list each time is a large, needless round trip.
-      qc.setQueryData<Segment[]>(['segments', updated.job_id], (old) =>
-        old ? old.map((s) => (s.id === updated.id ? updated : s)) : old
-      )
+      // The PATCH response goes straight into the cache (the edited line shows
+      // at once); the list is then fetched again because the server may have
+      // moved other clips to another track to make room (timeline.settle).
+      putSegments(qc, updated.job_id, [updated])
+      qc.invalidateQueries({ queryKey: ['segments', updated.job_id] })
+    },
+  })
+}
+
+/** Write segments the server returned into the job's cached list. */
+export function putSegments(qc: ReturnType<typeof useQueryClient>, jobId: string, updated: Segment[]) {
+  const byId = new Map(updated.map((s) => [s.id, s]))
+  qc.setQueryData<Segment[]>(['segments', jobId], (old) => {
+    if (!old) return old
+    const known = new Set(old.map((s) => s.id))
+    const merged = old.map((s) => byId.get(s.id) ?? s)
+    for (const s of updated) if (!known.has(s.id)) merged.push(s)
+    return merged.sort((a, b) => a.start_time - b.start_time)
+  })
+}
+
+/**
+ * Move / trim / re-track clips in one request (a drop, a trim, a group move).
+ * The changes show at once (editorStore.setPendingLayout) and give way to the
+ * server's answer — which includes clips it moved to make room — success or not.
+ */
+export function useLayoutSegments() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ jobId, changes }: { jobId: string; changes: LayoutChange[] }) =>
+      segments.layout(jobId, changes),
+    onMutate: ({ changes }) => useEditorStore.getState().setPendingLayout(changes),
+    onSuccess: (updated, { jobId }) => putSegments(qc, jobId, updated),
+    onError: (_, { jobId }) => qc.invalidateQueries({ queryKey: ['segments', jobId] }),
+    onSettled: (_, __, { changes }) => useEditorStore.getState().clearPendingLayout(changes.map((c) => c.id)),
+  })
+}
+
+export function useSplitSegment() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ segmentId, at }: { segmentId: string; at: number; jobId: string }) => segments.split(segmentId, at),
+    onSuccess: (result, { jobId }) => {
+      putSegments(qc, jobId, [result.first, result.second])
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    },
+  })
+}
+
+export function useDuplicateSegment() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ segmentId }: { segmentId: string; jobId: string }) => segments.duplicate(segmentId),
+    onSuccess: (created, { jobId }) => {
+      putSegments(qc, jobId, [created])
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
     },
   })
 }
@@ -292,6 +343,52 @@ export function useSetBgmVolume() {
     onSuccess: (updated) => {
       qc.setQueryData(['job', updated.id], updated)
     },
+  })
+}
+
+export function useSetDucking() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ jobId, on }: { jobId: string; on: boolean }) => jobs.setDucking(jobId, on),
+    onSuccess: (updated) => {
+      qc.setQueryData(['job', updated.id], updated)
+    },
+  })
+}
+
+// ── The music and the original voices in pieces (0.3.2) ──────
+export function useStemPieces(jobId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['stem-pieces', jobId],
+    queryFn: () => stemPieces.list(jobId!),
+    enabled: !!jobId,
+  })
+}
+
+/** Replace a stem's pieces: shown at once, then what the server stored. */
+export function useSetStemPieces() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ jobId, stem, pieces }: { jobId: string; stem: Stem; pieces: StemPiece[] }) =>
+      stemPieces.put(jobId, stem, pieces),
+    onMutate: ({ jobId, stem, pieces }) => {
+      qc.setQueryData<StemPieceLists>(['stem-pieces', jobId], (old) => old && { ...old, [stem]: pieces })
+    },
+    onSuccess: (stored, { jobId, stem }) => {
+      qc.setQueryData<StemPieceLists>(['stem-pieces', jobId], (old) => old && { ...old, [stem]: stored })
+    },
+    onError: (_, { jobId }) => qc.invalidateQueries({ queryKey: ['stem-pieces', jobId] }),
+  })
+}
+
+/** The picture strip: asked again every few seconds until it's ready. */
+export function useFrames(jobId: string | null | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['frames', jobId],
+    queryFn: () => jobs.frames(jobId!),
+    enabled: !!jobId && enabled,
+    refetchInterval: (query) => (query.state.data?.ready ? false : 4000),
+    staleTime: Infinity,
   })
 }
 

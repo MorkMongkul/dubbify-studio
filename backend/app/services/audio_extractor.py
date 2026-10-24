@@ -200,6 +200,30 @@ async def extract_audio(video_path: str, output_dir: str) -> str:
     return str(audio_path)
 
 
+def frame_rate_of(probe: dict) -> float | None:
+    """The video stream's frame rate from ffprobe's JSON (one ← / → step in the editor), or None."""
+    video = next((st for st in probe.get("streams", []) if st.get("codec_type") == "video"), None)
+    if not video:
+        return None
+    for key in ("r_frame_rate", "avg_frame_rate"):
+        try:
+            num, _, den = str(video.get(key) or "").partition("/")
+            rate = float(num) / float(den or 1)
+        except (ValueError, ZeroDivisionError):
+            continue
+        if 1 <= rate <= 240:
+            return round(rate, 3)
+    return None
+
+
+async def video_frame_rate(video_path: str) -> float | None:
+    """The video's frame rate, or None when it can't be read."""
+    try:
+        return frame_rate_of(await probe_video(video_path))
+    except Exception:  # noqa: BLE001 — a missing frame rate just means 1/30 s steps
+        return None
+
+
 async def get_video_duration(video_path: str) -> float:
     """
     Get video duration in seconds using ffprobe.
@@ -326,18 +350,34 @@ def _tempo_chain(fit_rate: float) -> str:
 async def _render_dub_part(clips: list, offset: float, output: Path) -> None:
     """
     Mix these clips into one mono float WAV that starts at `offset` seconds:
-    each clip is sped up to fit its slot if needed and delayed to its start.
+    each clip plays its window of its voice file — from "offset" for "length"
+    seconds of the timeline at "fit_rate" (app/services/timeline.py, the same
+    rule the editor's preview follows) — delayed to its start.
     """
     inputs, chains, labels = [], [], []
     for i, seg in enumerate(clips):
         inputs += ["-i", seg["audio_path"]]
         delay_ms = max(0, round((seg["start_time"] - offset) * 1000))
+        rate = seg.get("fit_rate") or 1.0
+        window = ""
+        if "length" in seg:
+            window = (f"atrim=start={seg.get('offset') or 0.0:.3f}:duration={seg['length'] * rate:.3f},"
+                      f"asetpts=PTS-STARTPTS,")
         # adelay fed by atempo emits AV_NOPTS timestamps (ffmpeg 8.x), which
         # corrupts the mux — asetpts regenerates sample-accurate pts.
-        tempo = _tempo_chain(seg.get("fit_rate") or 1.0)
+        tempo = _tempo_chain(rate)
         setpts = ",asetpts=N/SR/TB" if tempo else ""
+        # Linear fades on the clip as played (timeline seconds, after the window and rate)
+        fades = ""
+        fade_in, fade_out = seg.get("fade_in") or 0.0, seg.get("fade_out") or 0.0
+        if (fade_in > 0 or fade_out > 0) and "length" in seg:
+            fades = "asetpts=N/SR/TB,"
+            if fade_in > 0:
+                fades += f"afade=t=in:st=0:d={fade_in:.3f},"
+            if fade_out > 0:
+                fades += f"afade=t=out:st={max(0.0, seg['length'] - fade_out):.3f}:d={fade_out:.3f},"
         chains.append(
-            f"[{i}:a]{tempo}aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=mono,"
+            f"[{i}:a]{window}{tempo}{fades}aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=mono,"
             f"adelay=delays={delay_ms}:all=1{setpts}[c{i}]"
         )
         labels.append(f"[c{i}]")
@@ -405,6 +445,10 @@ async def mix_dubbed_audio(
     video_width: int | None = None,
     video_height: int | None = None,
     on_progress=None,
+    duck_expr: str | None = None,
+    music_expr: str | None = None,
+    voices_path: str | None = None,
+    voices_expr: str | None = None,
 ) -> str:
     """
     Mix TTS audio segments back onto the video timeline using ffmpeg, and
@@ -423,6 +467,12 @@ async def mix_dubbed_audio(
                        atempo so it fits its segment window — it must match
                        the editor's auto-fit playback rate, or the export
                        sounds slower than the preview.
+        duck_expr:     Optional ffmpeg `volume` expression over `t` that dips
+                       the BGM under the voices (timeline.duck_volume_expr).
+        music_expr:    Optional `volume` expression for the BGM's pieces
+                       (stem_pieces.pieces_volume_expr): silence between them.
+        voices_path / voices_expr: the original voices stem and the
+                       expression of its pieces switched into the export.
         output_path:   Where to save the dubbed video
         mute_original: Whether to silence the original audio track
         bgm_path:      Optional path to a separated BGM/no_vocals WAV file.
@@ -469,7 +519,8 @@ async def mix_dubbed_audio(
     try:
         return await _mix_with_parts(
             video_path, tts_segments, output_path, mute_original, bgm_path,
-            video_layers, video_width, video_height, work_dir, report,
+            video_layers, video_width, video_height, work_dir, report, duck_expr,
+            music_expr, voices_path, voices_expr,
         )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -477,7 +528,8 @@ async def mix_dubbed_audio(
 
 async def _mix_with_parts(
     video_path, tts_segments, output_path, mute_original, bgm_path,
-    video_layers, video_width, video_height, work_dir: Path, report,
+    video_layers, video_width, video_height, work_dir: Path, report, duck_expr: str | None = None,
+    music_expr: str | None = None, voices_path: str | None = None, voices_expr: str | None = None,
 ) -> str:
     parts = await build_dub_parts(
         tts_segments, work_dir, on_progress=lambda f: report(0.05 + 0.35 * f),
@@ -497,7 +549,13 @@ async def _mix_with_parts(
         inputs += ["-i", bgm_path]
         bgm_input_idx = 1  # input index 1 = BGM file
 
-    part_offset = 2 if bgm_input_idx is not None else 1
+    # Pieces of the original voices switched into the export: one more input
+    voices_input_idx: int | None = None
+    if voices_path and voices_expr and Path(voices_path).exists():
+        voices_input_idx = 2 if bgm_input_idx is not None else 1
+        inputs += ["-i", voices_path]
+
+    part_offset = 1 + (bgm_input_idx is not None) + (voices_input_idx is not None)
     part_labels = []
     for i, (path, offset) in enumerate(parts):
         inputs += ["-i", path]
@@ -523,13 +581,29 @@ async def _mix_with_parts(
     #   bgm_path provided  → BGM (full volume) + dubbed TTS (full volume)
     #   mute_original=True → dubbed TTS only (no background)
     #   mute_original=False → original audio at 15% + dubbed TTS
+    if voices_input_idx is not None:
+        # Only the switched-on pieces of the actors' own voices are heard
+        filter_parts.append(f"[{voices_input_idx}:a]volume='{voices_expr}':eval=frame[origpieces]")
+        filter_parts.append("[dubbed][origpieces]amix=inputs=2:normalize=0:duration=first[dubbed2]")
+        dubbed = "[dubbed2]"
+    else:
+        dubbed = "[dubbed]"
     if bgm_input_idx is not None:
-        filter_parts.append(f"[{bgm_input_idx}:a][dubbed]amix=inputs=2:normalize=0[final]")
+        music = f"[{bgm_input_idx}:a]"
+        if music_expr:
+            # The music's pieces: silence between them — one expression, still one input
+            filter_parts.append(f"{music}volume='{music_expr}':eval=frame[musicpieces]")
+            music = "[musicpieces]"
+        if duck_expr:
+            # The music dips under the voices: one expression, still one input
+            filter_parts.append(f"{music}volume='{duck_expr}':eval=frame[ducked]")
+            music = "[ducked]"
+        filter_parts.append(f"{music}{dubbed}amix=inputs=2:normalize=0[final]")
         audio_map = "[final]"
     elif mute_original:
-        audio_map = "[dubbed]"
+        audio_map = dubbed
     else:
-        filter_parts.append(f"[0:a]volume=0.15[orig];[orig][dubbed]amix=inputs=2[final]")
+        filter_parts.append(f"[0:a]volume=0.15[orig];[orig]{dubbed}amix=inputs=2[final]")
         audio_map = "[final]"
 
     # ── Optional video layers (dropped images, burned-in subtitles, plain

@@ -3,8 +3,9 @@
 
 import axios, { type AxiosProgressEvent } from 'axios'
 import type {
-  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, SpeakerMergeResponse, Segment, SegmentUpdate, SegmentCreate, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView,
+  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, SpeakerMergeResponse, Segment, SegmentUpdate, SegmentCreate, LayoutChange, SplitResult, Stem, StemPiece, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView,
 } from '@/types'
+import type { StemPieceLists } from '@/lib/stemPieces'
 
 const api = axios.create({
   baseURL: '/api/v1',
@@ -158,6 +159,13 @@ export const jobs = {
   setBgmVolume: (jobId: string, volumeDb: number) =>
     api.patch<Job>(`/jobs/${jobId}/bgm-volume`, { volume_db: volumeDb }).then((r) => r.data),
 
+  /** The music & effects dip under the voices (preview and export). */
+  setDucking: (jobId: string, on: boolean) =>
+    api.patch<Job>(`/jobs/${jobId}/ducking`, { duck_music: on }).then((r) => r.data),
+
+  frames: (jobId: string) =>
+    api.get<PictureStrip>(`/jobs/${jobId}/frames`).then((r) => r.data),
+
   setTitle: (jobId: string, title: string) =>
     api.patch<Job>(`/jobs/${jobId}/title`, { title }).then((r) => r.data),
 
@@ -199,11 +207,38 @@ export const segments = {
   delete: (segmentId: string) =>
     api.delete(`/segments/${segmentId}`),
 
+  /** Move / trim / re-track several clips at once; returns every clip whose place changed. */
+  layout: (jobId: string, changes: LayoutChange[]) =>
+    api.put<{ segments: Segment[] }>(`/jobs/${jobId}/segments/layout`, { changes }).then((r) => r.data.segments),
+
+  split: (segmentId: string, at: number) =>
+    api.post<SplitResult>(`/segments/${segmentId}/split`, { at }).then((r) => r.data),
+
+  duplicate: (segmentId: string) =>
+    api.post<Segment>(`/segments/${segmentId}/duplicate`).then((r) => r.data),
+
   approve: (segmentId: string) =>
     api.post<Segment>(`/segments/${segmentId}/approve`).then((r) => r.data),
 
   approveAll: (jobId: string) =>
     api.post<{ approved: number }>(`/jobs/${jobId}/approve-all`).then((r) => r.data),
+}
+
+// ── The music and the original voices in pieces (0.3.2) ──────
+export const stemPieces = {
+  /** Both stems' pieces; a stem nobody cut is one whole piece. */
+  list: (jobId: string) =>
+    api.get<StemPieceLists>(`/jobs/${jobId}/stem-pieces`).then((r) => r.data),
+  /** Replace a stem's pieces (an edit or an undo); returns what was stored. */
+  put: (jobId: string, stem: Stem, pieces: StemPiece[]) =>
+    api.put<StemPiece[]>(`/jobs/${jobId}/stem-pieces/${stem}`, { pieces }).then((r) => r.data),
+}
+
+/** GET /jobs/{id}/frames — the picture strip, one frame every `interval` seconds from 0. */
+export interface PictureStrip {
+  ready: boolean
+  interval: number
+  urls: string[]
 }
 
 // ── TTS ───────────────────────────────────────────────────────
@@ -264,10 +299,10 @@ export const tts = {
 
 // ── Bulk timeline actions ───────────────────────────────────────
 export const timelineActions = {
-  // Speed every generated clip so its audio exactly fills its slot
-  // (longer → faster, shorter → slower; server clamps to 0.5–2.0×).
+  // Speed up the voices that run into the next line (at most 1.25×, never slower):
+  // how many it sped up, and how many still run into the next line.
   autofit: (jobId: string) =>
-    api.post<{ fitted: number; skipped: number; missing: number }>(
+    api.post<{ fitted: number; left: number }>(
       `/jobs/${jobId}/segments/autofit`
     ).then((r) => r.data),
 

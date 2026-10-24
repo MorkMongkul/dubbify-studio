@@ -4,6 +4,8 @@
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import type { JobAction } from '@/lib/jobProgress'
+import type { SegmentOverlay } from '@/lib/segmentOverlay'
+import type { LayoutChange } from '@/lib/tracks'
 
 // Which panel the left icon rail has open in the dynamic dock. Settings is a
 // window of its own (settingsOpen), not a panel.
@@ -66,26 +68,32 @@ interface EditorStore {
   inspectorMode: 'global_synthesis' | 'audio_clip_settings' | 'subtitle_settings'
   focusedTimelineItemId: string | null
 
-  // Optimistic positions
-  segmentPositions: Record<string, {
-    start_time: number
-    end_time: number
-    lane_index: number
-    tts_duration_secs?: number
-    tts_audio_path?: string
-    khmer_text?: string
-  }>
-  updateSegmentPosition: (
-    id: string,
-    start_time: number,
-    end_time: number,
-    lane_index: number,
-    tts_duration_secs?: number,
-    tts_audio_path?: string
-  ) => void
+  // Edits still in flight, laid over the server's segments (lib/segmentOverlay):
+  // a drop or trim waiting for the server, text typed but not saved. Each entry
+  // is dropped once the server answers — server state owns the segment again.
+  segmentPositions: Record<string, SegmentOverlay>
+  /** Show a drop / trim at once, ahead of the server. */
+  setPendingLayout: (changes: LayoutChange[]) => void
+  /** The server answered (or failed): its segments show again. Typed text stays. */
+  clearPendingLayout: (ids: string[]) => void
   updateSegmentText: (id: string, text: string) => void
   clearSegmentTextOverride: (id: string) => void
-  clearSegmentPositions: () => void
+  // A volume line being dragged: the new dB of each clip it moves (the dragged
+  // one, or the whole selection it belongs to); the preview plays and the
+  // timeline draws these until the save lands (then null). Targets, not a
+  // change, so a refetch of already-saved clips never applies it twice.
+  liveClipVolume: Record<string, number> | null
+  setLiveClipVolume: (v: Record<string, number> | null) => void
+  // Hear the mix in short snippets while dragging the playhead. A preference:
+  // outside DEFAULT_STATE, so switching episodes keeps it.
+  scrubAudio: boolean
+  toggleScrubAudio: () => void
+  // The selected piece of the music or the original voices (0.3.2)
+  selectedPiece: { stem: 'music' | 'voices'; id: string } | null
+  setSelectedPiece: (p: { stem: 'music' | 'voices'; id: string } | null) => void
+  // A piece's volume line being dragged: the preview plays this level until saved
+  livePieceVolume: { id: string; db: number } | null
+  setLivePieceVolume: (v: { id: string; db: number } | null) => void
 
   // Mute & Solo States
   mutedTrackIds: Record<string, boolean>
@@ -135,6 +143,10 @@ interface EditorStore {
   setAssistantLineId: (id: string | null) => void
   setSelectedSpeaker: (id: string | null) => void
   toggleSelectSegment: (id: string) => void
+  /** The clip last picked with a plain click on the timeline: a timeline Shift+click starts
+   *  a selection from it while it's still the active clip (TimelineEditor.handleShiftSelect). */
+  selectionAnchorId: string | null
+  setSelectionAnchor: (id: string | null) => void
   toggleSelectAllSegments: (ids: string[]) => void
   /** Replace the multi-selection wholesale — used by the timeline marquee. */
   setSelectedSegments: (ids: string[]) => void
@@ -173,9 +185,13 @@ const DEFAULT_STATE = {
   leftPanelCollapsed: false,
   rightPanelCollapsed: false,
   segmentPositions: {},
+  liveClipVolume: null as Record<string, number> | null,
+  selectedPiece: null as { stem: 'music' | 'voices'; id: string } | null,
+  livePieceVolume: null as { id: string; db: number } | null,
   mutedTrackIds: {},
   soloedTrackIds: {},
   selectedSegmentIds: [] as string[],
+  selectionAnchorId: null as string | null,
   availableVoices: [
     { id: 'male_actor_1', name: 'Male Actor 1', gender: 'male' },
     { id: 'female_actor_1', name: 'Female Actor 1', gender: 'female' },
@@ -196,6 +212,11 @@ export const useEditorStore = create<EditorStore>()(
     },
     settingsOpen: false,
     setSettingsOpen: (open) => set({ settingsOpen: open }),
+    scrubAudio: true,
+    toggleScrubAudio: () => set((s) => ({ scrubAudio: !s.scrubAudio })),
+    setLiveClipVolume: (v) => set({ liveClipVolume: v }),
+    setSelectedPiece: (p) => set({ selectedPiece: p }),
+    setLivePieceVolume: (v) => set({ livePieceVolume: v }),
 
     // ── Batch voice generation (not part of DEFAULT_STATE) ─────
     // The backend batch keeps running no matter where the user navigates;
@@ -261,6 +282,7 @@ export const useEditorStore = create<EditorStore>()(
         ? s.selectedSegmentIds.filter((x) => x !== id)
         : [...s.selectedSegmentIds, id]
     })),
+    setSelectionAnchor: (id) => set({ selectionAnchorId: id }),
     toggleSelectAllSegments: (ids) => set((s) => {
       const allSelected = ids.every((id) => s.selectedSegmentIds.includes(id))
       return {
@@ -269,38 +291,34 @@ export const useEditorStore = create<EditorStore>()(
           : Array.from(new Set([...s.selectedSegmentIds, ...ids]))
       }
     }),
-    setSelectedSegments: (ids) => set({ selectedSegmentIds: ids }),
+    // Selecting clips takes the editing keys back from a selected piece
+    setSelectedSegments: (ids) => set(ids.length ? { selectedSegmentIds: ids, selectedPiece: null } : { selectedSegmentIds: ids }),
     setInspectorMode: (mode) => set({ inspectorMode: mode }),
     setFocusedTimelineItemId: (id) => set({ focusedTimelineItemId: id }),
 
-    updateSegmentPosition: (id, start_time, end_time, lane_index, tts_duration_secs, tts_audio_path) =>
-      set((s) => ({
-        segmentPositions: {
-          ...s.segmentPositions,
-          [id]: {
-            ...s.segmentPositions[id],
-            start_time,
-            end_time,
-            lane_index,
-            ...(tts_duration_secs !== undefined ? { tts_duration_secs } : {}),
-            ...(tts_audio_path !== undefined ? { tts_audio_path } : {}),
-          },
-        },
-      })),
-    updateSegmentText: (id, text) =>
+    setPendingLayout: (changes) =>
       set((s) => {
-        const existing = s.segmentPositions[id] || {}
-        return {
-          segmentPositions: {
-            ...s.segmentPositions,
-            [id]: {
-              ...existing,
-              khmer_text: text,
-              tts_audio_path: "", // Revert status to Pending on text change
-            },
-          },
-        }
+        const next = { ...s.segmentPositions }
+        for (const { id, ...fields } of changes) next[id] = { ...next[id], ...fields }
+        return { segmentPositions: next }
       }),
+    clearPendingLayout: (ids) =>
+      set((s) => {
+        let changed = false
+        const next = { ...s.segmentPositions }
+        for (const id of ids) {
+          const existing = next[id]
+          if (!existing) continue
+          changed = true
+          if (existing.khmer_text === undefined) delete next[id]
+          else next[id] = { khmer_text: existing.khmer_text }
+        }
+        return changed ? { segmentPositions: next } : s
+      }),
+    updateSegmentText: (id, text) =>
+      set((s) => ({
+        segmentPositions: { ...s.segmentPositions, [id]: { ...s.segmentPositions[id], khmer_text: text } },
+      })),
     // Drop the local text override once the edit is persisted, handing the
     // segment's text back to server state. Without this the override outlives
     // the edit and keeps winning in EditorPage's merge — so undoing a text
@@ -311,9 +329,10 @@ export const useEditorStore = create<EditorStore>()(
         if (!existing || existing.khmer_text === undefined) return s
         const next = { ...existing }
         delete next.khmer_text
-        return { segmentPositions: { ...s.segmentPositions, [id]: next } }
+        const all = { ...s.segmentPositions, [id]: next }
+        if (Object.keys(next).length === 0) delete all[id]
+        return { segmentPositions: all }
       }),
-    clearSegmentPositions: () => set({ segmentPositions: {} }),
 
     toggleMuteTrack: (speakerId) => {
       const key = speakerId ?? '__none__'

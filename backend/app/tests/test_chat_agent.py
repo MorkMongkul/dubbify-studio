@@ -21,6 +21,9 @@ async def _get_segment(db_sessionmaker, seg_id: str) -> dict:
             "khmer_text": seg.khmer_text,
             "tts_audio_path": seg.tts_audio_path,
             "is_approved": seg.is_approved,
+            "voice_text": seg.voice_text,
+            "start_time": seg.start_time,
+            "end_time": seg.end_time,
         }
 
 
@@ -140,6 +143,11 @@ async def test_propose_edit_manual_mode_stages_without_touching_segment(client, 
 @pytest.mark.asyncio
 async def test_propose_edit_auto_mode_applies_immediately(client, db_sessionmaker, monkeypatch):
     project_id, seg_id = await _make_project_with_segment(db_sessionmaker, chat_edit_mode="auto")
+    async with db_sessionmaker() as session:     # the line already has a voice
+        seg = await session.get(Segment, seg_id)
+        seg.tts_audio_path, seg.tts_duration_secs, seg.voice_text = "/tts/seg.wav", 2.0, seg.khmer_text
+        seg.is_approved = True
+        await session.commit()
 
     calls = []
 
@@ -158,7 +166,9 @@ async def test_propose_edit_auto_mode_applies_immediately(client, db_sessionmake
 
     seg = await _get_segment(db_sessionmaker, seg_id)
     assert seg["khmer_text"] == "ខ្ញុំមកដល់ហើយ"
-    assert seg["tts_audio_path"] == ""
+    # The voice is kept, marked as made from the older text
+    assert seg["tts_audio_path"] == "/tts/seg.wav"
+    assert seg["voice_text"] == "ខ្ញុំបានត្រឡប់មកវិញ"
     assert seg["is_approved"] is False
 
     pending = (await client.get(f"/api/v1/chat/{project_id}/pending-edits?status=all")).json()
@@ -404,3 +414,22 @@ async def test_a_suggested_edit_says_which_line_it_is_for(client, db_sessionmake
 
     edit = (await client.get(f"/api/v1/chat/{project_id}/pending-edits")).json()[0]
     assert edit["line"] == {"job_id": job_id, "episode": 1, "time": 0.0, "source_text": "我回来了"}
+
+
+@pytest.mark.asyncio
+async def test_an_approved_edit_on_a_voiceless_line_sizes_it_by_its_text(client, db_sessionmaker, monkeypatch):
+    project_id, seg_id = await _make_project_with_segment(db_sessionmaker, chat_edit_mode="manual")
+
+    async def fake_call_gemini(contents, system=None):
+        if len(contents) <= 1:
+            return _function_call_response("propose_edit", {
+                "segment_id": seg_id, "new_khmer_text": "ក" * 30, "reason": "longer",
+            })
+        return _text_response("Proposed.")
+
+    monkeypatch.setattr(chat_agent, "_call_gemini", fake_call_gemini)
+    await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "Fix that line"})
+    edit_id = (await client.get(f"/api/v1/chat/{project_id}/pending-edits")).json()[0]["id"]
+    assert (await client.post(f"/api/v1/chat/pending-edits/{edit_id}/approve")).status_code == 200
+    seg = await _get_segment(db_sessionmaker, seg_id)
+    assert (seg["start_time"], seg["end_time"]) == (0.0, pytest.approx(1.95))

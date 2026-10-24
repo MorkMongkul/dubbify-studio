@@ -77,3 +77,37 @@ async def client():
 def db_sessionmaker():
     """Direct DB access for tests that need rows no API endpoint creates."""
     return TestSessionLocal
+
+
+@pytest_asyncio.fixture
+async def file_db(tmp_path, monkeypatch):
+    """
+    A file-backed SQLite database with the app's own pool (one connection), for
+    tests where several sessions write at once: on the shared in-memory
+    connection above, one session closing rolls back another's pending writes.
+    Routes and background tasks both use it; returns its sessionmaker.
+    """
+    import app.core.database as core_db
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/file.db",
+                                 connect_args={"timeout": 30}, pool_size=1, max_overflow=0)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sessionmaker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def file_get_db():
+        async with sessionmaker() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+
+    app.dependency_overrides[get_db] = file_get_db
+    monkeypatch.setattr(core_db, "AsyncSessionLocal", sessionmaker)
+    try:
+        yield sessionmaker
+    finally:
+        app.dependency_overrides[get_db] = override_get_db
+        await engine.dispose()
