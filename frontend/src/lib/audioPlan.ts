@@ -73,6 +73,14 @@ export function upcoming<S extends Planned>(segs: S[], t: number, ahead: number)
   return segs.filter((s) => isVoiced(s) && s.end_time > t && s.start_time < t + ahead)
 }
 
+/** Every voiced clip, in the order to load it: from the playhead on (by start), then the ones before it, nearest first. */
+export function loadOrder<S extends Planned>(segs: S[], t: number): S[] {
+  const voiced = segs.filter((s) => isVoiced(s))
+  const ahead = voiced.filter((s) => s.end_time > t).sort((a, b) => a.start_time - b.start_time)
+  const before = voiced.filter((s) => s.end_time <= t).sort((a, b) => b.start_time - a.start_time)
+  return [...ahead, ...before]
+}
+
 /** Media time `media` plays at audio-clock time `ctx`, at `rate` media seconds per second. */
 export interface Anchor { ctx: number; media: number; rate: number }
 
@@ -92,19 +100,36 @@ export function heardAt(a: Anchor, ctxNow: number, latency: number): number {
   return toMedia(a, ctxNow - latency)
 }
 
-/** WebKit's video starts moving ~20 ms after play() (measured 2026-10-24, every play after the first). */
-export const VIDEO_START = 0.02
-
 /**
- * Playing from a still picture: the sound starts at once from the playhead…
- * (anchored on where the video is, its first word isn't skipped — Bluetooth
- * earbuds are heard ~0.4 s after the sound is sent).
+ * Playing from a still picture: the sound of the playhead, scheduled `lead`
+ * seconds from now (its first word isn't skipped — Bluetooth earbuds are heard
+ * ~0.4 s after the sound is sent)…
  */
-export function stillAnchor(ctxNow: number, position: number, rate: number): Anchor {
-  return { ctx: ctxNow + LEAD, media: position, rate }
+export function stillAnchor(ctxNow: number, position: number, rate: number, lead = LEAD): Anchor {
+  return { ctx: ctxNow + lead, media: position, rate }
 }
 
-/** …and the picture starts once that sound is heard (s to wait before play()). */
-export function pictureHold(latency: number): number {
-  return Math.max(0, LEAD + latency - VIDEO_START)
+/**
+ * …and when to send it and release the picture so that the first sound is
+ * heard as the first frame shows, whichever needs longer: the sound `LEAD +
+ * latency`, the picture `videoDelay` — how long this Mac's video takes to start
+ * moving after play(): 20 ms in one WebKit, ~0.5 s in the user's Safari
+ * (2026-10-24), so it is learned.
+ */
+export function startTimes(latency: number, videoDelay: number): { soundLead: number; hold: number } {
+  const both = Math.max(LEAD + latency, videoDelay)
+  return { soundLead: both - latency, hold: both - videoDelay }
+}
+
+/** The longest a picture can take to start: anything slower is a stall, not a start. */
+const MAX_VIDEO_DELAY = 0.8
+
+/** The picture's start delay after one start: `drift` (picture − sound) shows how far the guess was off. */
+export function learnedDelay(guess: number, drift: number): number {
+  return Math.min(MAX_VIDEO_DELAY, Math.max(0, round6(guess - drift)))
+}
+
+/** Move the sound to the picture: from here on, what is heard is `drift` further on. */
+export function shiftAnchor(a: Anchor, drift: number): Anchor {
+  return { ...a, media: a.media + drift }
 }

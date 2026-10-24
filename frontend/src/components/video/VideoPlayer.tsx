@@ -5,8 +5,8 @@ import type { Segment, Speaker, Overlay, StemPiece, TrackFlagMap } from '@/types
 import { useEditorStore } from '@/store/editorStore'
 import { formatTime, cn, originalVoicesReplaced } from '@/lib/utils'
 import { OverlayCanvas } from './OverlayCanvas'
-import { usePreviewAudio, type Stem } from '@/hooks/usePreviewAudio'
-import { frameSecs, isTypingTarget, nextEdge, shuttle } from '@/lib/transport'
+import { heldByEngine, usePreviewAudio, type Stem } from '@/hooks/usePreviewAudio'
+import { frameSecs, isTypingTarget, nextEdge, seekVideoTo, shuttle } from '@/lib/transport'
 import { switchesOf } from '@/lib/trackFlags'
 import { duckGainAt, duckSpans } from '@/lib/ducking'
 import { pieceAt, stemLevelAt } from '@/lib/stemPieces'
@@ -69,6 +69,8 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
   const togglePlaying   = useEditorStore((s) => s.togglePlaying)
   const setPlaybackRate = useEditorStore((s) => s.setPlaybackRate)
 
+  // The last time the video itself reported (the store follows it while playing)
+  const fromVideo = useRef<number | null>(null)
   const segmentsRef = useRef(segments)
   useEffect(() => {
     segmentsRef.current = segments
@@ -169,6 +171,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
 
     const onTimeUpdate = () => {
       const t = video.currentTime
+      fromVideo.current = t
       setCurrentTime(t)
       const active = segmentsRef.current.find((s) => t >= s.start_time && t < s.end_time)
       setActiveSegment(active?.id ?? null)
@@ -182,7 +185,8 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       }
     }
     const onPlay  = () => setPlaying(true)
-    const onPause = () => setPlaying(false)
+    // Not when the preview's sound engine holds the picture to start it again in step
+    const onPause = () => { if (!heldByEngine(video)) setPlaying(false) }
     const onEnded = () => { setPlaying(false); setCurrentTime(0) }
 
     if (video.duration) setDuration(video.duration)
@@ -203,15 +207,14 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
 
   // Store → video (play/pause): usePreviewAudio, which starts the picture with the sound
 
-  // Store → video (seek)
-  const lastSyncedTime = useRef<number>(0)
+  // Store → video (seek): only when the playhead was moved (a click, a key, a
+  // clip), and exactly there — never to catch up with a time the video itself
+  // reported, read back late after a busy moment (lib/transport.seekVideoTo)
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
-    if (Math.abs(video.currentTime - currentTime) > 0.3) {
-      video.currentTime = currentTime
-      lastSyncedTime.current = currentTime
-    }
+    const to = seekVideoTo(currentTime, fromVideo.current, video.currentTime)
+    if (to != null) video.currentTime = to
   }, [currentTime, videoUrl])
 
   // The stems' files, best first: the compressed AAC copies (~7% of the WAV
@@ -240,7 +243,10 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
   // the stems and the voices are (usePreviewAudio)
   useEffect(() => {
     const video = videoRef.current
-    if (video) video.volume = hasStemAudio ? 0 : volume
+    if (!video) return
+    // Muted, not just silent: Safari then doesn't ready its own sound output before the picture starts
+    video.muted = hasStemAudio
+    video.volume = hasStemAudio ? 0 : volume
   }, [volume, hasStemAudio, videoUrl])
 
   // The stems' levels follow the export (usePreviewAudio reads them every frame):

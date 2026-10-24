@@ -27,3 +27,15 @@ export function shuttle(rate: number, key: 'j' | 'k' | 'l'): number {
   if (key === 'l') return rate <= 0 ? 1 : Math.min(4, rate * 2)
   return rate >= 0 ? -1 : Math.max(-4, rate * 2)
 }
+
+/**
+ * Where to move the video when the editor's playhead time changes, or null.
+ * `fromVideo` is the last time the video itself reported: read back late (the
+ * page was busy) it must never pull the video back — that jumped the picture
+ * and cut the sound after an edit. Anything else (a click, a key, a clip)
+ * moves the video exactly there, however close.
+ */
+export function seekVideoTo(storeTime: number, fromVideo: number | null, videoTime: number): number | null {
+  if (storeTime === fromVideo) return null
+  return Math.abs(videoTime - storeTime) > 1e-3 ? storeTime : null
+}

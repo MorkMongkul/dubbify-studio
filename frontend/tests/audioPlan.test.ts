@@ -2,8 +2,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  anchorAt, fadePoints, heardAt, LEAD, pictureHold, previewVoiceUrl, soundKey, stillAnchor, stretchOf, toCtx, toMedia, upcoming,
-  voiceStart,
+  anchorAt, fadePoints, heardAt, LEAD, learnedDelay, loadOrder, previewVoiceUrl, shiftAnchor, soundKey, startTimes, stillAnchor,
+  stretchOf, toCtx, toMedia, upcoming, voiceStart,
 } from '../src/lib/audioPlan.ts'
 import { voiceUrl } from '../src/lib/clipRules.ts'
 import type { Segment } from '../src/types/index.ts'
@@ -59,12 +59,35 @@ test('what is heard right after starting is where the video is, whatever the out
   near(heardAt(fast, 6, 0.03), 14.3)
 })
 
-test('playing from a still picture: the playhead is heard first, and the picture waits until it is', () => {
+test('a start: the first sound is heard as the first frame shows, whichever needs longer', () => {
   const latency = 0.39                       // Bluetooth earbuds (measured 2026-10-24)
-  const a = stillAnchor(5, 13.175, 1)
-  near(heardAt(a, 5 + LEAD + latency, latency), 13.175)
-  near(pictureHold(latency), LEAD + latency - 0.02)    // WebKit's video moves ~20 ms after play()
-  assert.equal(pictureHold(0), LEAD - 0.02)
+  // A quick picture (0.19 s): the sound goes at once, the picture is held back
+  let t = startTimes(latency, 0.19)
+  near(t.soundLead, LEAD); near(t.hold, LEAD + latency - 0.19)
+  // The user's Safari (~0.5 s): the picture goes at once, the sound waits for it
+  t = startTimes(latency, 0.55)
+  near(t.hold, 0); near(t.soundLead, 0.55 - latency)
+  // Either way, the playhead is what is heard when the first frame shows
+  const a = stillAnchor(5, 13.175, 1, t.soundLead)
+  near(heardAt(a, 5 + 0.55, latency), 13.175)
+  // The Mac's speakers
+  near(startTimes(0.01, 0.55).soundLead, 0.54)
+})
+
+test('each start teaches how long the picture takes to start; a guess off either way is corrected', () => {
+  // Drift = picture − sound. Started 0.17 s later than guessed: the sound ran ahead (drift −0.17)
+  near(learnedDelay(0.02, -0.17), 0.19)
+  // Started earlier than guessed (the picture ahead)
+  near(learnedDelay(0.19, 0.05), 0.14)
+  // A stall isn't a start delay: the learning stays within reason
+  assert.equal(learnedDelay(0.2, -3), 0.8)
+  assert.equal(learnedDelay(0.05, 0.5), 0)
+})
+
+test('a correction moves the sound to the picture: what is heard next is where the picture is', () => {
+  const a = { ctx: 10, media: 30, rate: 1 }
+  const drift = -0.17                        // the picture is 0.17 s behind what is heard
+  near(heardAt(shiftAnchor(a, drift), 11, 0.39), heardAt(a, 11, 0.39) + drift)
 })
 
 test('a clip is played again when what it plays changes', () => {
@@ -81,4 +104,10 @@ test('the voices to load: those still playing or starting soon', () => {
   const segs = [clip({ id: 'past', start_time: 0, end_time: 1 }), clip({ id: 'now' }), clip({ id: 'soon', start_time: 6, end_time: 7 }),
     clip({ id: 'later', start_time: 20, end_time: 21 }), clip({ id: 'text', tts_audio_url: null })]
   assert.deepEqual(upcoming(segs, 3, 5).map((s) => s.id), ['now', 'soon'])
+})
+
+test('an episode\'s voices load from the playhead on, then the ones before it, nearest first', () => {
+  const at = (id: string, start: number) => clip({ id, start_time: start, end_time: start + 1 })
+  const segs = [at('a', 1), at('b', 9), at('c', 4.5), at('d', 6), at('e', 2), clip({ id: 'text', tts_audio_url: null })]
+  assert.deepEqual(loadOrder(segs, 5).map((s) => s.id), ['c', 'd', 'b', 'e', 'a'])   // c is still playing at 5
 })

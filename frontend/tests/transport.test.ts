@@ -1,7 +1,7 @@
 // Keyboard transport (src/lib/transport.ts): J/K/L, frame steps, clip edges.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { frameSecs, isTypingTarget, nextEdge, shuttle } from '../src/lib/transport.ts'
+import { frameSecs, isTypingTarget, nextEdge, seekVideoTo, shuttle } from '../src/lib/transport.ts'
 
 test('shuttle doubles up to 4x and K stops', () => {
   assert.equal(shuttle(0, 'l'), 1)
@@ -38,4 +38,14 @@ test('keys typed into a text box are not shortcuts', () => {
   assert.equal(isTypingTarget({ tagName: 'DIV', isContentEditable: true } as unknown as EventTarget), true)
   assert.equal(isTypingTarget({ tagName: 'BUTTON' } as unknown as EventTarget), false)
   assert.equal(isTypingTarget(null), false)
+})
+
+test('the video moves only when the playhead was moved, never to catch up with itself', () => {
+  // The time the video itself reported, read back late (the page was busy for 0.4 s): no jump back
+  assert.equal(seekVideoTo(12.0, 12.0, 12.4), null)
+  // Moved by a click, a key or a clip: exactly there, however close
+  assert.equal(seekVideoTo(12.1, 12.0, 12.0), 12.1)
+  assert.equal(seekVideoTo(30, 12.0, 12.4), 30)
+  // Already there
+  assert.equal(seekVideoTo(12.4, 12.0, 12.4), null)
 })
