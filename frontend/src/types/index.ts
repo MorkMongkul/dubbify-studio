@@ -609,3 +609,59 @@ export interface StoryEdit {
   remove_word?: string
   summaries?: Record<string, string>
 }
+
+// ── Media (0.4.0): the Media tab's library, an episode's media clips, templates ──
+export interface MediaBox { x: number; y: number; width: number; height: number }
+
+export interface MediaAsset {
+  id: string
+  project_id: string
+  name: string
+  kind: 'image' | 'video'
+  width: number
+  height: number
+  duration_secs: number | null
+  has_alpha: boolean
+  /** False where the transparency can't be kept (WebM, HEVC with alpha): its tile says so. */
+  alpha_kept: boolean
+  has_audio: boolean
+  /** Where it was last placed: a new clip of it starts there. */
+  last_box: MediaBox | null
+  status: 'preparing' | 'ready' | 'failed'
+  error: string | null
+  created_at: string | null
+  url: string | null
+  /** What the editor shows: a video's preview copy (colour over its alpha matte), an image itself. */
+  preview_url: string | null
+  thumb_url: string | null
+  audio_url: string | null
+}
+
+export interface MediaClip extends MediaBox {
+  id: string
+  asset_id: string
+  lane_index: number
+  start_time: number
+  end_time: number
+  source_in: number
+  volume_db: number
+}
+
+export interface MediaTrackSwitches { locked: boolean; hidden: boolean; muted: boolean }
+/** media lane → switches; only tracks with a switch on. */
+export type MediaTrackFlagMap = Record<string, MediaTrackSwitches>
+
+export interface MediaClipList {
+  clips: MediaClip[]
+  track_flags: MediaTrackFlagMap
+  /** The episode still has overlays from the old Elements tab (no longer exported). */
+  old_overlays: boolean
+}
+
+export interface MediaTemplate {
+  id: string
+  project_id: string
+  name: string
+  items: Omit<MediaClip, 'id'>[]
+  created_at: string | null
+}

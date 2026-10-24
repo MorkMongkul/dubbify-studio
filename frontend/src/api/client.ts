@@ -3,7 +3,7 @@
 
 import axios, { type AxiosProgressEvent } from 'axios'
 import type {
-  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, SpeakerMergeResponse, Segment, SegmentUpdate, SegmentCreate, LayoutChange, SplitResult, Stem, StemPiece, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView, TrackFlagMap,
+  MediaAsset, MediaClip, MediaClipList, MediaTemplate, MediaTrackFlagMap, Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, SpeakerMergeResponse, Segment, SegmentUpdate, SegmentCreate, LayoutChange, SplitResult, Stem, StemPiece, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView, TrackFlagMap,
 } from '@/types'
 import type { StemPieceLists } from '@/lib/stemPieces'
 
@@ -237,6 +237,38 @@ export const stemPieces = {
   /** Replace a stem's pieces (an edit or an undo); returns what was stored. */
   put: (jobId: string, stem: Stem, pieces: StemPiece[]) =>
     api.put<StemPiece[]>(`/jobs/${jobId}/stem-pieces/${stem}`, { pieces }).then((r) => r.data),
+}
+
+// ── Media (0.4.0): the project's library, an episode's media clips, templates ──
+export const media = {
+  list: (projectId: string) => api.get<MediaAsset[]>(`/projects/${projectId}/media`).then((r) => r.data),
+  /** Add an image or a video; it's 'preparing' until its preview copy is made. */
+  upload: (projectId: string, file: File, onProgress?: (fraction: number) => void) => {
+    const form = new FormData()
+    form.append('file', file)
+    return api.post<MediaAsset>(`/projects/${projectId}/media`, form, {
+      timeout: 0,
+      onUploadProgress: (e: AxiosProgressEvent) => { if (onProgress && e.total) onProgress(e.loaded / e.total) },
+    }).then((r) => r.data)
+  },
+  /** Remove media with its clips in every episode (and from templates). */
+  remove: (assetId: string) =>
+    api.delete<{ removed_clips: number; episodes: number }>(`/media/${assetId}`).then((r) => r.data),
+  clips: (jobId: string) => api.get<MediaClipList>(`/jobs/${jobId}/media-clips`).then((r) => r.data),
+  /** Replace the episode's media clips (an edit or an undo); returns what was stored. */
+  setClips: (jobId: string, clips: MediaClip[], trackFlags?: MediaTrackFlagMap) =>
+    api.put<MediaClipList>(`/jobs/${jobId}/media-clips`, trackFlags ? { clips, track_flags: trackFlags } : { clips })
+      .then((r) => r.data),
+  templates: (projectId: string) =>
+    api.get<MediaTemplate[]>(`/projects/${projectId}/media-templates`).then((r) => r.data),
+  saveTemplate: (projectId: string, jobId: string, name: string) =>
+    api.post<MediaTemplate>(`/projects/${projectId}/media-templates`, { job_id: jobId, name }).then((r) => r.data),
+  renameTemplate: (templateId: string, name: string) =>
+    api.patch<MediaTemplate>(`/media-templates/${templateId}`, { name }).then((r) => r.data),
+  removeTemplate: (templateId: string) => api.delete(`/media-templates/${templateId}`),
+  /** Add a template's clips to an episode; returns the episode's new list and how many were skipped. */
+  applyTemplate: (templateId: string, jobId: string) =>
+    api.post<{ clips: MediaClip[]; skipped: number }>(`/media-templates/${templateId}/apply/${jobId}`).then((r) => r.data),
 }
 
 /** GET /jobs/{id}/frames — the picture strip, one frame every `interval` seconds from 0. */
