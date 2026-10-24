@@ -10,7 +10,8 @@ import type { Segment, SegmentUpdate, LayoutChange } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { timeToPixels, pixelsToTime, hexToRgba, cn } from '@/lib/utils'
 import {
-  clampFades, effectiveSpeed, isVoiceOutdated, isVoiced, trimEnd, trimStart, voiceUrl, waveformSlice,
+  clampFades, effectiveSpeed, isVoiceOutdated, isVoiced, selectionTargets, shiftedVolume, trimEnd, trimStart, voiceUrl,
+  waveformSlice,
 } from '@/lib/clipRules'
 import { dbLabel, gainFor, levelBars, peaksFrom, volumeAtPointer, volumeTop } from '@/lib/waveform'
 import { dropSpot, planDrop, type DropSpot } from '@/lib/tracks'
@@ -46,6 +47,8 @@ interface InteractiveSegmentProps {
   onCommitLayout: (changes: LayoutChange[], label: string) => void
   /** A clip setting changed on the clip itself (fades, the volume line): one PATCH + one undo step. */
   onPatch?: (seg: Segment, after: SegmentUpdate, before: SegmentUpdate, label: string) => void
+  /** A volume line was dragged: these clips move by `delta` dB (one undo step); clears the live volume when saved. */
+  onVolumeChange?: (ids: string[], delta: number) => void
   onSelect: (seg: Segment) => void
   onContextMenu?: (seg: Segment, x: number, y: number) => void
   isPersisting?: boolean
@@ -65,7 +68,7 @@ interface InteractiveSegmentProps {
 // difference between smooth and stuttering timeline interaction.
 export const InteractiveSegment = memo(function InteractiveSegment({
   seg, color, isActive, isSelected, onToggleSelect, isApproved, zoom, duration, rows, allSegments, PX_PER_SEC,
-  lanesRef, insertLineRef, overruns, onCommitLayout, onPatch, onSelect, onContextMenu,
+  lanesRef, insertLineRef, overruns, onCommitLayout, onPatch, onVolumeChange, onSelect, onContextMenu,
   isPersisting, isRegenerating, isSplitting,
   mutedTrackIds, soloedTrackIds, volume,
   activeTool, snapEnabled, onSplit,
@@ -104,14 +107,16 @@ export const InteractiveSegment = memo(function InteractiveSegment({
 
   // Fades and the volume line, while one is being dragged (saved on release)
   const [fadeDraft, setFadeDraft] = useState<{ fade_in_secs: number; fade_out_secs: number } | null>(null)
-  const [volumeDraft, setVolumeDraft] = useState<number | null>(null)
-  // Where the pointer is while the volume line is dragged (its dB tip follows it)
-  const [volumeTipAt, setVolumeTipAt] = useState<{ x: number; y: number } | null>(null)
+  // A volume line being dragged — this clip's, or another selected clip's —
+  // moves this clip's line by the same amount (editorStore.liveClipVolume)
+  const liveDelta = useEditorStore((s) => (s.liveClipVolume?.ids.includes(seg.id) ? s.liveClipVolume.delta : null))
+  // While this clip's own line is dragged: the pointer (its dB tip follows it) and the tip's text
+  const [volumeTip, setVolumeTip] = useState<{ x: number; y: number; text: string } | null>(null)
   const fadeIn = fadeDraft?.fade_in_secs ?? seg.fade_in_secs ?? 0
   const fadeOut = fadeDraft?.fade_out_secs ?? seg.fade_out_secs ?? 0
   const fadeInPx = timeToPixels(fadeIn, zoom, PX_PER_SEC)
   const fadeOutPx = timeToPixels(fadeOut, zoom, PX_PER_SEC)
-  const shownVolume = volumeDraft ?? seg.volume_db ?? 0
+  const shownVolume = liveDelta != null ? shiftedVolume(seg.volume_db ?? 0, liveDelta) : seg.volume_db ?? 0
 
   // Drag a top corner inward: a fade, as long as the drag (never past the other fade)
   const startFadeDrag = (e: React.PointerEvent<HTMLDivElement>, side: 'in' | 'out') => {
@@ -154,21 +159,25 @@ export const InteractiveSegment = memo(function InteractiveSegment({
     const band = (el.parentElement ?? el).getBoundingClientRect()
     el.setPointerCapture(e.pointerId)
     const from = seg.volume_db ?? 0
-    let db = from
+    // A selected clip carries the whole selection's voiced clips with it
+    const ids = selectionTargets(useEditorStore.getState().selectedSegmentIds, seg.id)
+      .filter((id) => id === seg.id || allSegments.some((s) => s.id === id && isVoiced(s)))
+    let delta = 0
     const move = (ev: PointerEvent) => {
-      db = volumeAtPointer(ev.clientY, band.top, band.height)
-      setVolumeDraft(db)
-      setVolumeTipAt({ x: ev.clientX, y: ev.clientY })
-      useEditorStore.getState().setLiveClipVolume({ id: seg.id, db })
+      delta = volumeAtPointer(ev.clientY, band.top, band.height) - from
+      useEditorStore.getState().setLiveClipVolume({ ids, delta })
+      setVolumeTip({
+        x: ev.clientX, y: ev.clientY,
+        text: ids.length > 1 ? `${dbLabel(delta)} on ${ids.length} clips` : dbLabel(shiftedVolume(from, delta)),
+      })
     }
     const up = (ev: PointerEvent) => {
       el.releasePointerCapture(ev.pointerId)
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
-      setVolumeDraft(null)
-      setVolumeTipAt(null)
-      useEditorStore.getState().setLiveClipVolume(null)
-      if (db !== from) onPatch?.(seg, { volume_db: db }, { volume_db: from }, 'Change volume')
+      setVolumeTip(null)
+      if (delta !== 0 && onVolumeChange) onVolumeChange(ids, delta)
+      else useEditorStore.getState().setLiveClipVolume(null)
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
@@ -535,7 +544,7 @@ export const InteractiveSegment = memo(function InteractiveSegment({
 
       {/* The volume line: it follows the pointer, and the waveform grows and
           shrinks with it; its dB shows on hover and while dragging */}
-      {voiced && onPatch && width >= 40 && activeTool === 'select' && (
+      {voiced && onVolumeChange && width >= 40 && activeTool === 'select' && (
         <div className="absolute inset-x-2.5 bottom-[3px] z-20 pointer-events-none" style={{ height: WAVE_BAND_PX }}>
           <div
             className="absolute inset-x-0 h-[9px] -translate-y-1/2 cursor-ns-resize pointer-events-auto group/vol"
@@ -545,16 +554,16 @@ export const InteractiveSegment = memo(function InteractiveSegment({
           >
             <div className={cn(
               'absolute inset-x-0 top-1/2 h-px',
-              volumeDraft != null ? 'bg-brand-300' : 'bg-white/45 group-hover/vol:bg-white/90',
+              liveDelta != null ? 'bg-brand-300' : 'bg-white/45 group-hover/vol:bg-white/90',
             )} />
             <span className={cn(
               'absolute right-0 top-1/2 -translate-y-1/2 rounded bg-ink-900/90 px-1.5 text-[10.5px] font-semibold text-white tabular-nums pointer-events-none',
-              volumeDraft != null ? 'hidden' : 'hidden group-hover/vol:block',
+              liveDelta != null ? 'hidden' : 'hidden group-hover/vol:block',
             )}>
               {dbLabel(shownVolume)}
             </span>
           </div>
-          {volumeDraft != null && volumeTipAt && <DragTip x={volumeTipAt.x} y={volumeTipAt.y} text={dbLabel(volumeDraft)} />}
+          {volumeTip && <DragTip x={volumeTip.x} y={volumeTip.y} text={volumeTip.text} />}
         </div>
       )}
 

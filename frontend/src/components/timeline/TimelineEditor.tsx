@@ -22,7 +22,7 @@ import { InteractiveSegment, LANE_HEIGHT } from './TimelineClip'
 import { StemPieces } from './StemPieces'
 import { deletePiece, keysActOn, newPieceId, setPiece, splitPiece } from '@/lib/stemPieces'
 import { clipAtPlayhead, trackRows } from '@/lib/tracks'
-import { effectiveSpeed, isVoiced, overrunSpans, trimEnd, trimStart } from '@/lib/clipRules'
+import { effectiveSpeed, isVoiced, overrunSpans, selectionTargets, shiftedVolume, trimEnd, trimStart } from '@/lib/clipRules'
 import { isTypingTarget } from '@/lib/transport'
 import { redoWithToast, undoWithToast } from '@/lib/undoActions'
 import { layoutPlace } from '@/lib/undoPatches'
@@ -65,6 +65,15 @@ function ToolButton({ label, icon: Icon, onClick, disabled, pressed, danger, bus
   )
 }
 const MIN_CLIP_SECS = 0.1
+
+// Saves several clips a few at a time — each change re-renders a voice on the server
+async function patchEach(ids: string[], patchFor: (id: string) => SegmentUpdate): Promise<Segment[]> {
+  const out: Segment[] = []
+  for (let i = 0; i < ids.length; i += 4) {
+    out.push(...await Promise.all(ids.slice(i, i + 4).map((id) => segmentsApi.update(id, patchFor(id)))))
+  }
+  return out
+}
 
 // Format playhead time down to fractions of a second: e.g., 0:01.23
 function formatPlayheadTime(seconds: number): string {
@@ -323,10 +332,12 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     setInspectorMode('audio_clip_settings')
     setFocusedTimelineItemId(seg.id)
     // A plain click replaces any multi-selection with just this clip —
-    // standard NLE behaviour; Shift+click (handled in the clip) adds instead.
+    // standard NLE behaviour; Shift+click (handled in the clip) adds instead,
+    // and this clip joins that selection (the anchor), like CapCut.
     if (useEditorStore.getState().selectedSegmentIds.length) {
       useEditorStore.getState().setSelectedSegments([])
     }
+    useEditorStore.getState().setSelectionAnchor(seg.id)
   }, [setCurrentTime, setActiveSegment, setInspectorMode, setFocusedTimelineItemId])
 
   const handleSegmentDelete = useCallback((id: string) => {
@@ -422,23 +433,60 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     trimAt(seg, t, side)
   }, [trimAt])
 
-  // A speed for the clip's voice (the right-click menu): its length follows
+  // A speed for the clip's voice (the right-click menu) — for the whole selection
+  // when the clip is part of it, like CapCut; each clip's length follows its new
+  // speed (the server may move it to another track). One undo step.
   const handleSetSpeed = useCallback(async (seg: Segment, speed: number) => {
     if (!jobId) return
-    const was = Math.round(effectiveSpeed(seg) * 1000) / 1000
-    if (Math.abs(was - speed) < 0.0005) return
+    const heard = (s: Segment) => Math.round(effectiveSpeed(s) * 1000) / 1000
+    const targets = selectionTargets(useEditorStore.getState().selectedSegmentIds, seg.id)
+      .map((id) => segments.find((s) => s.id === id))
+      .filter((s): s is Segment => !!s && isVoiced(s) && Math.abs(heard(s) - speed) >= 0.0005)
+    if (!targets.length) return
     try {
-      const updated = await segmentsApi.update(seg.id, { voice_speed: speed })
-      putSegments(qc, jobId, [updated])
+      const updated = await patchEach(targets.map((s) => s.id), () => ({ voice_speed: speed }))
+      putSegments(qc, jobId, updated)
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
-      recordSegmentChange(qc, jobId, seg.id,
-        { voice_speed: was, lane_index: seg.lane_index ?? 0 },
-        { voice_speed: speed, lane_index: updated.lane_index ?? 0 },
-        'Change voice speed')
+      const changes = targets.map((s) => ({
+        id: s.id,
+        before: { voice_speed: heard(s), lane_index: s.lane_index ?? 0 },
+        after: { voice_speed: speed, lane_index: updated.find((u) => u.id === s.id)?.lane_index ?? 0 },
+      }))
+      if (changes.length === 1) recordSegmentChange(qc, jobId, changes[0].id, changes[0].before, changes[0].after, 'Change voice speed')
+      else recordSegmentsChange(qc, jobId, changes, `Change voice speed (${changes.length} clips)`)
     } catch {
       toast.error('Failed to update voice speed')
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
     }
-  }, [jobId, qc])
+  }, [jobId, qc, segments])
+
+  // A volume line dragged on a clip, or on one of a selection: every clip moves
+  // by the same dB, keeping their balance. One undo step; the live volume the
+  // drag set (editorStore.liveClipVolume) stays until the save lands.
+  const handleVolumeChange = useCallback(async (ids: string[], delta: number) => {
+    const clear = () => useEditorStore.getState().setLiveClipVolume(null)
+    if (!jobId) return clear()
+    const changes = ids.flatMap((id) => {
+      const s = segments.find((x) => x.id === id)
+      if (!s) return []
+      const before = s.volume_db ?? 0
+      const after = shiftedVolume(before, delta)
+      return after === before ? [] : [{ id, before: { volume_db: before }, after: { volume_db: after } }]
+    })
+    if (!changes.length) return clear()
+    try {
+      const updated = await patchEach(changes.map((c) => c.id), (id) => changes.find((c) => c.id === id)!.after)
+      putSegments(qc, jobId, updated)
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      if (changes.length === 1) recordSegmentChange(qc, jobId, changes[0].id, changes[0].before, changes[0].after, 'Change volume')
+      else recordSegmentsChange(qc, jobId, changes, `Change volume (${changes.length} clips)`)
+    } catch {
+      toast.error("Couldn't save the volume")
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    } finally {
+      clear()
+    }
+  }, [jobId, qc, segments])
 
   // A setting changed on the clip itself (fades, the volume line): one PATCH, one undo step
   const handleClipPatch = useCallback(async (seg: Segment, after: SegmentUpdate, before: SegmentUpdate, label: string) => {
@@ -1336,6 +1384,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                           onCommitLayout={handleCommitLayout}
                           onContextMenu={handleClipContextMenu}
                           onPatch={handleClipPatch}
+                          onVolumeChange={handleVolumeChange}
                           onSelect={handleSegmentSelect}
                           isPersisting={isLayingOut && !!layoutVariables?.changes.some((c) => c.id === seg.id)}
                           isRegenerating={isRegenerating && regenVariables?.segmentId === seg.id}

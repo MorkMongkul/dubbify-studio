@@ -173,3 +173,22 @@ export function fractionToVolume(fraction: number): number {
   const f = Math.max(0, Math.min(1, fraction))
   return Math.round(VOLUME_MIN_DB + f * (VOLUME_MAX_DB - VOLUME_MIN_DB))
 }
+
+// ── Changes to a selection ───────────────────────────────────────────────────
+
+/** The clips a change made on `id` applies to: the whole selection when `id` is part of it, like CapCut. */
+export function selectionTargets(selected: string[], id: string): string[] {
+  return selected.length > 1 && selected.includes(id) ? selected : [id]
+}
+
+/** A clip's volume moved by `delta` dB with the rest of a selection: whole dB, inside the line's range. */
+export function shiftedVolume(db: number, delta: number): number {
+  return Math.round(Math.max(VOLUME_MIN_DB, Math.min(VOLUME_MAX_DB, db + delta)))
+}
+
+/** Shift+click: add or remove `id`; after a plain click on `anchor`, that clip joins too (like CapCut). */
+export function toggleInSelection(selected: string[], anchor: string | null, id: string): string[] {
+  if (selected.includes(id)) return selected.filter((x) => x !== id)
+  const start = selected.length === 0 && anchor && anchor !== id ? [anchor] : selected
+  return [...start, id]
+}

@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
-  audibleAt, clampFades, fadeGainAt, fractionToVolume, volumeToFraction, effectiveSpeed, estimateSecs, isVoiceOutdated, isVoiced, maxEnd, overrunSpans, trimEnd, trimStart,
+  audibleAt, clampFades, fadeGainAt, selectionTargets, shiftedVolume, toggleInSelection, fractionToVolume, volumeToFraction, effectiveSpeed, estimateSecs, isVoiceOutdated, isVoiced, maxEnd, overrunSpans, trimEnd, trimStart,
   voiceAt, waveformSlice,
 } from '../src/lib/clipRules.ts'
 import type { Segment } from '../src/types/index.ts'
@@ -150,4 +150,26 @@ test('the volume line maps the panel range top to bottom', () => {
   assert.equal(volumeToFraction(40), 1)
   for (const db of [-20, -7, 0, 10]) assert.equal(fractionToVolume(volumeToFraction(db)), db)
   assert.equal(fractionToVolume(1.5), 10)
+})
+
+test('a change to a selected clip applies to the whole selection', () => {
+  assert.deepEqual(selectionTargets(['a', 'b', 'c'], 'b'), ['a', 'b', 'c'])
+  assert.deepEqual(selectionTargets(['a', 'b', 'c'], 'x'), ['x'])   // not part of it: just that clip
+  assert.deepEqual(selectionTargets(['b'], 'b'), ['b'])
+  assert.deepEqual(selectionTargets([], 'b'), ['b'])
+})
+
+test('a volume shift keeps whole dB inside the line range', () => {
+  assert.equal(shiftedVolume(-3, 4), 1)
+  assert.equal(shiftedVolume(8, 5), 10)      // stops at the top
+  assert.equal(shiftedVolume(-18, -6), -20)  // and at the bottom
+  assert.equal(shiftedVolume(2.4, 0), 2)
+})
+
+test('Shift+click after a plain click selects both, like CapCut', () => {
+  assert.deepEqual(toggleInSelection([], 'a', 'b'), ['a', 'b'])        // click a, Shift+click b
+  assert.deepEqual(toggleInSelection(['a', 'b'], 'a', 'c'), ['a', 'b', 'c'])
+  assert.deepEqual(toggleInSelection(['a', 'b', 'c'], 'a', 'b'), ['a', 'c'])  // Shift+click again: out
+  assert.deepEqual(toggleInSelection([], null, 'b'), ['b'])
+  assert.deepEqual(toggleInSelection([], 'b', 'b'), ['b'])
 })

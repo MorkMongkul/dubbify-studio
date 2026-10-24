@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useRef, type RefObject } from 'react'
 import type { Segment } from '@/types'
-import { audibleAt, fadeGainAt, isVoiced, voiceUrl } from '@/lib/clipRules'
+import { audibleAt, fadeGainAt, isVoiced, shiftedVolume, voiceUrl } from '@/lib/clipRules'
 import { useEditorStore } from '@/store/editorStore'
 
 /** Seconds a playing voice may drift from where it should be before it is re-seeked. */
@@ -90,10 +90,12 @@ function setLevel(p: Player, level: number) {
   }
 }
 
-/** A volume line being dragged plays at its new level before it is saved. */
+/** A volume line being dragged (one clip or a selection) plays at its new level before it is saved. */
 function liveFactor(seg: Segment): number {
   const live = useEditorStore.getState().liveClipVolume
-  return live && live.id === seg.id ? 10 ** ((live.db - (seg.volume_db ?? 0)) / 20) : 1
+  if (!live || !live.ids.includes(seg.id)) return 1
+  const saved = seg.volume_db ?? 0
+  return 10 ** ((shiftedVolume(saved, live.delta) - saved) / 20)
 }
 
 
