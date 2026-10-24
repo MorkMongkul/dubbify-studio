@@ -10,6 +10,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { MediaAsset, MediaBox } from '@/types'
 import { mediaLockedNotice, useMediaEditing } from '@/hooks/useMediaEditing'
+import { pictureStartDelay } from '@/hooks/usePreviewAudio'
 import { drawOrder, mediaSwitchesOf, mediaVideoStep, mediaWindow, resizeBox } from '@/lib/media'
 import { MediaRenderer, type MediaLayer } from '@/lib/mediaGl'
 import { useEditorStore } from '@/store/editorStore'
@@ -63,7 +64,10 @@ export function MediaCanvas({ jobId, projectId, videoRef, containerRef }: MediaC
   const [windowIds, setWindowIds] = useState<string[]>([])
   const players = useRef(new Map<string, HTMLVideoElement>())
   const images = useRef(new Map<string, HTMLImageElement>())
-  const fixedAt = useRef(new Map<string, number>())
+  // Each player since it was last started: when, and whether it was put back since
+  const runs = useRef(new Map<string, { playAt: number; refitted: boolean }>())
+  // The picture's start delay in media seconds, read as playing starts
+  const lead = useRef(0)
   const pendingSeek = useRef(new Map<string, number>())
   // A box being dragged in the preview: drawn there until it's saved
   const [draft, setDraft] = useState<{ id: string; box: MediaBox } | null>(null)
@@ -102,17 +106,20 @@ export function MediaCanvas({ jobId, projectId, videoRef, containerRef }: MediaC
       for (const c of list) {
         const v = players.current.get(c.id)
         if (!v || v.readyState < 1) continue
-        const step = mediaVideoStep(c, t, playing, v, now - (fixedAt.current.get(c.id) ?? 0))
+        const run = runs.current.get(c.id)
+        const step = mediaVideoStep(c, t, playing, v, {
+          lead: playing ? lead.current : 0, sincePlayMs: now - (run?.playAt ?? 0), refitted: run?.refitted ?? false,
+        })
         if (step.kind === 'play') {
           v.playbackRate = rate       // only while stopped: a speed change stalls a playing video
           if (step.seek != null) v.currentTime = step.seek
           v.play().catch(() => {})
-          fixedAt.current.set(c.id, now)
+          runs.current.set(c.id, { playAt: now, refitted: false })
         } else if (step.kind === 'refit') {
           v.pause()
           v.currentTime = step.seek
           v.play().catch(() => {})
-          fixedAt.current.set(c.id, now)
+          runs.current.set(c.id, { playAt: now, refitted: true })
         } else if (step.kind === 'pause') {
           if (!v.paused) v.pause()
           if (step.seek != null) seek(v, c.id, step.seek)
@@ -158,6 +165,10 @@ export function MediaCanvas({ jobId, projectId, videoRef, containerRef }: MediaC
       paintRef.current(useEditorStore.getState().currentTime, false)
       return useEditorStore.subscribe((s) => s.currentTime, (t) => paintRef.current(t, false))
     }
+    lead.current = pictureStartDelay() * (useEditorStore.getState().playbackRate || 1)
+    // The picture paused while playing (the preview engine holds it to start again in step): the players wait too
+    const onPause = () => paintRef.current(video.currentTime, false)
+    video.addEventListener('pause', onPause)
     let handle = 0
     let stopped = false
     if (typeof video.requestVideoFrameCallback === 'function') {
@@ -167,7 +178,7 @@ export function MediaCanvas({ jobId, projectId, videoRef, containerRef }: MediaC
         handle = video.requestVideoFrameCallback(onFrame)
       }
       handle = video.requestVideoFrameCallback(onFrame)
-      return () => { stopped = true; video.cancelVideoFrameCallback(handle) }
+      return () => { stopped = true; video.cancelVideoFrameCallback(handle); video.removeEventListener('pause', onPause) }
     }
     const onTick = () => {
       if (stopped) return
@@ -175,7 +186,7 @@ export function MediaCanvas({ jobId, projectId, videoRef, containerRef }: MediaC
       handle = requestAnimationFrame(onTick)
     }
     handle = requestAnimationFrame(onTick)
-    return () => { stopped = true; cancelAnimationFrame(handle) }
+    return () => { stopped = true; cancelAnimationFrame(handle); video.removeEventListener('pause', onPause) }
   }, [isPlaying, videoRef])
 
   // A change to the clips, their media or a box being dragged shows at once while stopped

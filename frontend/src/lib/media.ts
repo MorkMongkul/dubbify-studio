@@ -17,7 +17,8 @@ export const VOLUME_MAX_DB = 10
 
 const EPS = 1e-6
 const round6 = (x: number) => Math.round(x * 1e6) / 1e6
-const newId = () => crypto.randomUUID()
+// Safari before 15.4 (an un-updated macOS 11) has no crypto.randomUUID
+const newId = () => globalThis.crypto?.randomUUID?.() ?? `m-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
 /** A media asset scaled to fit the frame (contain), centred — fractions of the frame. */
 export function fitBox(w: number, h: number, frameW: number, frameH: number): MediaBox {
@@ -126,8 +127,10 @@ export function splitClip(clip: MediaClip, at: number, kind: MediaAsset['kind'])
  * planDrop — a busy or locked track, or a drop between tracks, makes a new
  * track under the target row), run with the top track as row 0. Then the
  * tracks are numbered again, the top one highest, so their order — what
- * covers what — never changes; a track's switches go with it (an emptied
- * track's are dropped).
+ * covers what — never changes. A track's switches go with it: with the clips
+ * that stay on it, else with its clips when they all move together onto a
+ * track of their own (a card alone on a hidden track stays hidden when
+ * dragged); an emptied track's are dropped.
  */
 export function planMediaDrop(
   clips: MediaClip[], moving: string[], grabbedId: string, deltaSecs: number, spot: DropSpot,
@@ -149,6 +152,16 @@ export function planMediaDrop(
   for (const c of clips) {
     const f = flags?.[String(c.lane_index)]
     if (f && !ids.has(c.id)) track_flags[String(laneFor.get(rowAfter(c))!)] = f
+  }
+  // A track left with none of its clips, whose clips now make a track of their own, keeps its switches
+  for (const lane of rows) {
+    const f = flags?.[String(lane)]
+    const own = clips.filter((c) => c.lane_index === lane)
+    if (!f || own.some((c) => !ids.has(c.id))) continue
+    const to = new Set(own.map(rowAfter))
+    if (to.size !== 1) continue
+    const row = [...to][0]
+    if (clips.every((c) => rowAfter(c) !== row || c.lane_index === lane)) track_flags[String(laneFor.get(row)!)] = f
   }
   return {
     clips: clips.map((c) => {
@@ -219,11 +232,15 @@ export function mediaExportWarnings(rows: number[], flags: MediaTrackFlagMap | n
 // Each video clip near the playhead has a hidden player of its own. WebKit
 // stalls a playing video whenever it is seeked or its speed changes, so a
 // player is set up while stopped — parked on its first frame PRELOAD_SECS
-// ahead, its speed set — and started when its clip starts; once playing it is
-// left alone unless it drifts more than DRIFT_SECS, and then fixed once.
+// ahead, its speed set — and started early by the picture's start delay (the
+// preview engine learns it: ~0.5 s in the owner's Safari), so its first frame
+// shows as its clip starts. Once playing it is left alone; judged only after
+// SETTLE_MS (right after a start WebKit's position runs ahead of its frames),
+// more than DRIFT_SECS off it is put back once — never again until it starts
+// again, or a steady start delay would make it stall every second.
 export const PRELOAD_SECS = 2
 export const DRIFT_SECS = 0.3
-export const REFIT_GAP_MS = 1000
+export const SETTLE_MS = 600
 const FRAME_EPS = 0.02
 const MIN_BOX = 0.02
 
@@ -240,15 +257,26 @@ export type MediaVideoStep =
   | { kind: 'pause'; seek: number | null }
   | { kind: 'refit'; seek: number }
 
+/** Where a player is since it was last started: `lead` the picture's start delay (s), whether it was put back. */
+export interface MediaRun { lead: number; sincePlayMs: number; refitted: boolean }
+
 /** What a clip's player does when the picture is at `t` (`playing`: the picture is moving). */
 export function mediaVideoStep(
-  c: MediaClip, t: number, playing: boolean, v: { paused: boolean; currentTime: number }, msSinceFix: number,
+  c: MediaClip, t: number, playing: boolean, v: { paused: boolean; currentTime: number }, run: MediaRun,
 ): MediaVideoStep {
   const target = round6(c.source_in + (t - c.start_time))
   const active = t >= c.start_time && t < c.end_time
-  if (playing && active) {
-    if (v.paused) return { kind: 'play', seek: Math.abs(v.currentTime - target) > FRAME_EPS ? target : null }
-    if (Math.abs(v.currentTime - target) > DRIFT_SECS && msSinceFix >= REFIT_GAP_MS) return { kind: 'refit', seek: target }
+  if (playing && t >= c.start_time - run.lead && t < c.end_time) {
+    if (v.paused) {
+      // From its first frame when starting early; joined late, ahead by the delay
+      const from = t >= c.start_time ? round6(target + run.lead) : c.source_in
+      return { kind: 'play', seek: Math.abs(v.currentTime - from) > FRAME_EPS ? from : null }
+    }
+    const off = v.currentTime - target
+    if (active && !run.refitted && run.sincePlayMs >= SETTLE_MS && Math.abs(off) > DRIFT_SECS) {
+      // Started `lead` early and still `off` ahead: it really took lead − off to start
+      return { kind: 'refit', seek: round6(target + Math.min(1, Math.max(0, run.lead - off))) }
+    }
     return { kind: 'none' }
   }
   // Stopped, or not on screen yet / any more: paused on the frame to show — its first while it waits

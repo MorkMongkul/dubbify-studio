@@ -172,24 +172,37 @@ test('a video clip gets its player 2 s before it starts, until it ends', () => {
   assert.deepEqual(mediaWindow(clips, kinds, 31), [])
 })
 
-test("a clip's player waits paused on its first frame, plays when the clip starts, and is fixed once when it drifts", () => {
+test("a clip's player waits paused on its first frame and starts early by the picture's start delay", () => {
   const c = clip(10, 17, 0, { source_in: 0.5 })
+  const run = { lead: 0.5, sincePlayMs: 5000, refitted: false }
   // playing, the clip ahead: parked on its first frame
-  assert.deepEqual(mediaVideoStep(c, 9, true, { paused: true, currentTime: 0 }, 5000), { kind: 'pause', seek: 0.5 })
-  assert.deepEqual(mediaVideoStep(c, 9.5, true, { paused: true, currentTime: 0.5 }, 5000), { kind: 'none' })
-  // the clip starts: play (from where the picture is, if late)
-  assert.deepEqual(mediaVideoStep(c, 10, true, { paused: true, currentTime: 0.5 }, 5000), { kind: 'play', seek: null })
-  assert.deepEqual(mediaVideoStep(c, 10.2, true, { paused: true, currentTime: 0.5 }, 5000), { kind: 'play', seek: 0.7 })
-  // playing in step, or a little off: left alone (a seek stalls a playing video)
-  assert.deepEqual(mediaVideoStep(c, 12, true, { paused: false, currentTime: 2.3 }, 5000), { kind: 'none' })
-  // more than 0.3 s off: fixed, but not again within a second
-  assert.deepEqual(mediaVideoStep(c, 12, true, { paused: false, currentTime: 2.9 }, 5000), { kind: 'refit', seek: 2.5 })
-  assert.deepEqual(mediaVideoStep(c, 12, true, { paused: false, currentTime: 2.9 }, 400), { kind: 'none' })
+  assert.deepEqual(mediaVideoStep(c, 9, true, { paused: true, currentTime: 0 }, run), { kind: 'pause', seek: 0.5 })
+  assert.deepEqual(mediaVideoStep(c, 9.4, true, { paused: true, currentTime: 0.5 }, run), { kind: 'none' })
+  // started the start delay early, so its first frame shows as the clip starts
+  assert.deepEqual(mediaVideoStep(c, 9.5, true, { paused: true, currentTime: 0.5 }, run), { kind: 'play', seek: null })
+  // joined late (play pressed inside the clip): ahead by the delay
+  assert.deepEqual(mediaVideoStep(c, 12, true, { paused: true, currentTime: 0.5 }, run), { kind: 'play', seek: 3 })
   // the clip ends: paused
-  assert.deepEqual(mediaVideoStep(c, 17, true, { paused: false, currentTime: 7.5 }, 5000), { kind: 'pause', seek: null })
+  assert.deepEqual(mediaVideoStep(c, 17, true, { paused: false, currentTime: 7.5 }, run), { kind: 'pause', seek: null })
   // stopped: the exact frame
-  assert.deepEqual(mediaVideoStep(c, 12, false, { paused: false, currentTime: 2.6 }, 5000), { kind: 'pause', seek: 2.5 })
-  assert.deepEqual(mediaVideoStep(c, 12, false, { paused: true, currentTime: 2.5 }, 5000), { kind: 'none' })
+  assert.deepEqual(mediaVideoStep(c, 12, false, { paused: false, currentTime: 2.6 }, run), { kind: 'pause', seek: 2.5 })
+  assert.deepEqual(mediaVideoStep(c, 12, false, { paused: true, currentTime: 2.5 }, run), { kind: 'none' })
+})
+
+test("a playing clip's player is judged once it has settled, and put back at most once per start", () => {
+  const c = clip(10, 17, 0, { source_in: 0.5 })
+  const playing = { paused: false, currentTime: 2.9 }        // 0.4 s off at 12 s
+  // a seek stalls a playing video: a little off is left alone
+  assert.deepEqual(mediaVideoStep(c, 12, true, { paused: false, currentTime: 2.7 }, { lead: 0, sincePlayMs: 5000, refitted: false }), { kind: 'none' })
+  // right after a start WebKit's position runs ahead of its frames: not judged yet
+  assert.deepEqual(mediaVideoStep(c, 12, true, playing, { lead: 0, sincePlayMs: 300, refitted: false }), { kind: 'none' })
+  // settled and off: put back, ahead by the start delay it really had — started 0.5 s early
+  // and still 0.4 s ahead, it took 0.1 s to start
+  assert.deepEqual(mediaVideoStep(c, 12, true, playing, { lead: 0.5, sincePlayMs: 5000, refitted: false }), { kind: 'refit', seek: 2.6 })
+  // started on time and 0.4 s behind: it took 0.4 s
+  assert.deepEqual(mediaVideoStep(c, 12, true, { paused: false, currentTime: 2.1 }, { lead: 0, sincePlayMs: 5000, refitted: false }), { kind: 'refit', seek: 2.9 })
+  // never again until it starts again (a steady start delay would make it loop)
+  assert.deepEqual(mediaVideoStep(c, 12, true, playing, { lead: 0.5, sincePlayMs: 5000, refitted: true }), { kind: 'none' })
 })
 
 test('a box dragged by a corner keeps its shape; the opposite corner stays put', () => {
@@ -202,4 +215,34 @@ test('a box dragged by a corner keeps its shape; the opposite corner stays put',
   assert.deepEqual(tl, { x: 0.4, y: 0.3, width: 0.2, height: 0.1 })
   // never smaller than a sliver
   assert.ok(resizeBox(box, 'se', -1).height >= 0.02)
+})
+
+test("a dragged clip's track keeps its switches when the clip is alone on it", () => {
+  const hidden = { locked: false, hidden: true, muted: true }
+  const card = clip(2, 9, 0, { id: 'card' })
+  const out = planMediaDrop([card], ['card'], 'card', 2, { kind: 'onto', row: 0 }, { 0: hidden }, 88)
+  assert.deepEqual(out.track_flags, { 0: hidden })
+  // a whole track moved above another keeps its switches; the track it left had nothing else
+  const both = [clip(0, 5, 1, { id: 'a' }), clip(0, 5, 0, { id: 'b' })]
+  const up = planMediaDrop(both, ['b'], 'b', 0, { kind: 'insert', boundary: 0 }, { 0: hidden }, 88)
+  assert.deepEqual(lanesOf(up.clips), { b: [1, 0, 5], a: [0, 0, 5] })
+  assert.deepEqual(up.track_flags, { 1: hidden })
+  // a clip taken from a track that keeps other clips leaves the switches with that track
+  const shared = [clip(0, 5, 0, { id: 'c' }), clip(10, 15, 0, { id: 'd' })]
+  const out2 = planMediaDrop(shared, ['d'], 'd', 0, { kind: 'insert', boundary: 0 }, { 0: hidden }, 88)
+  assert.deepEqual(lanesOf(out2.clips), { c: [0, 0, 5], d: [1, 10, 15] })
+  assert.deepEqual(out2.track_flags, { 0: hidden })
+})
+
+test('clips get ids where the browser has no crypto.randomUUID (Safari before 15.4)', () => {
+  const had = Object.getOwnPropertyDescriptor(globalThis.crypto, 'randomUUID')
+  Object.defineProperty(globalThis.crypto, 'randomUUID', { value: undefined, configurable: true })
+  try {
+    const a = defaultClip(VIDEO, 0, 88, 0, FRAME)
+    const b = duplicateClip(a, [a])
+    assert.ok(a.id && b.id && a.id !== b.id && a.id.length <= 36)
+  } finally {
+    if (had) Object.defineProperty(globalThis.crypto, 'randomUUID', had)
+    else delete (globalThis.crypto as { randomUUID?: unknown }).randomUUID
+  }
 })

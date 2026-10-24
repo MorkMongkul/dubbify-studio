@@ -74,6 +74,12 @@ function rememberVideoDelay(latency: number, delay: number): void {
   try { localStorage.setItem(delayKey(latency), delay.toFixed(3)) } catch { /* this session only */ }
 }
 
+/** How long a video takes to start moving after play() on this Mac (s): the media players start that much early. */
+export function pictureStartDelay(): number {
+  const ctx = audioContext()
+  return ctx ? videoDelayFor(outputDelay(ctx)) : FIRST_VIDEO_DELAY
+}
+
 // Videos the engine paused itself, to start them again in step with the sound
 const held = new WeakSet<HTMLMediaElement>()
 

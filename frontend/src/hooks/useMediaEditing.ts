@@ -48,7 +48,9 @@ export function useMediaEditing(jobId: string | undefined, projectId: string | u
   const qc = useQueryClient()
   const { data: list } = useMediaClips(jobId)
   const { data: assetList } = useMediaAssets(projectId)
-  const { mutate: setClips } = useSetMediaClips()
+  // mutateAsync: TanStack calls mutate's own callbacks for the last call only, so the first
+  // of two quick edits lost its undo step
+  const { mutateAsync: setClips } = useSetMediaClips()
   const assets = useMemo(() => new Map((assetList ?? []).map((a) => [a.id, a])), [assetList])
 
   // The cache holds the latest list (an edit shows at once), so callbacks read it there
@@ -58,10 +60,9 @@ export function useMediaEditing(jobId: string | undefined, projectId: string | u
   const commit = useCallback((clips: MediaClip[], label: string, flags?: MediaTrackFlagMap) => {
     const before = current()
     if (!jobId || !before) return
-    setClips({ jobId, clips, trackFlags: flags ?? before.track_flags }, {
-      onSuccess: (stored) => recordMediaChange(qc, jobId, before, stored, label),
-      onError: (e) => toast.error(errorText(e, `Couldn't ${label.toLowerCase()}`)),
-    })
+    setClips({ jobId, clips, trackFlags: flags ?? before.track_flags })
+      .then((stored) => recordMediaChange(qc, jobId, before, stored, label))
+      .catch((e) => toast.error(errorText(e, `Couldn't ${label.toLowerCase()}`)))
   }, [current, jobId, qc, setClips])
 
   // The selected clips that can be edited (a locked track's say so)

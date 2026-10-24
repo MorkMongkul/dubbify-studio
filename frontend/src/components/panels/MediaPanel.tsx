@@ -25,6 +25,9 @@ const iconButton = 'flex items-center justify-center h-7 w-7 rounded-md bg-white
 // A checkerboard behind thumbnails, so transparency shows as transparency
 const CHECKER = { backgroundImage: 'conic-gradient(#262b40 25%, #1c2033 0 50%, #262b40 0 75%, #1c2033 0)', backgroundSize: '12px 12px' }
 
+// Each import's row (never crypto.randomUUID: Safari before 15.4 has none)
+let importCount = 0
+
 const errorText = (e: unknown, fallback: string) =>
   ((e as AxiosError<{ detail?: string }>)?.response?.data?.detail) || fallback
 
@@ -46,7 +49,9 @@ function MediaLibrary({ projectId, jobId }: { projectId: string; jobId?: string 
   const { data: clipList } = useMediaClips(jobId)
   const upload = useUploadMedia()
   const remove = useDeleteMedia()
-  const { mutate: setClips } = useSetMediaClips()
+  // mutateAsync, never mutate's own callbacks: TanStack calls those for the last call only,
+  // so a second import or edit in flight lost the first one's row, error or undo step
+  const { mutateAsync: setClips } = useSetMediaClips()
   const [uploads, setUploads] = useState<{ key: string; name: string; progress: number }[]>([])
   const [dragOver, setDragOver] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -54,15 +59,14 @@ function MediaLibrary({ projectId, jobId }: { projectId: string; jobId?: string 
 
   const importFiles = useCallback((files: File[]) => {
     for (const file of files) {
-      const key = crypto.randomUUID()
+      const key = `import-${++importCount}`
       setUploads((u) => [...u, { key, name: file.name, progress: 0 }])
-      upload.mutate({
+      upload.mutateAsync({
         projectId, file,
         onProgress: (progress) => setUploads((u) => u.map((x) => (x.key === key ? { ...x, progress } : x))),
-      }, {
-        onError: (e) => toast.error(errorText(e, `Couldn't import ${file.name}`)),
-        onSettled: () => setUploads((u) => u.filter((x) => x.key !== key)),
       })
+        .catch((e) => toast.error(errorText(e, `Couldn't import ${file.name}`)))
+        .finally(() => setUploads((u) => u.filter((x) => x.key !== key)))
     }
   }, [projectId, upload])
 
@@ -83,16 +87,16 @@ function MediaLibrary({ projectId, jobId }: { projectId: string; jobId?: string 
   }
 
   const addAtPlayhead = (asset: MediaAsset) => {
-    if (!jobId || !clipList) return
+    // The cache, not this render's list: a second + right after the first adds beside it
+    const before = jobId ? qc.getQueryData<MediaClipList>(['media-clips', jobId]) : undefined
+    if (!jobId || !before) return
     const { currentTime, duration, videoSize } = useEditorStore.getState()
     const frame = videoSize ?? { width: asset.width, height: asset.height }
-    const locked = new Set(Object.keys(clipList.track_flags).map(Number).filter((l) => mediaSwitchesOf(clipList.track_flags, l).locked))
-    const clip = addAt(defaultClip(asset, currentTime, duration, 0, frame), clipList.clips, locked)
-    const before: MediaClipList = clipList
-    setClips({ jobId, clips: [...clipList.clips, clip] }, {
-      onSuccess: (stored) => recordMediaChange(qc, jobId, before, stored, `Add ${asset.name}`),
-      onError: (e) => toast.error(errorText(e, `Couldn't add ${asset.name}`)),
-    })
+    const locked = new Set(Object.keys(before.track_flags).map(Number).filter((l) => mediaSwitchesOf(before.track_flags, l).locked))
+    const clip = addAt(defaultClip(asset, currentTime, duration, 0, frame), before.clips, locked)
+    setClips({ jobId, clips: [...before.clips, clip] })
+      .then((stored) => recordMediaChange(qc, jobId, before, stored, `Add ${asset.name}`))
+      .catch((e) => toast.error(errorText(e, `Couldn't add ${asset.name}`)))
   }
 
   return (
@@ -144,12 +148,11 @@ function MediaLibrary({ projectId, jobId }: { projectId: string; jobId?: string 
                 added={used.has(asset.id)}
                 canAdd={!!jobId && !!clipList}
                 onAdd={() => addAtPlayhead(asset)}
-                onDelete={() => remove.mutate({ assetId: asset.id, projectId }, {
-                  onSuccess: ({ removed_clips, episodes }) => toast.success(removed_clips
+                onDelete={() => remove.mutateAsync({ assetId: asset.id, projectId })
+                  .then(({ removed_clips, episodes }) => toast.success(removed_clips
                     ? `Deleted ${asset.name} and its ${removed_clips} clip${removed_clips === 1 ? '' : 's'} in ${episodes} episode${episodes === 1 ? '' : 's'}`
-                    : `Deleted ${asset.name}`),
-                  onError: (e) => toast.error(errorText(e, `Couldn't delete ${asset.name}`)),
-                })}
+                    : `Deleted ${asset.name}`))
+                  .catch((e) => toast.error(errorText(e, `Couldn't delete ${asset.name}`)))}
               />
             ))}
           </div>
@@ -243,16 +246,15 @@ function TemplatesSection({ projectId, jobId, clipList }: { projectId: string; j
 
   const applyTemplate = (t: MediaTemplate) => {
     if (!jobId || !clipList) return
-    const before = clipList
-    apply.mutate({ templateId: t.id, jobId }, {
-      onSuccess: ({ clips, skipped }) => {
+    const before = qc.getQueryData<MediaClipList>(['media-clips', jobId]) ?? clipList
+    apply.mutateAsync({ templateId: t.id, jobId })
+      .then(({ clips, skipped }) => {
         recordMediaChange(qc, jobId, before, { ...before, clips }, `Apply ${t.name}`)
         const added = clips.length - before.clips.length
         toast.success(`Added ${added} clip${added === 1 ? '' : 's'} from ${t.name}` +
           (skipped ? ` — ${skipped} skipped: their media was deleted` : ''))
-      },
-      onError: (e) => toast.error(errorText(e, `Couldn't apply ${t.name}`)),
-    })
+      })
+      .catch((e) => toast.error(errorText(e, `Couldn't apply ${t.name}`)))
   }
 
   return (
