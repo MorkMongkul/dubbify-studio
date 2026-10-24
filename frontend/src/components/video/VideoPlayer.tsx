@@ -349,6 +349,8 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
       const t = video.currentTime
       const base = video.playbackRate || 1
       for (const el of stems) {
+        // Still seeking or waiting for data: its position means nothing yet
+        if (el.seeking || el.readyState < 3) continue
         const action = syncAction(el.currentTime - t, performance.now() - jumpedAt)
         if (action.kind === 'jump') {
           el.currentTime = t

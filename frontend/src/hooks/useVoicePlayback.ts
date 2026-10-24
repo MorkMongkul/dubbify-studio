@@ -169,7 +169,8 @@ export function useVoicePlayback({ videoRef, segmentsRef, isPlaying, playbackRat
         if (Math.abs(audio.currentTime - filePos) > 0.02) audio.currentTime = filePos
         p.jumpedAt = performance.now()
         audio.play().catch(() => {})
-      } else {
+      } else if (!audio.seeking && audio.readyState >= 3) {
+        // (still seeking or waiting for data: its position means nothing yet)
         const action = syncAction(audio.currentTime - filePos, performance.now() - p.jumpedAt)
         if (action.kind === 'jump') {
           audio.currentTime = filePos
