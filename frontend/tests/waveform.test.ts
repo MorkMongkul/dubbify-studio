@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
-  CEILING, dbLabel, gainFor, levelBars, peaksFrom, slicePeaks, volumeAtPointer, volumeTop,
+  CEILING, dbLabel, gainFor, levelBars, peaksFrom, slicePeaks, volumeAfterDrag, volumeTop,
 } from '../src/lib/waveform.ts'
 
 test('the loudness limit matches the export', () => {
@@ -31,13 +31,21 @@ test('silence draws as a thin line, never as nothing', () => {
   assert.equal(levelBars([0], 1)[0].h, 0.04)
 })
 
-test('the volume line follows the pointer inside its band', () => {
-  // band 30 px tall from y=100: top = +10 dB, bottom = −20 dB
-  assert.equal(volumeAtPointer(100, 100, 30), 10)
-  assert.equal(volumeAtPointer(130, 100, 30), -20)
-  assert.equal(volumeAtPointer(120, 100, 30), -10)
-  assert.equal(volumeAtPointer(40, 100, 30), 10)    // above the band: the loudest
-  assert.equal(volumeTop(0, 30), 10)                // 0 dB sits a third of the way down
+test('a voice the export already holds at its limit is not red', () => {
+  // The leveller caps peaks at −1 dBFS and rounds to 0.1 dB, decoding adds a little
+  assert.equal(levelBars([CEILING * 10 ** (0.1 / 20)], 1)[0].loud, false)
+  assert.equal(levelBars([0.97], 1)[0].loud, true)
+})
+
+test('dragging the volume line: 2 px per dB from where it was grabbed, after a 3 px dead zone', () => {
+  assert.equal(volumeAfterDrag(0, 0), 0)
+  assert.equal(volumeAfterDrag(0, -2), 0)     // a click's jitter changes nothing
+  assert.equal(volumeAfterDrag(0, -4), 2)     // up = louder
+  assert.equal(volumeAfterDrag(0, 4), -2)
+  assert.equal(volumeAfterDrag(-3, -7), 1)    // 7 px up = 3.5 → 4 dB: every whole dB is reachable
+  assert.equal(volumeAfterDrag(8, -20), 10)   // stops at the top
+  assert.equal(volumeAfterDrag(-18, 40), -20) // and at the bottom
+  assert.equal(volumeTop(0, 30), 10)          // 0 dB sits a third of the way down its band
   assert.equal(volumeTop(-20, 30), 30)
 })
 

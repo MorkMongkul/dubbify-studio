@@ -7,17 +7,43 @@
 // (gold, with a star). Every edit sends the stem's whole list (one undo step).
 // Each piece draws its own part of the stem's waveform at its own volume, so
 // the volume line grows and shrinks it like CapCut (red past the limit).
-import { useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { Star } from 'lucide-react'
 import type { Stem, StemPiece } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { cn, pixelsToTime, timeToPixels } from '@/lib/utils'
 import { clampFades, volumeToFraction } from '@/lib/clipRules'
 import { newPieceId, splitPiece, trimPiece } from '@/lib/stemPieces'
-import { dbLabel, gainFor, levelBars, slicePeaks, volumeAtPointer } from '@/lib/waveform'
+import { dbLabel, gainFor, levelBars, slicePeaks, volumeAfterDrag } from '@/lib/waveform'
 import { DragTip } from './DragTip'
 
 const LOUD_COLOR = '#F87171'
+const DIM_COLOR = '#5A6185'
+
+// One piece's part of the stem at its own volume: two SVG paths (normal, loud),
+// not a node per bar, and only rebuilt when the piece, its volume or the zoom change.
+const PieceWave = memo(function PieceWave({ peaks, perSec, start, end, count, volumeDb, color, noRed }: {
+  peaks: number[]; perSec: number; start: number; end: number; count: number; volumeDb: number; color: string; noRed: boolean
+}) {
+  const paths = useMemo(() => {
+    const bars = levelBars(slicePeaks(peaks, perSec, start, end, count), gainFor(volumeDb))
+    let normal = ''
+    let loud = ''
+    bars.forEach((bar, i) => {
+      const d = `M${i} ${((1 - bar.h) / 2).toFixed(3)}h0.7v${bar.h.toFixed(3)}h-0.7z`
+      if (bar.loud && !noRed) loud += d
+      else normal += d
+    })
+    return { normal, loud, n: Math.max(1, bars.length) }
+  }, [peaks, perSec, start, end, count, volumeDb, noRed])
+  return (
+    <svg className="absolute inset-x-0 top-1 bottom-1 w-full h-[calc(100%-8px)] pointer-events-none"
+      preserveAspectRatio="none" viewBox={`0 0 ${paths.n} 1`}>
+      <path d={paths.normal} fill={color} />
+      {paths.loud && <path d={paths.loud} fill={LOUD_COLOR} />}
+    </svg>
+  )
+})
 
 interface StemPiecesProps {
   stem: Stem
@@ -36,10 +62,13 @@ interface StemPiecesProps {
   /** The stem's levels (hooks/useStemPeaks), `perSec` per second; null while loading. */
   peaks: number[] | null
   perSec: number
+  /** The original voices once the dub replaced them: pieces not kept in the export are drawn dimmed, never red. */
+  dimmed?: boolean
 }
 
 export function StemPieces({
   stem, pieces, duration, zoom, pxPerSec, activeTool, color, selectedId, onSelect, onCommit, onContextMenu, peaks, perSec,
+  dimmed = false,
 }: StemPiecesProps) {
   // The list while an edge, a fade or a volume line is being dragged
   const [draft, setDraft] = useState<StemPiece[] | null>(null)
@@ -72,16 +101,21 @@ export function StemPieces({
       last = move(ev.clientX - startX, ev.clientY - startY)
       if (last) setDraft(last)
     }
-    const onUp = (ev: PointerEvent) => {
-      el.releasePointerCapture(ev.pointerId)
+    const end = (ev: PointerEvent, save: boolean) => {
+      if (el.hasPointerCapture(ev.pointerId)) el.releasePointerCapture(ev.pointerId)
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onCancel)
       setDraft(null)
+      setVolumeTip(null)
       useEditorStore.getState().setLivePieceVolume(null)
-      if (last && JSON.stringify(last) !== JSON.stringify(pieces)) onCommit(last, label)
+      if (save && last && JSON.stringify(last) !== JSON.stringify(pieces)) onCommit(last, label)
     }
+    const onUp = (ev: PointerEvent) => end(ev, true)
+    const onCancel = (ev: PointerEvent) => end(ev, false)
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onCancel)
   }
 
   return (
@@ -133,19 +167,13 @@ export function StemPieces({
             title={stem === 'music' ? 'Music & effects' : gold ? 'Original voice — in the export' : 'Original voice'}
           >
             {/* Its part of the stem, at its own volume */}
-            {peaks && (() => {
-              const count = Math.max(1, Math.floor(width / 3))
-              const bars = levelBars(slicePeaks(peaks, perSec, p.start_time, p.end_time, count), gainFor(p.volume_db))
-              return (
-                <svg className="absolute inset-x-0 top-1 bottom-1 w-full h-[calc(100%-8px)] pointer-events-none opacity-90"
-                  preserveAspectRatio="none" viewBox={`0 0 ${Math.max(1, bars.length)} 1`}>
-                  {bars.map((bar, i) => (
-                    <rect key={i} x={i} y={(1 - bar.h) / 2} width={0.7} height={bar.h} rx={0.15}
-                      fill={bar.loud ? LOUD_COLOR : gold ? '#fbbf24' : color} />
-                  ))}
-                </svg>
-              )
-            })()}
+            {peaks && (
+              <div className={cn('absolute inset-0', dimmed && !gold ? 'opacity-40' : 'opacity-90')}>
+                <PieceWave peaks={peaks} perSec={perSec} start={p.start_time} end={p.end_time}
+                  count={Math.max(1, Math.floor(width / 3))} volumeDb={p.volume_db}
+                  color={gold ? '#fbbf24' : dimmed ? DIM_COLOR : color} noRed={dimmed && !gold} />
+              </div>
+            )}
             {gold && <Star size={11} className="absolute top-1 left-1.5 text-amber-300 fill-amber-300 pointer-events-none" />}
 
             {/* Fades: shaded slopes */}
@@ -173,12 +201,17 @@ export function StemPieces({
                     className="absolute left-3 right-3 h-[9px] cursor-ns-resize group/vol"
                     style={{ top: `calc(${(1 - volumeToFraction(p.volume_db)) * 100}% - 4px)` }}
                     aria-label="Volume"
+                    onDoubleClick={(e) => {
+                      // Back to 0 dB
+                      e.stopPropagation()
+                      if (p.volume_db !== 0) onCommit(pieces.map((x) => (x.id === p.id ? { ...x, volume_db: 0 } : x)), 'Change volume')
+                    }}
                     onPointerDown={(e) => {
-                      const band = (e.currentTarget.parentElement ?? e.currentTarget).getBoundingClientRect()
+                      // 2 px per dB from where it was grabbed, after a small dead zone
                       const x0 = e.clientX
                       const y0 = e.clientY
                       drag(e, (dx, dy) => {
-                        const db = volumeAtPointer(y0 + dy, band.top, band.height)
+                        const db = volumeAfterDrag(p.volume_db, dy)
                         setVolumeTip({ id: p.id, db, x: x0 + dx, y: y0 + dy })
                         useEditorStore.getState().setLivePieceVolume({ id: p.id, db })
                         return pieces.map((x) => (x.id === p.id ? { ...x, volume_db: db } : x))

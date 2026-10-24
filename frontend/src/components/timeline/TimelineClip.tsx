@@ -13,7 +13,7 @@ import {
   clampFades, effectiveSpeed, isVoiceOutdated, isVoiced, selectionTargets, shiftedVolume, trimEnd, trimStart, voiceUrl,
   waveformSlice,
 } from '@/lib/clipRules'
-import { dbLabel, gainFor, levelBars, peaksFrom, volumeAtPointer, volumeTop } from '@/lib/waveform'
+import { dbLabel, gainFor, levelBars, peaksFrom, volumeAfterDrag, volumeTop } from '@/lib/waveform'
 import { dropSpot, planDrop, type DropSpot } from '@/lib/tracks'
 import { previewClip } from '@/hooks/useVoicePlayback'
 import { DragTip } from './DragTip'
@@ -47,8 +47,8 @@ interface InteractiveSegmentProps {
   onCommitLayout: (changes: LayoutChange[], label: string) => void
   /** A clip setting changed on the clip itself (fades, the volume line): one PATCH + one undo step. */
   onPatch?: (seg: Segment, after: SegmentUpdate, before: SegmentUpdate, label: string) => void
-  /** A volume line was dragged: these clips move by `delta` dB (one undo step); clears the live volume when saved. */
-  onVolumeChange?: (ids: string[], delta: number) => void
+  /** A volume line was dragged: each clip's new dB (one undo step); clears the live volume once saved. */
+  onVolumeChange?: (targets: Record<string, number>) => void
   onSelect: (seg: Segment) => void
   onContextMenu?: (seg: Segment, x: number, y: number) => void
   isPersisting?: boolean
@@ -109,14 +109,14 @@ export const InteractiveSegment = memo(function InteractiveSegment({
   const [fadeDraft, setFadeDraft] = useState<{ fade_in_secs: number; fade_out_secs: number } | null>(null)
   // A volume line being dragged — this clip's, or another selected clip's —
   // moves this clip's line by the same amount (editorStore.liveClipVolume)
-  const liveDelta = useEditorStore((s) => (s.liveClipVolume?.ids.includes(seg.id) ? s.liveClipVolume.delta : null))
+  const liveTarget = useEditorStore((s) => s.liveClipVolume?.[seg.id] ?? null)
   // While this clip's own line is dragged: the pointer (its dB tip follows it) and the tip's text
   const [volumeTip, setVolumeTip] = useState<{ x: number; y: number; text: string } | null>(null)
   const fadeIn = fadeDraft?.fade_in_secs ?? seg.fade_in_secs ?? 0
   const fadeOut = fadeDraft?.fade_out_secs ?? seg.fade_out_secs ?? 0
   const fadeInPx = timeToPixels(fadeIn, zoom, PX_PER_SEC)
   const fadeOutPx = timeToPixels(fadeOut, zoom, PX_PER_SEC)
-  const shownVolume = liveDelta != null ? shiftedVolume(seg.volume_db ?? 0, liveDelta) : seg.volume_db ?? 0
+  const shownVolume = liveTarget ?? seg.volume_db ?? 0
 
   // Drag a top corner inward: a fade, as long as the drag (never past the other fade)
   const startFadeDrag = (e: React.PointerEvent<HTMLDivElement>, side: 'in' | 'out') => {
@@ -149,38 +149,52 @@ export const InteractiveSegment = memo(function InteractiveSegment({
     window.addEventListener('pointerup', up)
   }
 
-  // Drag the volume line up or down — it follows the pointer inside the waveform
-  // band, like CapCut; the waveform and the preview follow at once, saved on release
+  // Drag the volume line up or down: 2 px per dB from where it was grabbed (so it
+  // never jumps), after a small dead zone; the waveform, the preview and the
+  // dB tip follow at once, saved on release. A selected clip carries the whole
+  // selection's voiced clips with it, each by the same dB.
   const startVolumeDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
     e.stopPropagation()
     e.preventDefault()
     const el = e.currentTarget
-    const band = (el.parentElement ?? el).getBoundingClientRect()
     el.setPointerCapture(e.pointerId)
+    const y0 = e.clientY
     const from = seg.volume_db ?? 0
-    // A selected clip carries the whole selection's voiced clips with it
-    const ids = selectionTargets(useEditorStore.getState().selectedSegmentIds, seg.id)
-      .filter((id) => id === seg.id || allSegments.some((s) => s.id === id && isVoiced(s)))
-    let delta = 0
+    const voices = selectionTargets(useEditorStore.getState().selectedSegmentIds, seg.id)
+      .map((id) => (id === seg.id ? seg : allSegments.find((s) => s.id === id)))
+      .filter((s): s is Segment => !!s && (s.id === seg.id || isVoiced(s)))
+    let targets: Record<string, number> | null = null
     const move = (ev: PointerEvent) => {
-      delta = volumeAtPointer(ev.clientY, band.top, band.height) - from
-      useEditorStore.getState().setLiveClipVolume({ ids, delta })
+      const delta = volumeAfterDrag(from, ev.clientY - y0) - from
+      targets = Object.fromEntries(voices.map((s) => [s.id, shiftedVolume(s.volume_db ?? 0, delta)]))
+      useEditorStore.getState().setLiveClipVolume(targets)
       setVolumeTip({
         x: ev.clientX, y: ev.clientY,
-        text: ids.length > 1 ? `${dbLabel(delta)} on ${ids.length} clips` : dbLabel(shiftedVolume(from, delta)),
+        text: voices.length > 1 ? `${dbLabel(delta)} on ${voices.length} clips` : dbLabel(from + delta),
       })
     }
-    const up = (ev: PointerEvent) => {
-      el.releasePointerCapture(ev.pointerId)
+    const end = (ev: PointerEvent, save: boolean) => {
+      if (el.hasPointerCapture(ev.pointerId)) el.releasePointerCapture(ev.pointerId)
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', cancel)
       setVolumeTip(null)
-      if (delta !== 0 && onVolumeChange) onVolumeChange(ids, delta)
-      else useEditorStore.getState().setLiveClipVolume(null)
+      const changed = targets && voices.some((s) => targets![s.id] !== (s.volume_db ?? 0))
+      if (save && changed && onVolumeChange) onVolumeChange(targets!)
+      else if (useEditorStore.getState().liveClipVolume === targets) useEditorStore.getState().setLiveClipVolume(null)
     }
+    const up = (ev: PointerEvent) => end(ev, true)
+    const cancel = (ev: PointerEvent) => end(ev, false)
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', cancel)
+  }
+
+  // Double-click the volume line: back to 0 dB
+  const resetVolume = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if ((seg.volume_db ?? 0) !== 0) onVolumeChange?.({ [seg.id]: 0 })
   }
 
   // Double-click: hear this clip's window alone — what the export plays for it
@@ -551,14 +565,15 @@ export const InteractiveSegment = memo(function InteractiveSegment({
             style={{ top: volumeTop(shownVolume, WAVE_BAND_PX) }}
             aria-label="Volume"
             onPointerDown={startVolumeDrag}
+            onDoubleClick={resetVolume}
           >
             <div className={cn(
               'absolute inset-x-0 top-1/2 h-px',
-              liveDelta != null ? 'bg-brand-300' : 'bg-white/45 group-hover/vol:bg-white/90',
+              liveTarget != null ? 'bg-brand-300' : 'bg-white/45 group-hover/vol:bg-white/90',
             )} />
             <span className={cn(
               'absolute right-0 top-1/2 -translate-y-1/2 rounded bg-ink-900/90 px-1.5 text-[10.5px] font-semibold text-white tabular-nums pointer-events-none',
-              liveDelta != null ? 'hidden' : 'hidden group-hover/vol:block',
+              liveTarget != null ? 'hidden' : 'hidden group-hover/vol:block',
             )}>
               {dbLabel(shownVolume)}
             </span>

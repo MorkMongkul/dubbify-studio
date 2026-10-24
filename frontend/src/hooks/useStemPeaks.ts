@@ -9,6 +9,18 @@ import { peaksFrom } from '@/lib/waveform'
 export const PEAKS_PER_SEC = 50
 
 const cache = new Map<string, number[]>()
+// A decode already on its way: a second row or a remount waits for it instead of decoding again
+const inFlight = new Map<string, Promise<number[]>>()
+
+// Decoded at 8 kHz (the preview stems' own rate): levels for drawing need no more,
+// and a 44.1 kHz buffer would be 5.5× the memory and the scan.
+async function decodeLevels(url: string): Promise<number[]> {
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const buffer = await new OfflineAudioContext(1, 1, 8000).decodeAudioData(await res.arrayBuffer())
+  const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c))
+  return peaksFrom(channels, buffer.sampleRate, PEAKS_PER_SEC)
+}
 
 export function useStemPeaks(url: string | null | undefined): number[] | null {
   const [loaded, setLoaded] = useState<{ url: string; peaks: number[] } | null>(null)
@@ -16,20 +28,17 @@ export function useStemPeaks(url: string | null | undefined): number[] | null {
   useEffect(() => {
     if (!url || cache.has(url)) return
     let active = true
-    ;(async () => {
-      try {
-        const res = await fetch(url)
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const buffer = await new OfflineAudioContext(1, 1, 44100).decodeAudioData(await res.arrayBuffer())
-        const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c))
-        const peaks = peaksFrom(channels, buffer.sampleRate, PEAKS_PER_SEC)
-        cache.set(url, peaks)
-        if (active) setLoaded({ url, peaks })
-      } catch (err) {
-        // The row keeps its plain stem waveform (TimelineEditor falls back to it)
-        console.warn('Stem levels failed for', url, err)
-      }
-    })()
+    let pending = inFlight.get(url)
+    if (!pending) {
+      pending = decodeLevels(url)
+      inFlight.set(url, pending)
+      pending.then((peaks) => cache.set(url, peaks), () => {}).finally(() => inFlight.delete(url))
+    }
+    pending.then(
+      (peaks) => { if (active) setLoaded({ url, peaks }) },
+      // The row keeps its plain stem waveform (TimelineEditor falls back to it)
+      (err) => console.warn('Stem levels failed for', url, err),
+    )
     return () => { active = false }
   }, [url])
 

@@ -6,7 +6,6 @@ import { subscribeWithSelector } from 'zustand/middleware'
 import type { JobAction } from '@/lib/jobProgress'
 import type { SegmentOverlay } from '@/lib/segmentOverlay'
 import type { LayoutChange } from '@/lib/tracks'
-import { toggleInSelection } from '@/lib/clipRules'
 
 // Which panel the left icon rail has open in the dynamic dock. Settings is a
 // window of its own (settingsOpen), not a panel.
@@ -79,11 +78,12 @@ interface EditorStore {
   clearPendingLayout: (ids: string[]) => void
   updateSegmentText: (id: string, text: string) => void
   clearSegmentTextOverride: (id: string) => void
-  // A volume line being dragged: these clips (the dragged one, or the whole
-  // selection it belongs to) move by `delta` dB; the preview plays and the
-  // timeline draws that until the save lands (then null)
-  liveClipVolume: { ids: string[]; delta: number } | null
-  setLiveClipVolume: (v: { ids: string[]; delta: number } | null) => void
+  // A volume line being dragged: the new dB of each clip it moves (the dragged
+  // one, or the whole selection it belongs to); the preview plays and the
+  // timeline draws these until the save lands (then null). Targets, not a
+  // change, so a refetch of already-saved clips never applies it twice.
+  liveClipVolume: Record<string, number> | null
+  setLiveClipVolume: (v: Record<string, number> | null) => void
   // Hear the mix in short snippets while dragging the playhead. A preference:
   // outside DEFAULT_STATE, so switching episodes keeps it.
   scrubAudio: boolean
@@ -143,7 +143,8 @@ interface EditorStore {
   setAssistantLineId: (id: string | null) => void
   setSelectedSpeaker: (id: string | null) => void
   toggleSelectSegment: (id: string) => void
-  /** The clip last picked with a plain click: Shift+click starts a selection from it. */
+  /** The clip last picked with a plain click on the timeline: a timeline Shift+click starts
+   *  a selection from it while it's still the active clip (TimelineEditor.handleShiftSelect). */
   selectionAnchorId: string | null
   setSelectionAnchor: (id: string | null) => void
   toggleSelectAllSegments: (ids: string[]) => void
@@ -184,7 +185,7 @@ const DEFAULT_STATE = {
   leftPanelCollapsed: false,
   rightPanelCollapsed: false,
   segmentPositions: {},
-  liveClipVolume: null as { ids: string[]; delta: number } | null,
+  liveClipVolume: null as Record<string, number> | null,
   selectedPiece: null as { stem: 'music' | 'voices'; id: string } | null,
   livePieceVolume: null as { id: string; db: number } | null,
   mutedTrackIds: {},
@@ -277,7 +278,9 @@ export const useEditorStore = create<EditorStore>()(
     setAssistantLineId: (id) => set({ assistantLineId: id }),
     setSelectedSpeaker: (id) => set({ selectedSpeakerId: id }),
     toggleSelectSegment: (id) => set((s) => ({
-      selectedSegmentIds: toggleInSelection(s.selectedSegmentIds, s.selectionAnchorId, id),
+      selectedSegmentIds: s.selectedSegmentIds.includes(id)
+        ? s.selectedSegmentIds.filter((x) => x !== id)
+        : [...s.selectedSegmentIds, id]
     })),
     setSelectionAnchor: (id) => set({ selectionAnchorId: id }),
     toggleSelectAllSegments: (ids) => set((s) => {

@@ -3,13 +3,21 @@
 // CapCut: bars are drawn at the sound's real level (not stretched to fill the
 // clip), grow and shrink while the line is dragged, and turn "loud" where they
 // pass the export's limit. Pure — covered by `npm test`.
-import { fractionToVolume, volumeToFraction } from './clipRules.ts'
+import { shiftedVolume, volumeToFraction } from './clipRules.ts'
 
 /** −1 dBFS: the export never lets a voice peak above this (voice_level.CEILING_DB). */
 export const CEILING = 10 ** (-1 / 20)
 
 /** The thinnest bar drawn, as a fraction of the band: silence reads as a line. */
 const FLOOR = 0.04
+
+/** Red starts a little past the limit: a voice the leveller holds at −1 dBFS (rounded to
+ *  0.1 dB, plus what decoding adds) is fine, not too loud. */
+const LOUD = CEILING * 10 ** (0.3 / 20)
+
+/** Pixels of drag per dB on a volume line, and the drag it takes to change anything at all. */
+const PX_PER_DB = 2
+const DEAD_ZONE_PX = 3
 
 /** Amplitude factor for a gain in dB. */
 export function gainFor(db: number): number {
@@ -20,13 +28,16 @@ export function gainFor(db: number): number {
 export function levelBars(peaks: number[], gain: number): { h: number; loud: boolean }[] {
   return peaks.map((p) => {
     const level = p * gain
-    return { h: Math.max(FLOOR, Math.min(1, level)), loud: level >= CEILING - 1e-9 }
+    return { h: Math.max(FLOOR, Math.min(1, level)), loud: level > LOUD }
   })
 }
 
-/** The volume (whole dB) for a pointer at `y`, in a band `height` px tall starting at `top`. */
-export function volumeAtPointer(y: number, top: number, height: number): number {
-  return fractionToVolume(1 - (y - top) / Math.max(1, height))
+/** A volume line grabbed at `from` dB and dragged `dy` px (down is positive): 2 px per dB
+ *  from where it was grabbed, so it never jumps and every whole dB is reachable; a
+ *  click's jitter (under 3 px) changes nothing. */
+export function volumeAfterDrag(from: number, dy: number): number {
+  if (Math.abs(dy) < DEAD_ZONE_PX) return from
+  return shiftedVolume(from, Math.round(-dy / PX_PER_DB))
 }
 
 /** How far down its band (px) the line sits for `db`. */

@@ -22,7 +22,8 @@ import { InteractiveSegment, LANE_HEIGHT } from './TimelineClip'
 import { StemPieces } from './StemPieces'
 import { deletePiece, keysActOn, newPieceId, setPiece, splitPiece } from '@/lib/stemPieces'
 import { clipAtPlayhead, trackRows } from '@/lib/tracks'
-import { effectiveSpeed, isVoiced, overrunSpans, selectionTargets, shiftedVolume, trimEnd, trimStart } from '@/lib/clipRules'
+import { effectiveSpeed, isVoiced, overrunSpans, selectionTargets, toggleInSelection, trimEnd, trimStart } from '@/lib/clipRules'
+import { saveEach } from '@/lib/batchSave'
 import { isTypingTarget } from '@/lib/transport'
 import { redoWithToast, undoWithToast } from '@/lib/undoActions'
 import { layoutPlace } from '@/lib/undoPatches'
@@ -33,7 +34,7 @@ const PX_PER_SEC = 100 // base pixels per second at zoom=1
 const STEM_HEIGHT = 64  // BGM / Vocals stem rows
 const STRIP_HEIGHT = 44 // the picture strip
 // The speeds the right-click menu offers
-const SPEEDS = [0.8, 0.9, 1.0, 1.1, 1.2, 1.25, 1.5]
+const SPEEDS = [0.5, 0.75, 0.8, 0.9, 1.0, 1.1, 1.2, 1.25, 1.5, 1.75, 2.0]
 
 // A toolbar button: an icon, its name and shortcut in the tooltip
 function ToolButton({ label, icon: Icon, onClick, disabled, pressed, danger, busy }: {
@@ -65,15 +66,6 @@ function ToolButton({ label, icon: Icon, onClick, disabled, pressed, danger, bus
   )
 }
 const MIN_CLIP_SECS = 0.1
-
-// Saves several clips a few at a time — each change re-renders a voice on the server
-async function patchEach(ids: string[], patchFor: (id: string) => SegmentUpdate): Promise<Segment[]> {
-  const out: Segment[] = []
-  for (let i = 0; i < ids.length; i += 4) {
-    out.push(...await Promise.all(ids.slice(i, i + 4).map((id) => segmentsApi.update(id, patchFor(id)))))
-  }
-  return out
-}
 
 // Format playhead time down to fractions of a second: e.g., 0:01.23
 function formatPlayheadTime(seconds: number): string {
@@ -150,7 +142,6 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const toggleSnap        = useEditorStore((s) => s.toggleSnap)
   const selectedSegmentIds = useEditorStore((s) => s.selectedSegmentIds)
   const setSelectedSegments = useEditorStore((s) => s.setSelectedSegments)
-  const toggleSelectSegment = useEditorStore((s) => s.toggleSelectSegment)
 
   const { mutate: layoutSegments, isPending: isLayingOut, variables: layoutVariables } = useLayoutSegments()
   const { mutate: splitSegment, isPending: isSplittingClip, variables: splitVariables } = useSplitSegment()
@@ -443,50 +434,55 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
       .map((id) => segments.find((s) => s.id === id))
       .filter((s): s is Segment => !!s && isVoiced(s) && Math.abs(heard(s) - speed) >= 0.0005)
     if (!targets.length) return
-    try {
-      const updated = await patchEach(targets.map((s) => s.id), () => ({ voice_speed: speed }))
-      putSegments(qc, jobId, updated)
-      qc.invalidateQueries({ queryKey: ['segments', jobId] })
-      const changes = targets.map((s) => ({
-        id: s.id,
-        before: { voice_speed: heard(s), lane_index: s.lane_index ?? 0 },
-        after: { voice_speed: speed, lane_index: updated.find((u) => u.id === s.id)?.lane_index ?? 0 },
-      }))
-      if (changes.length === 1) recordSegmentChange(qc, jobId, changes[0].id, changes[0].before, changes[0].after, 'Change voice speed')
-      else recordSegmentsChange(qc, jobId, changes, `Change voice speed (${changes.length} clips)`)
-    } catch {
-      toast.error('Failed to update voice speed')
-      qc.invalidateQueries({ queryKey: ['segments', jobId] })
-    }
+    // A failure never loses the clips that did change: they keep their undo step
+    const { ok: updated, failed } = await saveEach(targets.map((s) => s.id), (id) => segmentsApi.update(id, { voice_speed: speed }))
+    putSegments(qc, jobId, updated)
+    qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    const changes = targets.filter((s) => updated.some((u) => u.id === s.id)).map((s) => ({
+      id: s.id,
+      before: { voice_speed: heard(s), lane_index: s.lane_index ?? 0 },
+      after: { voice_speed: speed, lane_index: updated.find((u) => u.id === s.id)?.lane_index ?? 0 },
+    }))
+    if (changes.length === 1) recordSegmentChange(qc, jobId, changes[0].id, changes[0].before, changes[0].after, 'Change voice speed')
+    else if (changes.length > 1) recordSegmentsChange(qc, jobId, changes, `Change voice speed (${changes.length} clips)`)
+    if (failed.length) toast.error(`Couldn't change the speed of ${failed.length} clip${failed.length > 1 ? 's' : ''}`)
   }, [jobId, qc, segments])
 
-  // A volume line dragged on a clip, or on one of a selection: every clip moves
-  // by the same dB, keeping their balance. One undo step; the live volume the
-  // drag set (editorStore.liveClipVolume) stays until the save lands.
-  const handleVolumeChange = useCallback(async (ids: string[], delta: number) => {
-    const clear = () => useEditorStore.getState().setLiveClipVolume(null)
+  // A volume line dragged on a clip, or on one of a selection (every clip moved
+  // by the same dB), or double-clicked back to 0 dB. One undo step for the clips
+  // that saved; the live volume the drag set stays until the save lands, and is
+  // cleared only if no newer drag has replaced it.
+  const handleVolumeChange = useCallback(async (targets: Record<string, number>) => {
+    const clear = () => {
+      if (useEditorStore.getState().liveClipVolume === targets) useEditorStore.getState().setLiveClipVolume(null)
+    }
     if (!jobId) return clear()
-    const changes = ids.flatMap((id) => {
+    const changes = Object.entries(targets).flatMap(([id, after]) => {
       const s = segments.find((x) => x.id === id)
-      if (!s) return []
-      const before = s.volume_db ?? 0
-      const after = shiftedVolume(before, delta)
-      return after === before ? [] : [{ id, before: { volume_db: before }, after: { volume_db: after } }]
+      const before = s?.volume_db ?? 0
+      return !s || after === before ? [] : [{ id, before: { volume_db: before }, after: { volume_db: after } }]
     })
     if (!changes.length) return clear()
-    try {
-      const updated = await patchEach(changes.map((c) => c.id), (id) => changes.find((c) => c.id === id)!.after)
-      putSegments(qc, jobId, updated)
-      qc.invalidateQueries({ queryKey: ['segments', jobId] })
-      if (changes.length === 1) recordSegmentChange(qc, jobId, changes[0].id, changes[0].before, changes[0].after, 'Change volume')
-      else recordSegmentsChange(qc, jobId, changes, `Change volume (${changes.length} clips)`)
-    } catch {
-      toast.error("Couldn't save the volume")
-      qc.invalidateQueries({ queryKey: ['segments', jobId] })
-    } finally {
-      clear()
-    }
+    const { ok: updated, failed } = await saveEach(changes.map((c) => c.id), (id) => segmentsApi.update(id, { volume_db: targets[id] }))
+    putSegments(qc, jobId, updated)
+    qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    const saved = changes.filter((c) => updated.some((u) => u.id === c.id))
+    if (saved.length === 1) recordSegmentChange(qc, jobId, saved[0].id, saved[0].before, saved[0].after, 'Change volume')
+    else if (saved.length > 1) recordSegmentsChange(qc, jobId, saved, `Change volume (${saved.length} clips)`)
+    if (failed.length) toast.error(`Couldn't change the volume of ${failed.length} clip${failed.length > 1 ? 's' : ''}`)
+    clear()
   }, [jobId, qc, segments])
+
+  // Shift+click on a clip: add it to the selection, or take it out. Right after a
+  // plain click, the clip picked then joins too (like CapCut) — only while it's
+  // still the active clip and still exists, so a clip picked long ago, a hovered
+  // transcript row or playback never sneaks into the selection.
+  const handleShiftSelect = useCallback((id: string) => {
+    const st = useEditorStore.getState()
+    const anchor = st.selectionAnchorId && st.selectionAnchorId === st.activeSegmentId
+      && segments.some((s) => s.id === st.selectionAnchorId) ? st.selectionAnchorId : null
+    st.setSelectedSegments(toggleInSelection(st.selectedSegmentIds, anchor, id))
+  }, [segments])
 
   // A setting changed on the clip itself (fades, the volume line): one PATCH, one undo step
   const handleClipPatch = useCallback(async (seg: Segment, after: SegmentUpdate, before: SegmentUpdate, label: string) => {
@@ -1315,7 +1311,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                 {!isStage1Processing && stemPieceLists?.made && (
                   <StemPieces
                     stem="voices" pieces={stemPieceLists.voices} duration={duration} zoom={zoom} pxPerSec={PX_PER_SEC}
-                    peaks={voicesPeaks} perSec={PEAKS_PER_SEC}
+                    peaks={voicesPeaks} perSec={PEAKS_PER_SEC} dimmed={vocalsReplaced}
                     activeTool={activeTool} color="#34d399"
                     selectedId={selectedPiece?.stem === 'voices' ? selectedPiece.id : null}
                     onSelect={(id) => selectPiece('voices', id)}
@@ -1371,7 +1367,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                           color={color}
                           isActive={isActive}
                           isSelected={selectedSegmentIds.includes(seg.id)}
-                          onToggleSelect={toggleSelectSegment}
+                          onToggleSelect={handleShiftSelect}
                           isApproved={isApproved}
                           zoom={zoom}
                           duration={duration}
