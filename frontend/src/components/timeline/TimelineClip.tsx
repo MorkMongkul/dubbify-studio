@@ -46,9 +46,8 @@ interface InteractiveSegmentProps {
   /** One layout request + one undo step for the gesture (TimelineEditor.handleCommitLayout). */
   /** `moving`: the clips a drag moved (a drop that inserts a track moves the switches below it). */
   onCommitLayout: (changes: LayoutChange[], label: string, moving?: string[]) => void
-  /** Its track's switches: locked = no edits; hidden = its subtitle isn't shown; muted = not heard. */
+  /** Its track's switches: locked = no edits; muted = not heard. */
   locked?: boolean
-  hidden?: boolean
   muted?: boolean
   /** Every locked track: nothing is dropped onto them, and a group drag leaves their clips. */
   lockedLanes?: Set<number>
@@ -79,7 +78,7 @@ export const InteractiveSegment = memo(function InteractiveSegment({
   isPersisting, isRegenerating, isSplitting,
   mutedTrackIds, soloedTrackIds, volume,
   activeTool, snapEnabled, onSplit,
-  locked = false, hidden = false, muted = false, lockedLanes,
+  locked = false, muted = false, lockedLanes,
 }: InteractiveSegmentProps) {
   const elementRef = useRef<HTMLDivElement>(null)
 
@@ -390,8 +389,8 @@ export const InteractiveSegment = memo(function InteractiveSegment({
         activeTool === 'blade' ? 'cursor-crosshair' : locked ? 'cursor-default' : 'cursor-grab active:cursor-grabbing',
         isActive && 'active border-brand-500 outline-2 outline-brand-500 ring-2 ring-brand-500/20',
         isSplitting && 'opacity-60',
-        // A hidden or muted track's clips are drawn faded
-        (hidden || muted) && !isSplitting && 'opacity-50',
+        // A muted track's clips are drawn faded
+        muted && !isSplitting && 'opacity-50',
       )}
       style={{
         left,

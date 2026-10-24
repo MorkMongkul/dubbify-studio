@@ -1,4 +1,4 @@
-// Each voice track's switches — lock, hide, mute — and its kind (src/lib/trackFlags.ts).
+// Each voice track's switches — lock, mute (hide went with the subtitles) — and its kind (src/lib/trackFlags.ts).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -6,7 +6,7 @@ import {
 } from '../src/lib/trackFlags.ts'
 import { planDrop } from '../src/lib/tracks.ts'
 
-const OFF = { locked: false, hidden: false, muted: false }
+const OFF = { locked: false, muted: false }
 const clip = (id: string, start: number, end: number, lane: number, voiced = false) =>
   ({ id, start_time: start, end_time: end, lane_index: lane, tts_audio_url: voiced ? '/x.wav' : null, tts_duration_secs: voiced ? end - start : 0 })
 
@@ -30,8 +30,8 @@ test('a drop that inserts a track moves the switches below it', () => {
   const changes = planDrop(segs, ['m'], 'm', 0, { kind: 'insert', boundary: 1 })
   const shift = laneShift(segs, changes, ['m'])
   assert.deepEqual(shift, { from: 1, by: 1 })
-  assert.deepEqual(shiftSwitches({ 0: { ...OFF, hidden: true }, 1: { ...OFF, locked: true } }, 1, 1),
-    { 0: { ...OFF, hidden: true }, 2: { ...OFF, locked: true } })
+  assert.deepEqual(shiftSwitches({ 0: { ...OFF, muted: true }, 1: { ...OFF, locked: true } }, 1, 1),
+    { 0: { ...OFF, muted: true }, 2: { ...OFF, locked: true } })
   assert.equal(laneShift(segs, planDrop(segs, ['m'], 'm', 0, { kind: 'onto', row: 1 }), ['m']), null)
 })
 
@@ -44,10 +44,10 @@ test('a drop onto a locked track makes a new track instead', () => {
 })
 
 test('the export window names what will be left out', () => {
-  const flags = { 1: { ...OFF, muted: true }, 4: { ...OFF, hidden: true, muted: true }, 7: { ...OFF, locked: true } }
+  const flags = { 1: { ...OFF, muted: true }, 4: { ...OFF, muted: true }, 7: { ...OFF, locked: true } }
   assert.deepEqual(exportWarnings([0, 1, 4, 7], flags), [
     "Track 2 is muted: its voices won't be in the export",
-    "Track 3 is muted and hidden: its voices and subtitles won't be in the export",
+    "Track 3 is muted: its voices won't be in the export",
   ])
   assert.deepEqual(exportWarnings([0], {}), [])
 })

@@ -6,7 +6,7 @@ import {
   ZoomIn, ZoomOut, Maximize2, Loader2, Scissors, X, RefreshCw,
   MousePointer2, SplitSquareHorizontal, Trash2, Magnet, Wand2, Layers, ChevronDown, Undo2, Redo2,
   ArrowLeftToLine, ArrowRightToLine, Gauge, AudioLines, Music, Volume2, VolumeX, Headphones, HeadphoneOff,
-  ArrowDownWideNarrow, Star, Film, Lock, LockOpen, Eye, EyeOff, Type, type LucideIcon,
+  ArrowDownWideNarrow, Star, Film, Lock, LockOpen, Type, type LucideIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Segment, SegmentUpdate, Speaker, Job, LayoutChange, Stem, StemPiece } from '@/types'
@@ -363,7 +363,6 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     const after = withSwitch(before, lane, key, on)
     const label = {
       locked: on ? 'Lock track' : 'Unlock track',
-      hidden: on ? 'Hide track' : 'Show track',
       muted: on ? 'Mute track' : 'Unmute track',
     }[key]
     setTrackFlags({ jobId, flags: after }, {
@@ -1428,8 +1427,6 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                     <div className="ml-auto flex items-center gap-1">
                       <TrackSwitch on={laneSwitches.locked} label={laneSwitches.locked ? 'Unlock track' : 'Lock track'}
                         icon={laneSwitches.locked ? Lock : LockOpen} onClick={() => toggleTrackSwitch(laneIdx, 'locked')} />
-                      <TrackSwitch on={laneSwitches.hidden} label={laneSwitches.hidden ? 'Show track' : 'Hide track'}
-                        icon={laneSwitches.hidden ? EyeOff : Eye} onClick={() => toggleTrackSwitch(laneIdx, 'hidden')} />
                       {laneKind === 'audio' && (
                         <TrackSwitch on={laneSwitches.muted} label={laneSwitches.muted ? 'Unmute track' : 'Mute track'}
                           icon={laneSwitches.muted ? VolumeX : Volume2} onClick={() => toggleTrackSwitch(laneIdx, 'muted')} />
@@ -1479,7 +1476,6 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                           snapEnabled={snapEnabled}
                           onSplit={handleSplit}
                           locked={laneSwitches.locked}
-                          hidden={laneSwitches.hidden}
                           muted={laneSwitches.muted}
                           lockedLanes={lockedLanes}
                         />

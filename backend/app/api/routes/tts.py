@@ -593,7 +593,7 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
 
         # Muted tracks' voices aren't exported (the track headers' switches)
         all_voiced = segments
-        segments, _ = timeline.export_lines(all_voiced, timeline.flags_from(job.track_flags))
+        segments = timeline.export_lines(all_voiced, timeline.flags_from(job.track_flags))
 
         # Stored paths may be relative (older rows) — resolve them here so the
         # export works regardless of the process's working directory.

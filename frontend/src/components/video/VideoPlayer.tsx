@@ -28,7 +28,7 @@ interface VideoPlayerProps {
   frameRate?: number | null
   /** The music & effects dip under the voices (job.duck_music). */
   duckMusic?: boolean
-  /** Each voice track's switches: a muted track isn't heard (nor dips the music), a hidden one shows no subtitles. */
+  /** Each voice track's switches: a muted track isn't heard (nor dips the music). */
   trackFlags?: TrackFlagMap
 }
 
@@ -76,12 +76,9 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     segmentsRef.current = segments
   }, [segments])
 
-  // What the export plays and shows: muted tracks' voices aren't heard, hidden
-  // tracks' subtitles aren't shown (the track headers' switches)
+  // What the export plays: muted tracks' voices aren't heard (the track headers' switches)
   const voiceSegments = useMemo(
     () => segments.filter((s) => !switchesOf(trackFlags, s.lane_index ?? 0).muted), [segments, trackFlags])
-  const subtitleSegments = useMemo(
-    () => segments.filter((s) => !switchesOf(trackFlags, s.lane_index ?? 0).hidden), [segments, trackFlags])
 
   // ── Transport keys ────────────────────────────────────────────────────
   // J / K / L: back, stop, forward (again: 2×, then 4×). The window can't
@@ -352,7 +349,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
             playsInline
           />
           {jobId && overlays && overlays.length > 0 && (
-            <OverlayCanvas overlays={overlays} segments={subtitleSegments} jobId={jobId} currentTime={currentTime} videoPixelWidth={videoPixelWidth} />
+            <OverlayCanvas overlays={overlays} segments={segments} jobId={jobId} currentTime={currentTime} videoPixelWidth={videoPixelWidth} />
           )}
         </>
       ) : (

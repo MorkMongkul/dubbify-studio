@@ -384,7 +384,7 @@ export default function EditorPage() {
   // In-app destination picker, used whenever the native Save As dialog isn't
   // available. `reason` records why so the modal can explain itself.
   const [exportPrompt, setExportPrompt] = useState<{ path: string; reason: string } | null>(null)
-  // Muted or hidden tracks are left out of the export: say so before it starts
+  // Muted tracks are left out of the export: say so before it starts
   const [exportLeftOut, setExportLeftOut] = useState<string[] | null>(null)
 
   // Suggested filename: project name (or session id) + .mp4

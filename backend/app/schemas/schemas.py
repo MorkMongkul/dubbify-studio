@@ -68,10 +68,9 @@ class ProjectResponse(BaseModel):
 
 # ── Job schemas ───────────────────────────────────────────────
 class TrackFlags(BaseModel):
-    """A voice track's switches (timeline.FLAG_KEYS): locked = no edits; hidden =
-    its subtitles aren't shown or exported; muted = its voices aren't played or exported."""
+    """A voice track's switches (timeline.FLAG_KEYS): locked = no edits; muted = its
+    voices aren't played or exported. (Hide went with the subtitles, 0.4.0.)"""
     locked: bool = False
-    hidden: bool = False
     muted: bool = False
 
 
