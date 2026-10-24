@@ -1179,7 +1179,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
             {job?.video_url && (
               <div className="relative border-b border-timeline-grid bg-ink-950/40" style={{ height: STRIP_HEIGHT }}>
                 <div
-                  className="sticky left-0 z-10 h-full flex items-center px-2.5 shrink-0 bg-ink-900/95 backdrop-blur-sm border-r border-white/[0.06]"
+                  className="sticky left-0 z-[35] h-full flex items-center px-2.5 shrink-0 bg-ink-900 border-r border-white/[0.06]"
                   style={{ float: 'left', width: 'var(--speaker-width)' }}
                 >
                   <Tooltip content="Picture" side="right">
@@ -1205,6 +1205,8 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
               </div>
             )}
 
+            {/* Every row's header (sticky, opaque, z-[35]) stays above what scrolls under it:
+                pieces (z-10), the playhead (z-20), a clip's handles (z-30) */}
             {/* Background Music (BGM) Track */}
             <div
               className="relative border-b border-timeline-grid bg-ink-900/30"
@@ -1212,7 +1214,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
             >
               {/* Music & effects header: its icon, the dip, mute — volume lives on the pieces' lines */}
               <div
-                className="sticky left-0 z-10 h-full flex items-center gap-1.5 px-2.5 shrink-0 bg-ink-900/95 backdrop-blur-sm border-r border-white/[0.06]"
+                className="sticky left-0 z-[35] h-full flex items-center gap-1.5 px-2.5 shrink-0 bg-ink-900 border-r border-white/[0.06]"
                 style={{ float: 'left', width: 'var(--speaker-width)' }}
               >
                 <Tooltip content="Music & effects" side="right">
@@ -1292,7 +1294,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
             >
               {/* Original voices header — Analyze lives here (sticky, always visible) */}
               <div
-                className="sticky left-0 z-10 h-full flex items-center px-2.5 gap-1.5 shrink-0 bg-ink-900/95 backdrop-blur-sm border-r border-white/[0.06]"
+                className="sticky left-0 z-[35] h-full flex items-center px-2.5 gap-1.5 shrink-0 bg-ink-900 border-r border-white/[0.06]"
                 style={{ float: 'left', width: 'var(--speaker-width)' }}
               >
                 <Tooltip content={vocalsReplaced ? 'Original voices — not in the export' : 'Original voices'} side="right">
@@ -1412,7 +1414,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                   {/* Track header (sticky left): its kind (audio once a line has a voice,
                       text before), then lock, hide and — for audio — mute, like CapCut */}
                   <div
-                    className="sticky left-0 z-10 h-full shrink-0 flex items-center gap-1.5 px-2.5 bg-ink-900/95 backdrop-blur-sm border-r border-white/[0.06]"
+                    className="sticky left-0 z-[35] h-full shrink-0 flex items-center gap-1.5 px-2.5 bg-ink-900 border-r border-white/[0.06]"
                     style={{ float: 'left', width: 'var(--speaker-width)' }}
                   >
                     <Tooltip content={laneKind === 'audio' ? 'Audio track' : 'Text track'} side="right">
@@ -1440,17 +1442,6 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                     className="absolute top-0 bottom-0 right-0"
                     style={{ left: 'var(--speaker-width)' }}
                   >
-                    {/* Where the actor spoke: a bracket that stays put when the clip moves */}
-                    {laneSegments.map((seg) => seg.source_start != null && seg.source_end != null && (
-                      <div
-                        key={`span-${seg.id}`}
-                        className="absolute bottom-[2px] h-[4px] border-x-2 border-b-2 border-ink-500/80 rounded-b-[2px] pointer-events-none"
-                        style={{
-                          left: timeToPixels(seg.source_start, zoom, PX_PER_SEC),
-                          width: Math.max(2, timeToPixels(seg.source_end - seg.source_start, zoom, PX_PER_SEC)),
-                        }}
-                      />
-                    ))}
                     {laneSegments.map((seg) => {
                       const isActive = seg.id === activeSegmentId
                       const isApproved = seg.is_approved

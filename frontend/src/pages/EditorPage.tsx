@@ -34,6 +34,8 @@ import { TimelineEditor } from '@/components/timeline/TimelineEditor'
 import { TranscriptPanel } from '@/components/transcript/TranscriptPanel'
 import { OverlaysPanel } from '@/components/overlays/OverlaysPanel'
 import { EditorRail } from '@/components/layout/EditorRail'
+import { LayoutMenu } from '@/components/layout/LayoutMenu'
+import { loadLayout, saveLayout } from '@/lib/layoutStorage'
 import { SpeakersPanel } from '@/components/panels/SpeakersPanel'
 import { ProjectsPanel } from '@/components/panels/ProjectsPanel'
 import { VoicesPanel } from '@/components/panels/VoicesPanel'
@@ -44,6 +46,7 @@ import { Button } from '@/components/ui/Button'
 import { Modal, InputField } from '@/components/ui/Modal'
 import { exportWarnings } from '@/lib/trackFlags'
 import { trackRows } from '@/lib/tracks'
+import { layoutPlan, type Area, type LayoutName } from '@/lib/layouts'
 import { MoveloStudioLogo } from '@/components/brand/Movelo'
 import { ProgressRing } from '@/components/ui/ProgressRing'
 import { JobProgressRing } from '@/components/progress/JobProgressRing'
@@ -88,6 +91,22 @@ function TranscriptPlaceholder({ onCollapse, processing = false }: { onCollapse?
 }
 
 // ── Main EditorPage ───────────────────────────────────────────────────────────
+// Each area's width in every layout until it's dragged (Reset layout returns to these)
+const PANEL_WIDTH = 400
+const TRANSCRIPT_WIDTH = 720
+const PLAYER_WIDTH = 480
+/** editorStore's default timeline height. */
+const TIMELINE_HEIGHT = 380
+
+/** The bar between two areas side by side: drag it to resize the fixed-width one. */
+function ColumnHandle({ onPointerDown }: { onPointerDown: (e: React.PointerEvent) => void }) {
+  return (
+    <div className="w-1 shrink-0 rounded-full cursor-col-resize hover:bg-brand-500/60 active:bg-brand-500 transition-colors group relative flex items-center justify-center" onPointerDown={onPointerDown}>
+      <div className="w-0.5 h-8 rounded-full bg-ink-700/60 group-hover:bg-brand-400/80 transition-colors" />
+    </div>
+  )
+}
+
 export default function EditorPage() {
   const { projectId, jobId } = useParams<{ projectId: string; jobId: string }>()
   const navigate = useNavigate()
@@ -156,37 +175,42 @@ export default function EditorPage() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  // ── Resizable panels ──────────────────────────────────────────────────────
-  const [leftPanelWidth,  setLeftPanelWidth]  = useState(400)
-  const [rightPanelWidth, setRightPanelWidth] = useState(720)
+  // ── Layout and resizable panels ───────────────────────────────────────────
+  // Four layouts, like CapCut's (lib/layouts; the top bar's LayoutMenu). An
+  // area keeps its width across them; Reset layout restores the defaults.
+  const [layout, setLayout] = useState<LayoutName>(loadLayout)
+  const [leftPanelWidth,  setLeftPanelWidth]  = useState(PANEL_WIDTH)
+  const [rightPanelWidth, setRightPanelWidth] = useState(TRANSCRIPT_WIDTH)
+  const [playerWidth,     setPlayerWidth]     = useState(PLAYER_WIDTH)
+  const chooseLayout = useCallback((name: LayoutName) => {
+    // The player moves to another place on the page: it starts again from a pause
+    useEditorStore.getState().setPlaying(false)
+    setLayout(name)
+    saveLayout(name)
+  }, [])
+  const resetLayout = useCallback(() => {
+    setLeftPanelWidth(PANEL_WIDTH)
+    setRightPanelWidth(TRANSCRIPT_WIDTH)
+    setPlayerWidth(PLAYER_WIDTH)
+    setTimelineHeight(TIMELINE_HEIGHT)
+    setRightPanelCollapsed(false)
+  }, [setTimelineHeight, setRightPanelCollapsed])
 
-  const leftDragRef  = useRef<{ startX: number; startWidth: number } | null>(null)
-  const rightDragRef = useRef<{ startX: number; startWidth: number } | null>(null)
+  /** Drag the edge of a fixed-width area: `dir` 1 when the area is left of the handle, -1 when it's right. */
+  const startResize = useCallback((area: Area, dir: 1 | -1) => (e: React.PointerEvent) => {
+    e.preventDefault()
+    const [width, setWidth, min, max] =
+      area === 'panel' ? [leftPanelWidth, setLeftPanelWidth, 180, 480] as const
+      : area === 'transcript' ? [rightPanelWidth, setRightPanelWidth, 320, 720] as const
+      : [playerWidth, setPlayerWidth, 280, 900] as const
+    const startX = e.clientX
+    const onMove = (ev: PointerEvent) => setWidth(Math.max(min, Math.min(max, width + dir * (ev.clientX - startX))))
+    const onUp = () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp) }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }, [leftPanelWidth, rightPanelWidth, playerWidth])
+
   const timelineDragRef = useRef<{ startY: number; startHeight: number } | null>(null)
-
-  const handleLeftResizeDown = useCallback((e: React.PointerEvent) => {
-    e.preventDefault()
-    leftDragRef.current = { startX: e.clientX, startWidth: leftPanelWidth }
-    const onMove = (ev: PointerEvent) => {
-      if (!leftDragRef.current) return
-      setLeftPanelWidth(Math.max(180, Math.min(480, leftDragRef.current.startWidth + (ev.clientX - leftDragRef.current.startX))))
-    }
-    const onUp = () => { leftDragRef.current = null; window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp) }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-  }, [leftPanelWidth])
-
-  const handleRightResizeDown = useCallback((e: React.PointerEvent) => {
-    e.preventDefault()
-    rightDragRef.current = { startX: e.clientX, startWidth: rightPanelWidth }
-    const onMove = (ev: PointerEvent) => {
-      if (!rightDragRef.current) return
-      setRightPanelWidth(Math.max(320, Math.min(720, rightDragRef.current.startWidth + (rightDragRef.current.startX - ev.clientX))))
-    }
-    const onUp = () => { rightDragRef.current = null; window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp) }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-  }, [rightPanelWidth])
 
   const handleTimelineResizeDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault()
@@ -621,6 +645,138 @@ export default function EditorPage() {
     </div>
   )
 
+  // ── The three areas, arranged around the timeline by the layout ──────────
+  const plan = layoutPlan(layout, rightPanelCollapsed)
+  // In the vertical layout the transcript is left of the player
+  const scriptTabLeft = layout === 'vertical'
+
+  const panelArea = (flex: boolean) => (
+    <div key="panel" className={cn('bg-ink-900 rounded-lg border border-ink-800/50 flex flex-col min-w-0 overflow-hidden', flex ? 'flex-1' : 'shrink-0')} style={flex ? undefined : { width: leftPanelWidth }}>
+              {railTab === 'projects' ? (
+                <ProjectsPanel activeProjectId={projectId} activeJobId={jobId} onImportFile={onDropVideo} />
+              ) : railTab === 'speakers' ? (
+                <SpeakersPanel projectId={projectId} jobId={jobId} />
+              ) : railTab === 'elements' ? (
+                jobId ? (
+                  <>
+                    <PanelHeader icon={ImagePlus} title="Elements" />
+                    <div className="flex-1 overflow-y-auto p-3">
+                      <OverlaysPanel
+                        jobId={jobId}
+                        project={currentProject}
+                        onUploadProjectLogo={handleLogoFileChange}
+                        onRemoveProjectLogo={handleRemoveLogo}
+                        projectLogoUploading={logoUploading}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <div className="h-full flex flex-col min-h-0">
+                    <PanelHeader icon={ImagePlus} title="Elements" />
+                    <PanelEmptyState
+                      icon={ImagePlus}
+                      title="No episode open"
+                    />
+                  </div>
+                )
+              ) : railTab === 'voices' ? (
+                <VoicesPanel />
+              ) : railTab === 'story' ? (
+                <StoryPanel projectId={projectId} jobId={jobId} />
+              ) : (
+                <AssistantPanel projectId={projectId} jobId={jobId} />
+              )}
+    </div>
+  )
+
+  const playerArea = (flex: boolean) => (
+    <div key="player" className={cn('min-w-0 bg-ink-900 rounded-lg border border-ink-800/50 flex flex-col relative overflow-hidden', flex ? 'flex-1' : 'shrink-0')} style={flex ? undefined : { width: playerWidth }}>
+              <div className="absolute inset-0 flex items-center justify-center p-6">
+                {videoFile ? (
+                  // A newly staged import always wins the center pane — the
+                  // Projects panel's inline "Import new video" can stage a
+                  // file while a session is open, and the staged card must
+                  // not be invisible behind the player. Cancelling (X)
+                  // returns to whatever was below.
+                  renderUploadArea()
+                ) : loadingJob && jobId ? (
+                  <div className="flex flex-col items-center gap-3 text-text-muted">
+                    <Loader2 size={22} className="animate-spin text-brand" />
+                    <span className="text-xs">Loading episode…</span>
+                  </div>
+                ) : jobId && job?.status === 'failed' ? (
+                  <div className="flex flex-col items-center gap-3 text-center max-w-sm">
+                    <div className="h-12 w-12 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400">
+                      <AlertCircle size={20} />
+                    </div>
+                    <h4 className="text-xs font-bold text-white">Pipeline Failed</h4>
+                    <p className="text-[10px] text-text-muted leading-normal">{job.error_msg || 'Unknown error'}</p>
+                  </div>
+                ) : jobId && job && (isStage1 || stage1Done) ? (
+                  // Stage 1 running (or just done) — its progress ring
+                  <div className="w-full h-full max-w-[800px] shrink-0 bg-ink-900 relative flex items-center justify-center overflow-y-auto">
+                    {renderPipelineView(job.id)}
+                  </div>
+                ) : jobId && job && !isStage1 && videoUrl ? (
+                  // Stems ready, Stage 2, completed, exporting, or separating
+                  // again an episode that has lines — show the video player.
+                  // No fixed aspect-ratio wrapper here: VideoPlayer sizes itself
+                  // to the clip's real dimensions (landscape or portrait/Reel),
+                  // bounded by the available pane space via max-w/max-h.
+                  <VideoPlayer videoUrl={videoUrl} segments={displaySegs} speakers={spks} className="max-w-full max-h-full" jobId={jobId} projectId={projectId} jobStatus={job.status} overlays={jobOverlays} bgmVolumeDb={job.bgm_volume_db} stemsVersion={job.stems_version} frameRate={job.frame_rate} duckMusic={!!job.duck_music} trackFlags={job.track_flags} />
+                ) : jobId && job && !videoUrl ? (
+                  <div className="flex flex-col items-center gap-4 text-center max-w-xs">
+                    <Loader2 size={20} className="animate-spin text-brand-300" />
+                    <p className="text-xs font-bold text-white">Preparing video…</p>
+                  </div>
+                ) : (
+                  // No job — show upload UI
+                  renderUploadArea()
+                )}
+              </div>
+
+              {/* Floating re-open transcript button */}
+              <AnimatePresence>
+                {rightPanelCollapsed && (
+                  <motion.button key="reopen" initial={{ opacity: 0, x: scriptTabLeft ? -20 : 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: scriptTabLeft ? -20 : 20 }} className={cn('absolute top-1/2 -translate-y-1/2 z-20 h-24 w-6 bg-ink-900 hover:bg-ink-800 text-ink-400 hover:text-white flex flex-col items-center justify-center gap-1 border-y border-ink-800/50 transition-colors', scriptTabLeft ? 'left-0 rounded-r border-r' : 'right-0 rounded-l border-l')} onClick={() => setRightPanelCollapsed(false)}>
+                    {scriptTabLeft ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+                    <span className="text-[9px] font-bold uppercase tracking-wider [writing-mode:vertical-lr] rotate-180 select-none">Script</span>
+                  </motion.button>
+                )}
+              </AnimatePresence>
+    </div>
+  )
+
+  const transcriptContent = (
+    <>
+                  {showTranscript ? (
+                    <TranscriptPanel
+                      segments={displaySegs}
+                      speakers={spks}
+                      jobId={jobId!}
+                      projectId={projectId!}
+                      isLoading={loadingSegs}
+                      className="h-full border-l-0"
+                      job={job}
+                    />
+                  ) : (
+                    <TranscriptPlaceholder onCollapse={() => setRightPanelCollapsed(true)} processing={processingNew} />
+                  )}
+    </>
+  )
+  const transcriptArea = (flex: boolean) => flex ? (
+    <div key="transcript" className="flex-1 min-w-0 bg-ink-900 rounded-lg border border-ink-800/50 overflow-hidden flex flex-col">
+      {transcriptContent}
+    </div>
+  ) : (
+    <motion.div key="transcript" initial={{ width: 0, opacity: 0 }} animate={{ width: rightPanelWidth, opacity: 1 }} exit={{ width: 0, opacity: 0 }} transition={{ type: 'spring', stiffness: 380, damping: 38 }} className="bg-ink-900 rounded-lg border border-ink-800/50 overflow-hidden flex flex-col shrink-0">
+      {transcriptContent}
+    </motion.div>
+  )
+
+  const renderArea = (area: Area, flex: boolean) =>
+    area === 'panel' ? panelArea(flex) : area === 'player' ? playerArea(flex) : transcriptArea(flex)
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="h-screen w-screen flex bg-surface-0 overflow-hidden text-white relative">
@@ -699,7 +855,9 @@ export default function EditorPage() {
             )}
           </div>
 
-          {/* Right: Export */}
+          {/* Right: the layout menu, Export */}
+          <div className="flex items-center gap-2 shrink-0">
+          <LayoutMenu layout={layout} onChange={chooseLayout} onReset={resetLayout} />
           <Button
             variant={canExport ? 'default' : 'ghost'}
             size="sm"
@@ -716,144 +874,30 @@ export default function EditorPage() {
           >
             {exportProgress != null ? `Exporting ${exportProgress}%` : 'Export'}
           </Button>
+          </div>
         </header>
 
-        {/* ── Main bento layout ────────────────────────────────────── */}
-        <div className="flex-1 flex flex-col min-h-0 w-full bg-ink-950 overflow-hidden p-2 gap-2" onClick={e => e.stopPropagation()}>
-
-          {/* Top row: Sessions | Video | Transcript */}
-          <div className="flex-1 min-h-0 flex gap-2 overflow-hidden">
-
-            {/* 1. Dynamic dock — content driven by the icon rail's selected tab */}
-            <div className="shrink-0 bg-ink-900 rounded-lg border border-ink-800/50 flex flex-col min-w-0 overflow-hidden" style={{ width: leftPanelWidth }}>
-              {railTab === 'projects' ? (
-                <ProjectsPanel activeProjectId={projectId} activeJobId={jobId} onImportFile={onDropVideo} />
-              ) : railTab === 'speakers' ? (
-                <SpeakersPanel projectId={projectId} jobId={jobId} />
-              ) : railTab === 'elements' ? (
-                jobId ? (
-                  <>
-                    <PanelHeader icon={ImagePlus} title="Elements" />
-                    <div className="flex-1 overflow-y-auto p-3">
-                      <OverlaysPanel
-                        jobId={jobId}
-                        project={currentProject}
-                        onUploadProjectLogo={handleLogoFileChange}
-                        onRemoveProjectLogo={handleRemoveLogo}
-                        projectLogoUploading={logoUploading}
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <div className="h-full flex flex-col min-h-0">
-                    <PanelHeader icon={ImagePlus} title="Elements" />
-                    <PanelEmptyState
-                      icon={ImagePlus}
-                      title="No episode open"
-                    />
-                  </div>
-                )
-              ) : railTab === 'voices' ? (
-                <VoicesPanel />
-              ) : railTab === 'story' ? (
-                <StoryPanel projectId={projectId} jobId={jobId} />
-              ) : (
-                <AssistantPanel projectId={projectId} jobId={jobId} />
-              )}
-            </div>
-
-            {/* Left resize handle */}
-            <div className="w-1 shrink-0 rounded-full cursor-col-resize hover:bg-brand-500/60 active:bg-brand-500 transition-colors group relative flex items-center justify-center" onPointerDown={handleLeftResizeDown}>
-              <div className="w-0.5 h-8 rounded-full bg-ink-700/60 group-hover:bg-brand-400/80 transition-colors" />
-            </div>
-
-            {/* 2. Center: Video/pipeline/upload */}
-            <div className="flex-1 min-w-0 bg-ink-900 rounded-lg border border-ink-800/50 flex flex-col relative overflow-hidden">
-              <div className="absolute inset-0 flex items-center justify-center p-6">
-                {videoFile ? (
-                  // A newly staged import always wins the center pane — the
-                  // Projects panel's inline "Import new video" can stage a
-                  // file while a session is open, and the staged card must
-                  // not be invisible behind the player. Cancelling (X)
-                  // returns to whatever was below.
-                  renderUploadArea()
-                ) : loadingJob && jobId ? (
-                  <div className="flex flex-col items-center gap-3 text-text-muted">
-                    <Loader2 size={22} className="animate-spin text-brand" />
-                    <span className="text-xs">Loading episode…</span>
-                  </div>
-                ) : jobId && job?.status === 'failed' ? (
-                  <div className="flex flex-col items-center gap-3 text-center max-w-sm">
-                    <div className="h-12 w-12 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400">
-                      <AlertCircle size={20} />
-                    </div>
-                    <h4 className="text-xs font-bold text-white">Pipeline Failed</h4>
-                    <p className="text-[10px] text-text-muted leading-normal">{job.error_msg || 'Unknown error'}</p>
-                  </div>
-                ) : jobId && job && (isStage1 || stage1Done) ? (
-                  // Stage 1 running (or just done) — its progress ring
-                  <div className="w-full h-full max-w-[800px] shrink-0 bg-ink-900 relative flex items-center justify-center overflow-y-auto">
-                    {renderPipelineView(job.id)}
-                  </div>
-                ) : jobId && job && !isStage1 && videoUrl ? (
-                  // Stems ready, Stage 2, completed, exporting, or separating
-                  // again an episode that has lines — show the video player.
-                  // No fixed aspect-ratio wrapper here: VideoPlayer sizes itself
-                  // to the clip's real dimensions (landscape or portrait/Reel),
-                  // bounded by the available pane space via max-w/max-h.
-                  <VideoPlayer videoUrl={videoUrl} segments={displaySegs} speakers={spks} className="max-w-full max-h-full" jobId={jobId} projectId={projectId} jobStatus={job.status} overlays={jobOverlays} bgmVolumeDb={job.bgm_volume_db} stemsVersion={job.stems_version} frameRate={job.frame_rate} duckMusic={!!job.duck_music} trackFlags={job.track_flags} />
-                ) : jobId && job && !videoUrl ? (
-                  <div className="flex flex-col items-center gap-4 text-center max-w-xs">
-                    <Loader2 size={20} className="animate-spin text-brand-300" />
-                    <p className="text-xs font-bold text-white">Preparing video…</p>
-                  </div>
-                ) : (
-                  // No job — show upload UI
-                  renderUploadArea()
-                )}
-              </div>
-
-              {/* Floating re-open transcript button */}
-              <AnimatePresence>
-                {rightPanelCollapsed && (
-                  <motion.button key="reopen" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} className="absolute top-1/2 -translate-y-1/2 right-0 z-20 h-24 w-6 bg-ink-900 hover:bg-ink-800 text-ink-400 hover:text-white flex flex-col items-center justify-center gap-1 rounded-l border-y border-l border-ink-800/50 transition-colors" onClick={() => setRightPanelCollapsed(false)}>
-                    <ChevronLeft size={14} />
-                    <span className="text-[9px] font-bold uppercase tracking-wider [writing-mode:vertical-lr] rotate-180 select-none">Script</span>
-                  </motion.button>
-                )}
+        {/* ── Main layout: the panel, the player and the transcript around the timeline ── */}
+        <div className="flex-1 flex min-h-0 w-full bg-ink-950 overflow-hidden p-2 gap-2" onClick={e => e.stopPropagation()}>
+          {plan.tall?.side === 'left' && [
+            renderArea(plan.tall.area, false),
+            <ColumnHandle key="tall-handle" onPointerDown={startResize(plan.tall.area, 1)} />,
+          ]}
+          <div className="flex-1 min-w-0 flex flex-col min-h-0 gap-2">
+            {/* Above the timeline, left to right */}
+            <div className="flex-1 min-h-0 flex gap-2 overflow-hidden">
+              <AnimatePresence initial={false}>
+                {plan.top.flatMap((area, i) => {
+                  const next = plan.top[i + 1]
+                  const els = [renderArea(area, area === plan.flex)]
+                  // A handle drags the fixed-width area beside it
+                  if (next) els.push(
+                    <ColumnHandle key={`handle-${area}-${next}`} onPointerDown={area === plan.flex ? startResize(next, -1) : startResize(area, 1)} />,
+                  )
+                  return els
+                })}
               </AnimatePresence>
             </div>
-
-            {/* Right resize handle */}
-            <AnimatePresence initial={false}>
-              {!rightPanelCollapsed && (
-                <motion.div key="right-handle" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-1 shrink-0 rounded-full cursor-col-resize hover:bg-brand-500/60 active:bg-brand-500 transition-colors group relative flex items-center justify-center" onPointerDown={handleRightResizeDown}>
-                  <div className="w-0.5 h-8 rounded-full bg-ink-700/60 group-hover:bg-brand-400/80 transition-colors" />
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* 3. Right: Transcript */}
-            <AnimatePresence initial={false}>
-              {!rightPanelCollapsed && (
-                <motion.div key="transcript" initial={{ width: 0, opacity: 0 }} animate={{ width: rightPanelWidth, opacity: 1 }} exit={{ width: 0, opacity: 0 }} transition={{ type: 'spring', stiffness: 380, damping: 38 }} className="bg-ink-900 rounded-lg border border-ink-800/50 overflow-hidden flex flex-col shrink-0">
-                  {showTranscript ? (
-                    <TranscriptPanel
-                      segments={displaySegs}
-                      speakers={spks}
-                      jobId={jobId!}
-                      projectId={projectId!}
-                      isLoading={loadingSegs}
-                      className="h-full border-l-0"
-                      job={job}
-                    />
-                  ) : (
-                    <TranscriptPlaceholder onCollapse={() => setRightPanelCollapsed(true)} processing={processingNew} />
-                  )}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
 
           {/* Timeline resize handle */}
           <div className="h-1 shrink-0 rounded-full cursor-row-resize hover:bg-brand-500/60 active:bg-brand-500 transition-colors group relative flex items-center justify-center" onPointerDown={handleTimelineResizeDown}>
@@ -884,6 +928,11 @@ export default function EditorPage() {
               </span>
             </div>
           )}
+          </div>
+          {plan.tall?.side === 'right' && [
+            <ColumnHandle key="tall-handle" onPointerDown={startResize(plan.tall.area, -1)} />,
+            renderArea(plan.tall.area, false),
+          ]}
         </div>
       </div>
 

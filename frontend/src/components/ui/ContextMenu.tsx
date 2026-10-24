@@ -3,13 +3,14 @@
 // CapCut). Rendered into document.body at the pointer, kept inside the window;
 // closes on a click outside, Escape, scrolling or choosing an item. An item with
 // `items` opens a submenu beside it.
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ComponentType } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronRight, type LucideIcon } from 'lucide-react'
+import { ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 export type MenuItem = {
-  icon: LucideIcon
+  /** A lucide icon, or any icon drawn at `size` (the layout menu's diagrams). */
+  icon: ComponentType<{ size?: number; className?: string }>
   label: string
   shortcut?: string
   onSelect?: () => void
