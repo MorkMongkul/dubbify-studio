@@ -15,6 +15,7 @@ import { cn, pixelsToTime, timeToPixels } from '@/lib/utils'
 import { clampFades, volumeToFraction } from '@/lib/clipRules'
 import { newPieceId, splitPiece, trimPiece } from '@/lib/stemPieces'
 import { dbLabel, gainFor, levelBars, slicePeaks, volumeAtPointer } from '@/lib/waveform'
+import { DragTip } from './DragTip'
 
 const LOUD_COLOR = '#F87171'
 
@@ -42,6 +43,8 @@ export function StemPieces({
 }: StemPiecesProps) {
   // The list while an edge, a fade or a volume line is being dragged
   const [draft, setDraft] = useState<StemPiece[] | null>(null)
+  // A volume line being dragged: its piece, its dB and the pointer (the tip follows it)
+  const [volumeTip, setVolumeTip] = useState<{ id: string; db: number; x: number; y: number } | null>(null)
   const shown = draft ?? pieces
   const px = (t: number) => timeToPixels(t, zoom, pxPerSec)
   const sorted = [...shown].sort((a, b) => a.start_time - b.start_time)
@@ -172,9 +175,11 @@ export function StemPieces({
                     aria-label="Volume"
                     onPointerDown={(e) => {
                       const band = (e.currentTarget.parentElement ?? e.currentTarget).getBoundingClientRect()
+                      const x0 = e.clientX
                       const y0 = e.clientY
-                      drag(e, (_dx, dy) => {
+                      drag(e, (dx, dy) => {
                         const db = volumeAtPointer(y0 + dy, band.top, band.height)
+                        setVolumeTip({ id: p.id, db, x: x0 + dx, y: y0 + dy })
                         useEditorStore.getState().setLivePieceVolume({ id: p.id, db })
                         return pieces.map((x) => (x.id === p.id ? { ...x, volume_db: db } : x))
                       }, 'Change volume')
@@ -183,10 +188,11 @@ export function StemPieces({
                     <div className="absolute inset-x-0 top-1/2 h-px bg-white/45 group-hover/vol:bg-white/90" />
                     <span className={cn(
                       'absolute right-0 top-1/2 -translate-y-1/2 rounded bg-ink-900/90 px-1.5 text-[10.5px] font-semibold text-white tabular-nums pointer-events-none',
-                      draft && pieces.find((x) => x.id === p.id)?.volume_db !== p.volume_db ? 'block' : 'hidden group-hover/vol:block',
+                      draft && volumeTip?.id === p.id ? 'hidden' : 'hidden group-hover/vol:block',
                     )}>
                       {dbLabel(p.volume_db)}
                     </span>
+                    {draft && volumeTip?.id === p.id && <DragTip x={volumeTip.x} y={volumeTip.y} text={dbLabel(volumeTip.db)} />}
                   </div>
                 )}
                 {/* Fade handles on the selected piece's top corners */}

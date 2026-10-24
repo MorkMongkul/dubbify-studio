@@ -15,6 +15,7 @@ import {
 import { dbLabel, gainFor, levelBars, peaksFrom, volumeAtPointer, volumeTop } from '@/lib/waveform'
 import { dropSpot, planDrop, type DropSpot } from '@/lib/tracks'
 import { previewClip } from '@/hooks/useVoicePlayback'
+import { DragTip } from './DragTip'
 
 export const LANE_HEIGHT = 64  // clip row height — also the divisor for drop-target row math
 // The waveform band at the bottom of a clip (px) — the volume line moves inside it
@@ -104,6 +105,8 @@ export const InteractiveSegment = memo(function InteractiveSegment({
   // Fades and the volume line, while one is being dragged (saved on release)
   const [fadeDraft, setFadeDraft] = useState<{ fade_in_secs: number; fade_out_secs: number } | null>(null)
   const [volumeDraft, setVolumeDraft] = useState<number | null>(null)
+  // Where the pointer is while the volume line is dragged (its dB tip follows it)
+  const [volumeTipAt, setVolumeTipAt] = useState<{ x: number; y: number } | null>(null)
   const fadeIn = fadeDraft?.fade_in_secs ?? seg.fade_in_secs ?? 0
   const fadeOut = fadeDraft?.fade_out_secs ?? seg.fade_out_secs ?? 0
   const fadeInPx = timeToPixels(fadeIn, zoom, PX_PER_SEC)
@@ -155,6 +158,7 @@ export const InteractiveSegment = memo(function InteractiveSegment({
     const move = (ev: PointerEvent) => {
       db = volumeAtPointer(ev.clientY, band.top, band.height)
       setVolumeDraft(db)
+      setVolumeTipAt({ x: ev.clientX, y: ev.clientY })
       useEditorStore.getState().setLiveClipVolume({ id: seg.id, db })
     }
     const up = (ev: PointerEvent) => {
@@ -162,6 +166,7 @@ export const InteractiveSegment = memo(function InteractiveSegment({
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
       setVolumeDraft(null)
+      setVolumeTipAt(null)
       useEditorStore.getState().setLiveClipVolume(null)
       if (db !== from) onPatch?.(seg, { volume_db: db }, { volume_db: from }, 'Change volume')
     }
@@ -544,11 +549,12 @@ export const InteractiveSegment = memo(function InteractiveSegment({
             )} />
             <span className={cn(
               'absolute right-0 top-1/2 -translate-y-1/2 rounded bg-ink-900/90 px-1.5 text-[10.5px] font-semibold text-white tabular-nums pointer-events-none',
-              volumeDraft != null ? 'block' : 'hidden group-hover/vol:block',
+              volumeDraft != null ? 'hidden' : 'hidden group-hover/vol:block',
             )}>
               {dbLabel(shownVolume)}
             </span>
           </div>
+          {volumeDraft != null && volumeTipAt && <DragTip x={volumeTipAt.x} y={volumeTipAt.y} text={dbLabel(volumeDraft)} />}
         </div>
       )}
 
