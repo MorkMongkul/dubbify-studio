@@ -5,7 +5,10 @@
 // a lower one, so clips never change lane by themselves: a copy that can't go
 // on its own track goes on a new track above everything. Pure: `npm test` runs it.
 import type { MediaAsset, MediaBox, MediaClip, MediaTrackFlagMap, MediaTrackSwitches } from '../types/index.ts'
+import { planDrop, type DropSpot } from './tracks.ts'
 
+/** The drag type a Media tab tile carries (its asset id) onto the timeline. */
+export const MEDIA_DRAG = 'application/x-movelo-media'
 export const IMAGE_SECS = 5
 export const MIN_CLIP_SECS = 0.1
 export const MAX_EXPORT_CLIPS = 32
@@ -73,9 +76,9 @@ export function trimMediaEnd(
 const free = (lane: number, start: number, end: number, placed: MediaClip[]) =>
   placed.every((c) => c.lane_index !== lane || c.end_time <= start + EPS || c.start_time >= end - EPS)
 
-/** On `lane` when free over its span, else on a new track above every track there is. */
-function place(c: MediaClip, placed: MediaClip[]): MediaClip {
-  if (free(c.lane_index, c.start_time, c.end_time, placed)) return c
+/** On `lane` when free over its span (and not locked), else on a new track above every track there is. */
+function place(c: MediaClip, placed: MediaClip[], locked: Set<number> = new Set()): MediaClip {
+  if (!locked.has(c.lane_index) && free(c.lane_index, c.start_time, c.end_time, placed)) return c
   return { ...c, lane_index: Math.max(c.lane_index, ...placed.map((p) => p.lane_index)) + 1 }
 }
 
@@ -87,14 +90,14 @@ export function addAt(clip: MediaClip, existing: MediaClip[], locked: Set<number
 }
 
 /** Copied clips pasted at `at`: the same spacing, boxes and volume; each on its own track when free there, else above. */
-export function pasteClips(copied: MediaClip[], at: number, existing: MediaClip[]): MediaClip[] {
+export function pasteClips(copied: MediaClip[], at: number, existing: MediaClip[], locked: Set<number> = new Set()): MediaClip[] {
   if (!copied.length) return []
   const first = Math.min(...copied.map((c) => c.start_time))
   const placed = [...existing]
   const made: MediaClip[] = []
   for (const c of [...copied].sort((a, b) => a.start_time - b.start_time)) {
     const shift = at - first
-    const moved = place({ ...c, id: newId(), start_time: round6(c.start_time + shift), end_time: round6(c.end_time + shift) }, placed)
+    const moved = place({ ...c, id: newId(), start_time: round6(c.start_time + shift), end_time: round6(c.end_time + shift) }, placed, locked)
     placed.push(moved)
     made.push(moved)
   }
@@ -115,6 +118,61 @@ export function splitClip(clip: MediaClip, at: number, kind: MediaAsset['kind'])
     source_in: kind === 'video' ? round6(clip.source_in + (at - clip.start_time)) : 0,
   }
   return [left, right]
+}
+
+/**
+ * Clips dragged by `deltaSecs` (the group stays inside the episode) to `spot`,
+ * a row counted from the top: the voice tracks' drop rules (lib/tracks.ts
+ * planDrop — a busy or locked track, or a drop between tracks, makes a new
+ * track under the target row), run with the top track as row 0. Then the
+ * tracks are numbered again, the top one highest, so their order — what
+ * covers what — never changes; a track's switches go with it (an emptied
+ * track's are dropped).
+ */
+export function planMediaDrop(
+  clips: MediaClip[], moving: string[], grabbedId: string, deltaSecs: number, spot: DropSpot,
+  flags: MediaTrackFlagMap | null | undefined, episodeSecs: number,
+): { clips: MediaClip[]; track_flags: MediaTrackFlagMap } {
+  const ids = new Set(moving)
+  const rows = mediaRows(clips)
+  const rowOf = new Map(rows.map((lane, i) => [lane, i]))
+  const movers = clips.filter((c) => ids.has(c.id))
+  let delta = deltaSecs
+  if (episodeSecs > 0 && movers.length) delta = Math.min(delta, episodeSecs - Math.max(...movers.map((c) => c.end_time)))
+  const locked = new Set(rows.flatMap((lane, i) => (mediaSwitchesOf(flags, lane).locked ? [i] : [])))
+  const placed = clips.map((c) => ({ id: c.id, start_time: c.start_time, end_time: c.end_time, lane_index: rowOf.get(c.lane_index)! }))
+  const changes = new Map(planDrop(placed, moving, grabbedId, delta, spot, locked).map((ch) => [ch.id, ch]))
+  const rowAfter = (c: MediaClip) => changes.get(c.id)?.lane_index ?? rowOf.get(c.lane_index)!
+  const used = [...new Set(clips.map(rowAfter))].sort((a, b) => a - b)
+  const laneFor = new Map(used.map((row, i) => [row, used.length - 1 - i]))
+  const track_flags: MediaTrackFlagMap = {}
+  for (const c of clips) {
+    const f = flags?.[String(c.lane_index)]
+    if (f && !ids.has(c.id)) track_flags[String(laneFor.get(rowAfter(c))!)] = f
+  }
+  return {
+    clips: clips.map((c) => {
+      const ch = changes.get(c.id)
+      return { ...c, start_time: ch?.start_time ?? c.start_time, end_time: ch?.end_time ?? c.end_time, lane_index: laneFor.get(rowAfter(c))! }
+    }),
+    track_flags,
+  }
+}
+
+/** A tile dropped on the timeline: onto a free, unlocked track, else on a new track above the one it was dropped on. */
+export function dropNewClip(
+  clips: MediaClip[], clip: MediaClip, spot: DropSpot, flags: MediaTrackFlagMap | null | undefined, episodeSecs: number,
+): { clips: MediaClip[]; track_flags: MediaTrackFlagMap } {
+  const rows = mediaRows(clips)
+  if (!rows.length) return { clips: [{ ...clip, lane_index: 0 }], track_flags: {} }
+  if (spot.kind === 'onto') {
+    const lane = rows[Math.min(spot.row, rows.length - 1)]
+    if (!mediaSwitchesOf(flags, lane).locked && free(lane, clip.start_time, clip.end_time, clips)) {
+      return { clips: [...clips, { ...clip, lane_index: lane }], track_flags: { ...(flags ?? {}) } }
+    }
+  }
+  const boundary = spot.kind === 'insert' ? spot.boundary : spot.row
+  return planMediaDrop([...clips, { ...clip, lane_index: rows[0] }], [clip.id], clip.id, 0, { kind: 'insert', boundary }, flags, episodeSecs)
 }
 
 /** The media tracks to draw, the top one (highest lane) first. */

@@ -30,6 +30,9 @@ import { redoWithToast, undoWithToast } from '@/lib/undoActions'
 import { layoutPlace } from '@/lib/undoPatches'
 import { useHistoryStore } from '@/store/historyStore'
 import { ContextMenu, type MenuItem } from '@/components/ui/ContextMenu'
+import { TrackSwitch } from './TrackSwitch'
+import { MediaTracks } from './MediaTracks'
+import { useMediaEditing } from '@/hooks/useMediaEditing'
 
 const PX_PER_SEC = 100 // base pixels per second at zoom=1
 const STEM_HEIGHT = 64  // BGM / Vocals stem rows
@@ -38,25 +41,6 @@ const STRIP_HEIGHT = 44 // the picture strip
 const SPEEDS = [0.5, 0.75, 0.8, 0.9, 1.0, 1.1, 1.2, 1.25, 1.5, 1.75, 2.0]
 
 // A toolbar button: an icon, its name and shortcut in the tooltip
-// One switch on a voice track's header (lock, hide, mute): amber while on, like the music row's
-function TrackSwitch({ on, label, icon: Icon, onClick }: { on: boolean; label: string; icon: LucideIcon; onClick: () => void }) {
-  return (
-    <Tooltip content={label} side="bottom">
-      <button
-        onClick={onClick}
-        aria-label={label}
-        aria-pressed={on}
-        className={cn(
-          'h-6 w-6 rounded-md flex items-center justify-center transition-colors shrink-0',
-          on ? 'bg-amber-500/20 text-amber-400' : 'text-white/45 hover:text-white hover:bg-white/8',
-        )}
-      >
-        <Icon size={13} />
-      </button>
-    </Tooltip>
-  )
-}
-
 function ToolButton({ label, icon: Icon, onClick, disabled, pressed, danger, busy }: {
   label: string
   icon: LucideIcon
@@ -86,6 +70,8 @@ function ToolButton({ label, icon: Icon, onClick, disabled, pressed, danger, bus
   )
 }
 const MIN_CLIP_SECS = 0.1
+// With media clips selected, the editing keys act on them
+const mediaSelected = () => useEditorStore.getState().selectedMediaIds.length > 0
 
 // Format playhead time down to fractions of a second: e.g., 0:01.23
 function formatPlayheadTime(seconds: number): string {
@@ -175,6 +161,9 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const { data: stemPieceLists } = useStemPieces(jobId)
   // The picture strip, made in the background
   const { data: frames } = useFrames(jobId, !!job?.video_url)
+  // The media tracks' clips
+  const media = useMediaEditing(jobId, projectId, duration)
+  const selectedMediaIds = useEditorStore((s) => s.selectedMediaIds)
 
   // The music dips under the voices — one undo step
   const { mutate: setDucking, isPending: isSettingDucking } = useSetDucking()
@@ -252,6 +241,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
 
   const deleteSelection = useCallback((): boolean => {
     if (!jobId) return false
+    if (mediaSelected()) { media.remove(); return true }
     // A selected piece of the music / original voices takes ⌫ (the shortcuts below)
     if (keysActOn(useEditorStore.getState().selectedPiece, stemPieceLists) === 'piece') return false
     const ids = useEditorStore.getState().selectedSegmentIds
@@ -279,7 +269,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     if (seg) recordSegmentDelete(qc, jobId, seg)
     setActiveSegment(null)
     return true
-  }, [activeSegmentId, jobId, deleteSegment, setActiveSegment, segments, qc, stemPieceLists, isLockedSeg])
+  }, [activeSegmentId, jobId, deleteSegment, setActiveSegment, segments, qc, stemPieceLists, isLockedSeg, media])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -373,6 +363,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
 
   const handleSegmentSelect = useCallback((seg: Segment) => {
     useEditorStore.getState().setSelectedPiece(null)
+    useEditorStore.getState().setSelectedMedia([])
     setCurrentTime(seg.start_time)
     setActiveSegment(seg.id)
     setInspectorMode('audio_clip_settings')
@@ -427,6 +418,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
 
   // Split whatever clip the playhead is currently over (active clip first)
   const handleSplitAtPlayhead = useCallback(() => {
+    if (mediaSelected()) { media.split(); return }
     const t = useEditorStore.getState().currentTime
     const list = segmentsRef.current
     const target =
@@ -437,11 +429,12 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
       return
     }
     handleSplit(target, t)
-  }, [activeSegmentId, handleSplit])
+  }, [activeSegmentId, handleSplit, media])
 
   // ── Duplicate ───────────────────────────────────────────────────────────
   // A copy right after the clip, with its own copy of the voice (server side).
   const handleDuplicate = useCallback(() => {
+    if (mediaSelected()) { media.duplicate(); return }
     if (!jobId || !activeSegmentId) return
     const source = segmentsRef.current.find((s) => s.id === activeSegmentId)
     if (source && isLockedSeg(source)) { lockedNotice(); return }
@@ -453,7 +446,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
       },
       onError: () => toast.error('Failed to duplicate clip'),
     })
-  }, [jobId, activeSegmentId, qc, duplicateSegment, setActiveSegment, isLockedSeg])
+  }, [jobId, activeSegmentId, qc, duplicateSegment, setActiveSegment, isLockedSeg, media])
 
   // ── Trim at the playhead (Q / W, the toolbar, the right-click menu) ────
   // Cuts sound from the voice's start / end like dragging the edge; a clip
@@ -671,6 +664,9 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
           return
         }
       }
+      // ⌘C / ⌘V copy and paste media clips (a text selection elsewhere keeps the system's)
+      if ((e.metaKey || e.ctrlKey) && key === 'c' && media.copy()) { e.preventDefault(); return }
+      if ((e.metaKey || e.ctrlKey) && key === 'v' && media.paste()) { e.preventDefault(); return }
       if ((e.metaKey || e.ctrlKey) && key === 'd') { e.preventDefault(); handleDuplicate(); return }
       // ⌘B / Ctrl+B — the split shortcut CapCut users already have in muscle memory
       if ((e.metaKey || e.ctrlKey) && key === 'b') { e.preventDefault(); handleSplitAtPlayhead(); return }
@@ -678,12 +674,12 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
       if (key === 'v') setActiveTool('select')
       else if (key === 'c') setActiveTool('blade')
       else if (key === 's') { e.preventDefault(); handleSplitAtPlayhead() }
-      else if (key === 'q') { e.preventDefault(); handleTrimAtPlayhead('start') }
-      else if (key === 'w') { e.preventDefault(); handleTrimAtPlayhead('end') }
+      else if (key === 'q' && !mediaSelected()) { e.preventDefault(); handleTrimAtPlayhead('start') }
+      else if (key === 'w' && !mediaSelected()) { e.preventDefault(); handleTrimAtPlayhead('end') }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [setActiveTool, handleSplitAtPlayhead, handleDuplicate, handleTrimAtPlayhead, stemPieceLists, commitPieces])
+  }, [setActiveTool, handleSplitAtPlayhead, handleDuplicate, handleTrimAtPlayhead, stemPieceLists, commitPieces, media])
 
   // ── Imperative playhead ────────────────────────────────────────────────
   // currentTime changes 4×/s during playback and 60+×/s while scrubbing —
@@ -868,9 +864,10 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
       if (marqueeActive) {
         applyMarquee(ev.clientX - contentRect.left, ev.clientY - contentRect.top)
         if (marqueeRef.current) marqueeRef.current.style.display = 'none'
-      } else if (!additive && useEditorStore.getState().selectedSegmentIds.length) {
-        // Clean click on empty space clears the multi-selection
-        setSelectedSegments([])
+      } else if (!additive) {
+        // Clean click on empty space clears the multi-selection and the media selection
+        if (useEditorStore.getState().selectedSegmentIds.length) setSelectedSegments([])
+        useEditorStore.getState().setSelectedMedia([])
       }
     }
 
@@ -994,7 +991,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
           <ToolButton label="Trim start (Q)" icon={ArrowLeftToLine} onClick={() => handleTrimAtPlayhead('start')} />
           <ToolButton label="Trim end (W)" icon={ArrowRightToLine} onClick={() => handleTrimAtPlayhead('end')} />
           <ToolButton label="Delete (⌫)" icon={Trash2} onClick={deleteSelection} danger
-            disabled={!activeSegmentId && selectedSegmentIds.length === 0} />
+            disabled={!activeSegmentId && selectedSegmentIds.length === 0 && selectedMediaIds.length === 0} />
 
           <div className="w-px h-5 bg-white/[0.08] mx-1" />
 
@@ -1173,6 +1170,12 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                 backgroundImage: `repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent ${PX_PER_SEC * zoom}px)`,
               }}
             />
+
+            {/* Media tracks — above the picture strip, the top one drawn over the rest */}
+            {jobId && (
+              <MediaTracks edit={media} zoom={zoom} pxPerSec={PX_PER_SEC} duration={duration}
+                activeTool={activeTool} speakerWidth={speakerPanelWidth} contentRef={contentRef} />
+            )}
 
             {/* Picture strip — frames of the video to find scenes; for looking only */}
             {job?.video_url && (

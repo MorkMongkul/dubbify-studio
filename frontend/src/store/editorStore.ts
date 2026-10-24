@@ -6,6 +6,7 @@ import { subscribeWithSelector } from 'zustand/middleware'
 import type { JobAction } from '@/lib/jobProgress'
 import type { SegmentOverlay } from '@/lib/segmentOverlay'
 import type { LayoutChange } from '@/lib/tracks'
+import type { MediaClip } from '@/types'
 
 // Which panel the left icon rail has open in the dynamic dock. Settings is a
 // window of its own (settingsOpen), not a panel.
@@ -96,6 +97,14 @@ interface EditorStore {
   // A piece's volume line being dragged: the preview plays this level until saved
   livePieceVolume: { id: string; db: number } | null
   setLivePieceVolume: (v: { id: string; db: number } | null) => void
+  // The selected media clips (0.4.0), a selection of their own: selecting one
+  // clears the voice clips' and a piece's, and selecting those clears it
+  selectedMediaIds: string[]
+  setSelectedMedia: (ids: string[]) => void
+  // Media clips copied with ⌘C. Outside DEFAULT_STATE: they can be pasted
+  // into another episode of the same project
+  mediaClipboard: MediaClip[]
+  setMediaClipboard: (clips: MediaClip[]) => void
 
   // Mute & Solo States
   mutedTrackIds: Record<string, boolean>
@@ -192,6 +201,7 @@ const DEFAULT_STATE = {
   liveClipVolume: null as Record<string, number> | null,
   selectedPiece: null as { stem: 'music' | 'voices'; id: string } | null,
   livePieceVolume: null as { id: string; db: number } | null,
+  selectedMediaIds: [] as string[],
   mutedTrackIds: {},
   soloedTrackIds: {},
   selectedSegmentIds: [] as string[],
@@ -219,7 +229,12 @@ export const useEditorStore = create<EditorStore>()(
     scrubAudio: true,
     toggleScrubAudio: () => set((s) => ({ scrubAudio: !s.scrubAudio })),
     setLiveClipVolume: (v) => set({ liveClipVolume: v }),
-    setSelectedPiece: (p) => set({ selectedPiece: p }),
+    setSelectedPiece: (p) => set(p ? { selectedPiece: p, selectedMediaIds: [] } : { selectedPiece: null }),
+    setSelectedMedia: (ids) => set(ids.length
+      ? { selectedMediaIds: ids, selectedSegmentIds: [], selectedPiece: null, activeSegmentId: null }
+      : { selectedMediaIds: [] }),
+    mediaClipboard: [] as MediaClip[],
+    setMediaClipboard: (clips) => set({ mediaClipboard: clips }),
     setLivePieceVolume: (v) => set({ livePieceVolume: v }),
 
     // ── Batch voice generation (not part of DEFAULT_STATE) ─────
@@ -300,7 +315,7 @@ export const useEditorStore = create<EditorStore>()(
       }
     }),
     // Selecting clips takes the editing keys back from a selected piece
-    setSelectedSegments: (ids) => set(ids.length ? { selectedSegmentIds: ids, selectedPiece: null } : { selectedSegmentIds: ids }),
+    setSelectedSegments: (ids) => set(ids.length ? { selectedSegmentIds: ids, selectedPiece: null, selectedMediaIds: [] } : { selectedSegmentIds: ids }),
     setInspectorMode: (mode) => set({ inspectorMode: mode }),
     setFocusedTimelineItemId: (id) => set({ focusedTimelineItemId: id }),
 

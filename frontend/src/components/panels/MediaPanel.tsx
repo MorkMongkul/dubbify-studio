@@ -14,14 +14,12 @@ import {
   useApplyMediaTemplate, useDeleteMedia, useDeleteMediaTemplate, useMediaAssets, useMediaClips, useMediaTemplates,
   useRenameMediaTemplate, useSaveMediaTemplate, useSetMediaClips, useUploadMedia,
 } from '@/hooks/useApi'
-import { addAt, defaultClip, mediaSwitchesOf } from '@/lib/media'
+import { MEDIA_DRAG, addAt, defaultClip, mediaSwitchesOf } from '@/lib/media'
 import { recordMediaChange } from '@/lib/historyHelpers'
 import { useEditorStore } from '@/store/editorStore'
 import { cn, formatTime } from '@/lib/utils'
 import type { MediaAsset, MediaClipList, MediaTemplate } from '@/types'
 
-/** The drag type a media tile carries (its asset id) onto the timeline. */
-export const MEDIA_DRAG = 'application/x-movelo-media'
 const ACCEPT = 'image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/x-m4v,video/x-matroska,video/webm,image/gif,.mov,.mkv,.m4v'
 const iconButton = 'flex items-center justify-center h-7 w-7 rounded-md bg-white/[0.04] hover:bg-white/10 text-white/45 hover:text-white transition-colors disabled:opacity-40'
 // A checkerboard behind thumbnails, so transparency shows as transparency

@@ -3,8 +3,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  addAt, defaultClip, drawOrder, duplicateClip, fitBox, mediaExportWarnings, mediaRows, pasteClips, splitClip, trimMediaEnd,
-  trimMediaStart,
+  addAt, defaultClip, drawOrder, dropNewClip, duplicateClip, fitBox, mediaExportWarnings, mediaRows, pasteClips, planMediaDrop,
+  splitClip, trimMediaEnd, trimMediaStart,
 } from '../src/lib/media.ts'
 import type { MediaAsset, MediaClip } from '../src/types/index.ts'
 
@@ -109,3 +109,55 @@ test('+ adds at the playhead on the top track that is free there, else on a new 
   assert.equal(addAt(clip(10, 15, 0), existing, new Set([1])).lane_index, 2)
 })
 
+
+const LOCK = { locked: true, hidden: false, muted: false }
+const lanesOf = (clips: MediaClip[]) => Object.fromEntries(clips.map((c) => [c.id, [c.lane_index, c.start_time, c.end_time]]))
+
+test('a dragged clip moves in time on its own track, never before 0 or past the episode end', () => {
+  const a = clip(2, 9, 0, { id: 'a' })
+  assert.deepEqual(lanesOf(planMediaDrop([a], ['a'], 'a', 3, { kind: 'onto', row: 0 }, {}, 88).clips), { a: [0, 5, 12] })
+  assert.deepEqual(lanesOf(planMediaDrop([a], ['a'], 'a', -10, { kind: 'onto', row: 0 }, {}, 88).clips), { a: [0, 0, 7] })
+  assert.deepEqual(lanesOf(planMediaDrop([a], ['a'], 'a', 90, { kind: 'onto', row: 0 }, {}, 88).clips), { a: [0, 81, 88] })
+})
+
+test('a clip dropped onto a free track goes there; a track it leaves empty vanishes and the rest close up', () => {
+  // rows from the top: lane 2 (a), lane 1 (b), lane 0 (c)
+  const clips = [clip(0, 5, 2, { id: 'a' }), clip(0, 5, 1, { id: 'b' }), clip(10, 15, 0, { id: 'c' })]
+  const out = planMediaDrop(clips, ['b'], 'b', 0, { kind: 'onto', row: 2 }, {}, 88)
+  assert.deepEqual(lanesOf(out.clips), { a: [1, 0, 5], b: [0, 0, 5], c: [0, 10, 15] })
+})
+
+test('a drop onto a busy or locked track makes a new track under it; switches stay with their tracks', () => {
+  const clips = [clip(0, 5, 2, { id: 'a' }), clip(0, 5, 1, { id: 'b' }), clip(0, 5, 0, { id: 'c' })]
+  // c onto a's busy track (row 0): a new track between a and b
+  const busy = planMediaDrop(clips, ['c'], 'c', 0, { kind: 'onto', row: 0 }, {}, 88)
+  assert.deepEqual(lanesOf(busy.clips), { a: [2, 0, 5], c: [1, 0, 5], b: [0, 0, 5] })
+  assert.deepEqual(busy.track_flags, {})
+  // c to a free time on a's locked track: refused, a new track under it
+  const locked = planMediaDrop(clips, ['c'], 'c', 20, { kind: 'onto', row: 0 }, { 2: LOCK }, 88)
+  assert.deepEqual(lanesOf(locked.clips), { a: [2, 0, 5], c: [1, 20, 25], b: [0, 0, 5] })
+  assert.deepEqual(locked.track_flags, { 2: LOCK })
+})
+
+test('a drop between tracks inserts one there; the locked track keeps its switch as it moves down', () => {
+  const clips = [clip(0, 5, 2, { id: 'a' }), clip(0, 5, 1, { id: 'b' }), clip(0, 5, 0, { id: 'c' })]
+  const out = planMediaDrop(clips, ['c'], 'c', 0, { kind: 'insert', boundary: 0 }, { 2: LOCK }, 88)
+  assert.deepEqual(lanesOf(out.clips), { c: [2, 0, 5], a: [1, 0, 5], b: [0, 0, 5] })
+  assert.deepEqual(out.track_flags, { 1: LOCK })
+})
+
+test('a tile dropped on the timeline: onto a free track, else a new track above the one it was dropped on', () => {
+  const clips = [clip(0, 5, 1, { id: 'a' }), clip(0, 5, 0, { id: 'b' })]
+  const tile = clip(10, 15, 0, { id: 'new' })
+  assert.deepEqual(lanesOf(dropNewClip(clips, tile, { kind: 'onto', row: 1 }, {}, 88).clips).new, [0, 10, 15])
+  const onBusy = dropNewClip(clips, clip(2, 7, 0, { id: 'new' }), { kind: 'onto', row: 1 }, { 0: LOCK }, 88)
+  assert.deepEqual(lanesOf(onBusy.clips), { a: [2, 0, 5], new: [1, 2, 7], b: [0, 0, 5] })
+  assert.deepEqual(onBusy.track_flags, { 0: LOCK })
+  // the first media clip of an episode
+  assert.deepEqual(lanesOf(dropNewClip([], tile, { kind: 'insert', boundary: 0 }, {}, 88).clips), { new: [0, 10, 15] })
+})
+
+test('a paste never lands on a locked track', () => {
+  const pasted = pasteClips([clip(10, 15, 0)], 30, [clip(0, 2, 0)], new Set([0]))
+  assert.equal(pasted[0].lane_index, 1)
+})
