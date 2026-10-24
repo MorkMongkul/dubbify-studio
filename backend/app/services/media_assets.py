@@ -85,7 +85,8 @@ async def probe_asset(path: Path) -> AssetFacts:
     info = await probe_video(str(path))
     streams = info.get("streams") or []
     video = next((s for s in streams if s.get("codec_type") == "video"), None)
-    if video is None:
+    # A file with no picture size (a text file named .png reads as a 0×0 "video")
+    if video is None or not int(video.get("width") or 0) or not int(video.get("height") or 0):
         raise ValueError("not an image or a video")
     kind = "image" if ext in IMAGE_EXTS or (ext == ".gif" and _still_gif(path)) else "video"
     tags = {k.lower(): v for k, v in (video.get("tags") or {}).items()}

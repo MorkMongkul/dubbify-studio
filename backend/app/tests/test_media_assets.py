@@ -189,3 +189,11 @@ async def test_media_left_preparing_when_the_app_quit_is_prepared_at_start(prore
     await media_assets.resume_interrupted(db_sessionmaker)
     async with db_sessionmaker() as s:
         assert (await s.get(MediaAsset, asset_id)).status == "ready"
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_isnt_a_picture_is_refused_even_named_like_one(tmp_path):
+    path = tmp_path / "notes.png"
+    path.write_text("not a picture")
+    with pytest.raises(ValueError):
+        await media_assets.probe_asset(path)
