@@ -6,17 +6,17 @@ import {
   ZoomIn, ZoomOut, Maximize2, Loader2, Scissors, X, RefreshCw,
   MousePointer2, SplitSquareHorizontal, Trash2, Magnet, Wand2, Layers, ChevronDown, Undo2, Redo2,
   ArrowLeftToLine, ArrowRightToLine, Gauge, AudioLines, Music, Volume2, VolumeX, Headphones, HeadphoneOff,
-  ArrowDownWideNarrow, Star, Film, type LucideIcon,
+  ArrowDownWideNarrow, Star, Film, Lock, LockOpen, Eye, EyeOff, Type, type LucideIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Segment, SegmentUpdate, Speaker, Job, LayoutChange, Stem, StemPiece } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
-import { useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useLayoutSegments, useSplitSegment, useDuplicateSegment, useSetDucking, useStemPieces, useSetStemPieces, useFrames, putSegments } from '@/hooks/useApi'
+import { useDeleteSegment, useSynthesizeSegment, useAutofitSegments, useTidyLanes, useLayoutSegments, useSetTrackFlags, useSplitSegment, useDuplicateSegment, useSetDucking, useStemPieces, useSetStemPieces, useFrames, putSegments } from '@/hooks/useApi'
 import { useScrubAudio } from '@/hooks/useScrubAudio'
 import { PEAKS_PER_SEC, useStemPeaks } from '@/hooks/useStemPeaks'
 import { segments as segmentsApi } from '@/api/client'
 import { timeToPixels, pixelsToTime, formatTime, getSpeakerColor, cn, isJobRunning, originalVoicesReplaced } from '@/lib/utils'
-import { recordDuckingChange, recordLayoutChange, recordPiecesChange, recordSegmentChange, recordSegmentDelete, recordSegmentsChange, recordSegmentsDelete, recordSegmentDuplicate, recordSegmentSplit } from '@/lib/historyHelpers'
+import { recordDuckingChange, recordTrackFlagsChange, recordLayoutChange, recordPiecesChange, recordSegmentChange, recordSegmentDelete, recordSegmentsChange, recordSegmentsDelete, recordSegmentDuplicate, recordSegmentSplit } from '@/lib/historyHelpers'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { InteractiveSegment, LANE_HEIGHT } from './TimelineClip'
 import { StemPieces } from './StemPieces'
@@ -24,6 +24,7 @@ import { deletePiece, keysActOn, newPieceId, setPiece, splitPiece } from '@/lib/
 import { clipAtPlayhead, trackRows } from '@/lib/tracks'
 import { effectiveSpeed, isVoiced, overrunSpans, selectionTargets, toggleInSelection, trimEnd, trimStart } from '@/lib/clipRules'
 import { saveEach } from '@/lib/batchSave'
+import { laneShift, shiftSwitches, switchesOf, trackKind, withSwitch, type SwitchKey, type TrackFlagMap } from '@/lib/trackFlags'
 import { isTypingTarget } from '@/lib/transport'
 import { redoWithToast, undoWithToast } from '@/lib/undoActions'
 import { layoutPlace } from '@/lib/undoPatches'
@@ -37,6 +38,25 @@ const STRIP_HEIGHT = 44 // the picture strip
 const SPEEDS = [0.5, 0.75, 0.8, 0.9, 1.0, 1.1, 1.2, 1.25, 1.5, 1.75, 2.0]
 
 // A toolbar button: an icon, its name and shortcut in the tooltip
+// One switch on a voice track's header (lock, hide, mute): amber while on, like the music row's
+function TrackSwitch({ on, label, icon: Icon, onClick }: { on: boolean; label: string; icon: LucideIcon; onClick: () => void }) {
+  return (
+    <Tooltip content={label} side="bottom">
+      <button
+        onClick={onClick}
+        aria-label={label}
+        aria-pressed={on}
+        className={cn(
+          'h-6 w-6 rounded-md flex items-center justify-center transition-colors shrink-0',
+          on ? 'bg-amber-500/20 text-amber-400' : 'text-white/45 hover:text-white hover:bg-white/8',
+        )}
+      >
+        <Icon size={13} />
+      </button>
+    </Tooltip>
+  )
+}
+
 function ToolButton({ label, icon: Icon, onClick, disabled, pressed, danger, busy }: {
   label: string
   icon: LucideIcon
@@ -223,14 +243,24 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   // Removes the multi-selection when one exists (a single undo entry restores
   // all of it), else the active clip. Used by Delete/Backspace and the trash
   // button. Returns whether anything was deleted.
+  // Each voice track's switches (lock, hide, mute), latest for stable callbacks
+  const trackFlagsRef = useRef<TrackFlagMap>(job?.track_flags ?? {})
+  useEffect(() => { trackFlagsRef.current = job?.track_flags ?? {} }, [job?.track_flags])
+  // A locked track's clips can't be edited (the clip itself blocks drags and trims)
+  const isLockedSeg = useCallback((s: Segment) => switchesOf(trackFlagsRef.current, s.lane_index ?? 0).locked, [])
+  const lockedNotice = () => toast.info('This track is locked. Unlock it to edit its clips.')
+
   const deleteSelection = useCallback((): boolean => {
     if (!jobId) return false
     // A selected piece of the music / original voices takes ⌫ (the shortcuts below)
     if (keysActOn(useEditorStore.getState().selectedPiece, stemPieceLists) === 'piece') return false
     const ids = useEditorStore.getState().selectedSegmentIds
     if (ids.length > 0) {
-      const targets = segments.filter((s) => ids.includes(s.id))
-      if (targets.length === 0) return false
+      const targets = segments.filter((s) => ids.includes(s.id) && !isLockedSeg(s))
+      if (targets.length === 0) {
+        if (segments.some((s) => ids.includes(s.id))) { lockedNotice(); return true }
+        return false
+      }
       Promise.all(targets.map((t) => segmentsApi.delete(t.id)))
         .then(() => qc.invalidateQueries({ queryKey: ['segments', jobId] }))
         .catch(() => {
@@ -244,11 +274,12 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     }
     if (!activeSegmentId) return false
     const seg = segments.find((s) => s.id === activeSegmentId)
+    if (seg && isLockedSeg(seg)) { lockedNotice(); return true }
     deleteSegment({ segmentId: activeSegmentId, jobId })
     if (seg) recordSegmentDelete(qc, jobId, seg)
     setActiveSegment(null)
     return true
-  }, [activeSegmentId, jobId, deleteSegment, setActiveSegment, segments, qc, stemPieceLists])
+  }, [activeSegmentId, jobId, deleteSegment, setActiveSegment, segments, qc, stemPieceLists, isLockedSeg])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -282,6 +313,8 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   // a clip are drawn (an emptied track disappears, like CapCut's); a drop above,
   // below or between tracks makes a new one (lib/tracks.ts).
   const rows = useMemo(() => trackRows(segments), [segments])
+  const lockedLanes = useMemo(
+    () => new Set(rows.filter((lane) => switchesOf(job?.track_flags, lane).locked)), [rows, job?.track_flags])
   // The part of each voice that runs into a later line where the original didn't
   const overruns = useMemo(() => overrunSpans(segments), [segments])
   // Where a drop would insert a new track — positioned by the dragged clip
@@ -304,17 +337,40 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   // to actually skip re-renders (inline closures would re-create per render).
   // A drag or trim: one layout request, then one undo step holding every clip
   // whose place changed — including clips the server moved to another track.
-  const handleCommitLayout = useCallback((changes: LayoutChange[], label: string) => {
+  const handleCommitLayout = useCallback((changes: LayoutChange[], label: string, moving?: string[]) => {
     if (!jobId || !changes.length) return
     const before = new Map(segmentsRef.current.map((s) => [s.id, s]))
-    layoutSegments({ jobId, changes }, {
+    // A drop that inserted a track moved the tracks below it: their switches move too
+    const flagsBefore = trackFlagsRef.current
+    const shift = moving ? laneShift(segmentsRef.current, changes, moving) : null
+    const flagsAfter = shift ? shiftSwitches(flagsBefore, shift.from, shift.by) : undefined
+    layoutSegments({ jobId, changes, trackFlags: flagsAfter }, {
       onSuccess: (updated) => {
         const moved = updated.filter((u) => before.has(u.id))
-        recordLayoutChange(qc, jobId, moved.map((u) => ({ id: u.id, before: layoutPlace(before.get(u.id)!), after: layoutPlace(u) })), label)
+        recordLayoutChange(qc, jobId, moved.map((u) => ({ id: u.id, before: layoutPlace(before.get(u.id)!), after: layoutPlace(u) })), label,
+          flagsAfter ? { before: flagsBefore, after: flagsAfter } : undefined)
       },
       onError: () => toast.error("Couldn't move the clip"),
     })
   }, [jobId, layoutSegments, qc])
+
+  // ── Track switches: lock, hide, mute (one undo step each) ──────────────
+  const { mutate: setTrackFlags } = useSetTrackFlags()
+  const toggleTrackSwitch = useCallback((lane: number, key: SwitchKey) => {
+    if (!jobId) return
+    const before = trackFlagsRef.current
+    const on = !switchesOf(before, lane)[key]
+    const after = withSwitch(before, lane, key, on)
+    const label = {
+      locked: on ? 'Lock track' : 'Unlock track',
+      hidden: on ? 'Hide track' : 'Show track',
+      muted: on ? 'Mute track' : 'Unmute track',
+    }[key]
+    setTrackFlags({ jobId, flags: after }, {
+      onSuccess: () => recordTrackFlagsChange(qc, jobId, before, after, label),
+      onError: () => toast.error(`Couldn't ${label.toLowerCase()}`),
+    })
+  }, [jobId, setTrackFlags, qc])
 
   const handleSegmentSelect = useCallback((seg: Segment) => {
     useEditorStore.getState().setSelectedPiece(null)
@@ -334,14 +390,17 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const handleSegmentDelete = useCallback((id: string) => {
     if (!jobId) return
     const target = segmentsRef.current.find((s) => s.id === id)
+    if (target && isLockedSeg(target)) { lockedNotice(); return }
     deleteSegment({ segmentId: id, jobId })
     setActiveSegment(null)
     if (target) recordSegmentDelete(qc, jobId, target)
-  }, [jobId, deleteSegment, qc, setActiveSegment])
+  }, [jobId, deleteSegment, qc, setActiveSegment, isLockedSeg])
 
   const handleSegmentRegenerate = useCallback((id: string) => {
+    const seg = segmentsRef.current.find((s) => s.id === id)
+    if (seg && isLockedSeg(seg)) { lockedNotice(); return }
     if (jobId) regenerateSegment({ segmentId: id, jobId })
-  }, [jobId, regenerateSegment])
+  }, [jobId, regenerateSegment, isLockedSeg])
 
   // ── Split ───────────────────────────────────────────────────────────────
   // Cuts one clip into two at `atTime` on the server: a voiced clip's halves
@@ -350,6 +409,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   const splittingId = isSplittingClip ? splitVariables?.segmentId ?? null : null
   const handleSplit = useCallback((seg: Segment, atTime: number) => {
     if (!jobId || isSplittingClip) return
+    if (isLockedSeg(seg)) { lockedNotice(); return }
     // Reached from both the blade tool and the Split button, so keep the
     // message about the cut point rather than naming one of them.
     if (atTime <= seg.start_time + MIN_CLIP_SECS || atTime >= seg.end_time - MIN_CLIP_SECS) {
@@ -364,7 +424,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
       },
       onError: () => toast.error('Failed to split clip'),
     })
-  }, [jobId, qc, splitSegment, isSplittingClip, setActiveSegment])
+  }, [jobId, qc, splitSegment, isSplittingClip, setActiveSegment, isLockedSeg])
 
   // Split whatever clip the playhead is currently over (active clip first)
   const handleSplitAtPlayhead = useCallback(() => {
@@ -384,6 +444,8 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
   // A copy right after the clip, with its own copy of the voice (server side).
   const handleDuplicate = useCallback(() => {
     if (!jobId || !activeSegmentId) return
+    const source = segmentsRef.current.find((s) => s.id === activeSegmentId)
+    if (source && isLockedSeg(source)) { lockedNotice(); return }
     const sourceId = activeSegmentId
     duplicateSegment({ segmentId: sourceId, jobId }, {
       onSuccess: (created) => {
@@ -392,12 +454,13 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
       },
       onError: () => toast.error('Failed to duplicate clip'),
     })
-  }, [jobId, activeSegmentId, qc, duplicateSegment, setActiveSegment])
+  }, [jobId, activeSegmentId, qc, duplicateSegment, setActiveSegment, isLockedSeg])
 
   // ── Trim at the playhead (Q / W, the toolbar, the right-click menu) ────
   // Cuts sound from the voice's start / end like dragging the edge; a clip
   // with no voice follows its text and has nothing to cut.
   const trimAt = useCallback((seg: Segment, t: number, side: 'start' | 'end') => {
+    if (isLockedSeg(seg)) { lockedNotice(); return }
     if (!isVoiced(seg)) {
       toast.info('Make a voice first — this line follows its text')
       return
@@ -411,7 +474,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
       const r = trimEnd(seg, t)
       if (Math.abs(r.end_time - seg.end_time) > 1e-6) handleCommitLayout([{ id: seg.id, ...r }], 'Trim end')
     }
-  }, [handleCommitLayout])
+  }, [handleCommitLayout, isLockedSeg])
 
   const handleTrimAtPlayhead = useCallback((side: 'start' | 'end') => {
     const t = useEditorStore.getState().currentTime
@@ -433,7 +496,11 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     const targets = selectionTargets(useEditorStore.getState().selectedSegmentIds, seg.id)
       .map((id) => segments.find((s) => s.id === id))
       .filter((s): s is Segment => !!s && isVoiced(s) && Math.abs(heard(s) - speed) >= 0.0005)
-    if (!targets.length) return
+      .filter((s) => !isLockedSeg(s))
+    if (!targets.length) {
+      if (isLockedSeg(seg)) lockedNotice()
+      return
+    }
     // A failure never loses the clips that did change: they keep their undo step
     const { ok: updated, failed } = await saveEach(targets.map((s) => s.id), (id) => segmentsApi.update(id, { voice_speed: speed }))
     putSegments(qc, jobId, updated)
@@ -446,7 +513,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     if (changes.length === 1) recordSegmentChange(qc, jobId, changes[0].id, changes[0].before, changes[0].after, 'Change voice speed')
     else if (changes.length > 1) recordSegmentsChange(qc, jobId, changes, `Change voice speed (${changes.length} clips)`)
     if (failed.length) toast.error(`Couldn't change the speed of ${failed.length} clip${failed.length > 1 ? 's' : ''}`)
-  }, [jobId, qc, segments])
+  }, [jobId, qc, segments, isLockedSeg])
 
   // A volume line dragged on a clip, or on one of a selection (every clip moved
   // by the same dB), or double-clicked back to 0 dB. One undo step for the clips
@@ -460,7 +527,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     const changes = Object.entries(targets).flatMap(([id, after]) => {
       const s = segments.find((x) => x.id === id)
       const before = s?.volume_db ?? 0
-      return !s || after === before ? [] : [{ id, before: { volume_db: before }, after: { volume_db: after } }]
+      return !s || after === before || isLockedSeg(s) ? [] : [{ id, before: { volume_db: before }, after: { volume_db: after } }]
     })
     if (!changes.length) return clear()
     const { ok: updated, failed } = await saveEach(changes.map((c) => c.id), (id) => segmentsApi.update(id, { volume_db: targets[id] }))
@@ -471,7 +538,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     else if (saved.length > 1) recordSegmentsChange(qc, jobId, saved, `Change volume (${saved.length} clips)`)
     if (failed.length) toast.error(`Couldn't change the volume of ${failed.length} clip${failed.length > 1 ? 's' : ''}`)
     clear()
-  }, [jobId, qc, segments])
+  }, [jobId, qc, segments, isLockedSeg])
 
   // Shift+click on a clip: add it to the selection, or take it out. Right after a
   // plain click, the clip picked then joins too (like CapCut) — only while it's
@@ -552,14 +619,16 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
 
   const clipMenuItems = (menu: { seg: Segment; at: number }): MenuItem[] => {
     const { seg, at } = menu
-    const voiced = isVoiced(seg)
+    // A locked track's clip: every edit greyed out
+    const locked = switchesOf(job?.track_flags, seg.lane_index ?? 0).locked
+    const voiced = isVoiced(seg) && !locked
     const current = Math.round(effectiveSpeed(seg) * 100) / 100
     return [
-      { icon: SplitSquareHorizontal, label: 'Split', shortcut: 'S', onSelect: () => handleSplit(seg, at) },
+      { icon: SplitSquareHorizontal, label: 'Split', shortcut: 'S', disabled: locked, onSelect: () => handleSplit(seg, at) },
       { icon: ArrowLeftToLine, label: 'Trim start', shortcut: 'Q', disabled: !voiced, onSelect: () => trimAt(seg, at, 'start') },
       { icon: ArrowRightToLine, label: 'Trim end', shortcut: 'W', disabled: !voiced, onSelect: () => trimAt(seg, at, 'end') },
       'separator',
-      { icon: AudioLines, label: 'New voice', disabled: !jobId || !(seg.khmer_text ?? '').trim(), onSelect: () => handleSegmentRegenerate(seg.id) },
+      { icon: AudioLines, label: 'New voice', disabled: locked || !jobId || !(seg.khmer_text ?? '').trim(), onSelect: () => handleSegmentRegenerate(seg.id) },
       {
         icon: Gauge, label: 'Speed', disabled: !voiced,
         items: SPEEDS.map((v) => ({
@@ -567,7 +636,7 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
         })),
       },
       'separator',
-      { icon: Trash2, label: 'Delete', shortcut: '⌫', onSelect: () => handleSegmentDelete(seg.id) },
+      { icon: Trash2, label: 'Delete', shortcut: '⌫', disabled: locked, onSelect: () => handleSegmentDelete(seg.id) },
     ]
   }
 
@@ -673,7 +742,12 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
     ? `/uploads/${projectId}/${jobId}/no_vocals.m4a?v=${job?.bgm_volume_db ?? 0}-${job?.stems_version ?? 0}`
     : null
   const voicesUrl = musicUrl && musicUrl.replace('/no_vocals.m4a?v=', '/vocals.m4a?v=')
-  const scrubSnippet = useScrubAudio({ segmentsRef, musicUrl, duckMusic: !!job?.duck_music, voicesUrl, pieces: stemPieceLists })
+  // Hearing while scrubbing: a muted track's voices stay silent, as in the export
+  const audibleSegsRef = useRef<Segment[]>([])
+  useEffect(() => {
+    audibleSegsRef.current = segments.filter((s) => !switchesOf(job?.track_flags, s.lane_index ?? 0).muted)
+  }, [segments, job?.track_flags])
+  const scrubSnippet = useScrubAudio({ segmentsRef: audibleSegsRef, musicUrl, duckMusic: !!job?.duck_music, voicesUrl, pieces: stemPieceLists })
   const scrubTo = useCallback((t: number) => {
     const clamped = Math.max(0, Math.min(duration, t))
     setCurrentTime(clamped)
@@ -1326,6 +1400,8 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
             <div ref={lanesRef} className="relative">
             {rows.map((laneIdx) => {
               const laneSegments = segments.filter((s) => (s.lane_index ?? 0) === laneIdx)
+              const laneSwitches = switchesOf(job?.track_flags, laneIdx)
+              const laneKind = trackKind(laneSegments, laneIdx)
 
               return (
                 <div
@@ -1333,11 +1409,31 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                   className="relative border-b border-timeline-grid"
                   style={{ height: LANE_HEIGHT }}
                 >
-                  {/* Track header (sticky left) — no controls on voice tracks */}
+                  {/* Track header (sticky left): its kind (audio once a line has a voice,
+                      text before), then lock, hide and — for audio — mute, like CapCut */}
                   <div
-                    className="sticky left-0 z-10 h-full shrink-0 bg-ink-900/95 backdrop-blur-sm border-r border-white/[0.06]"
+                    className="sticky left-0 z-10 h-full shrink-0 flex items-center gap-1.5 px-2.5 bg-ink-900/95 backdrop-blur-sm border-r border-white/[0.06]"
                     style={{ float: 'left', width: 'var(--speaker-width)' }}
-                  />
+                  >
+                    <Tooltip content={laneKind === 'audio' ? 'Audio track' : 'Text track'} side="right">
+                      <span className={cn(
+                        'h-5 w-5 rounded flex items-center justify-center shrink-0',
+                        laneKind === 'audio' ? 'bg-brand-500/15 text-brand-300' : 'bg-white/[0.06] text-white/55',
+                      )}>
+                        {laneKind === 'audio' ? <AudioLines size={12} /> : <Type size={12} />}
+                      </span>
+                    </Tooltip>
+                    <div className="ml-auto flex items-center gap-1">
+                      <TrackSwitch on={laneSwitches.locked} label={laneSwitches.locked ? 'Unlock track' : 'Lock track'}
+                        icon={laneSwitches.locked ? Lock : LockOpen} onClick={() => toggleTrackSwitch(laneIdx, 'locked')} />
+                      <TrackSwitch on={laneSwitches.hidden} label={laneSwitches.hidden ? 'Show track' : 'Hide track'}
+                        icon={laneSwitches.hidden ? EyeOff : Eye} onClick={() => toggleTrackSwitch(laneIdx, 'hidden')} />
+                      {laneKind === 'audio' && (
+                        <TrackSwitch on={laneSwitches.muted} label={laneSwitches.muted ? 'Unmute track' : 'Mute track'}
+                          icon={laneSwitches.muted ? VolumeX : Volume2} onClick={() => toggleTrackSwitch(laneIdx, 'muted')} />
+                      )}
+                    </div>
+                  </div>
 
                   {/* Segments */}
                   <div
@@ -1391,6 +1487,10 @@ export function TimelineEditor({ segments, speakers, duration, className, jobId,
                           activeTool={activeTool}
                           snapEnabled={snapEnabled}
                           onSplit={handleSplit}
+                          locked={laneSwitches.locked}
+                          hidden={laneSwitches.hidden}
+                          muted={laneSwitches.muted}
+                          lockedLanes={lockedLanes}
                         />
                       )
                     })}

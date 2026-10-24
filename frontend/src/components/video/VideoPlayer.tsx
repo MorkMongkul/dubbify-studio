@@ -1,14 +1,15 @@
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Maximize2, Minimize2, VolumeX, Play, Pause, SkipBack, SkipForward } from 'lucide-react'
-import type { Segment, Speaker, Overlay, StemPiece } from '@/types'
+import type { Segment, Speaker, Overlay, StemPiece, TrackFlagMap } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { formatTime, cn, originalVoicesReplaced } from '@/lib/utils'
 import { OverlayCanvas } from './OverlayCanvas'
-import { gainFor, resumeAudio, useVoicePlayback } from '@/hooks/useVoicePlayback'
+import { usePreviewAudio, type Stem } from '@/hooks/usePreviewAudio'
 import { frameSecs, isTypingTarget, nextEdge, shuttle } from '@/lib/transport'
+import { switchesOf } from '@/lib/trackFlags'
 import { duckGainAt, duckSpans } from '@/lib/ducking'
-import { pieceAt, setLevel, stemLevelAt } from '@/lib/stemPieces'
+import { pieceAt, stemLevelAt } from '@/lib/stemPieces'
 import { useStemPieces } from '@/hooks/useApi'
 
 interface VideoPlayerProps {
@@ -27,12 +28,12 @@ interface VideoPlayerProps {
   frameRate?: number | null
   /** The music & effects dip under the voices (job.duck_music). */
   duckMusic?: boolean
+  /** Each voice track's switches: a muted track isn't heard (nor dips the music), a hidden one shows no subtitles. */
+  trackFlags?: TrackFlagMap
 }
 
-export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus, overlays, bgmVolumeDb, stemsVersion, frameRate, duckMusic }: VideoPlayerProps) {
+export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus, overlays, bgmVolumeDb, stemsVersion, frameRate, duckMusic, trackFlags }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
-  const bgmAudioRef = useRef<HTMLAudioElement>(null)
-  const vocalsAudioRef = useRef<HTMLAudioElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [showControls, setShowControls] = useState(true)
@@ -68,17 +69,17 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
   const togglePlaying   = useEditorStore((s) => s.togglePlaying)
   const setPlaybackRate = useEditorStore((s) => s.setPlaybackRate)
 
-  // Stable refs so event callbacks always see the latest values
-  const mutedRef        = useRef(mutedTrackIds)
-  useEffect(() => { mutedRef.current        = mutedTrackIds }, [mutedTrackIds])
-
   const segmentsRef = useRef(segments)
   useEffect(() => {
     segmentsRef.current = segments
   }, [segments])
 
-  // The dubbed voices: every clip under the playhead plays its window, as in the export
-  useVoicePlayback({ videoRef, segmentsRef, isPlaying, playbackRate, volume, mutedRef, videoUrl })
+  // What the export plays and shows: muted tracks' voices aren't heard, hidden
+  // tracks' subtitles aren't shown (the track headers' switches)
+  const voiceSegments = useMemo(
+    () => segments.filter((s) => !switchesOf(trackFlags, s.lane_index ?? 0).muted), [segments, trackFlags])
+  const subtitleSegments = useMemo(
+    () => segments.filter((s) => !switchesOf(trackFlags, s.lane_index ?? 0).hidden), [segments, trackFlags])
 
   // ── Transport keys ────────────────────────────────────────────────────
   // J / K / L: back, stop, forward (again: 2×, then 4×). The window can't
@@ -161,7 +162,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     }
   }, [activeSegmentId, setCurrentTime])
 
-  // Sync video → store (the voices follow it in useVoicePlayback)
+  // Sync video → store
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
@@ -200,16 +201,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     }
   }, [videoUrl, setCurrentTime, setDuration, setPlaying, setActiveSegment])
 
-  // Store → video (play/pause)
-  useEffect(() => {
-    const video = videoRef.current
-    if (!video) return
-    if (isPlaying) {
-      video.play().catch(() => {})
-    } else {
-      video.pause()
-    }
-  }, [isPlaying, videoUrl])
+  // Store → video (play/pause): usePreviewAudio, which starts the picture with the sound
 
   // Store → video (seek)
   const lastSyncedTime = useRef<number>(0)
@@ -222,21 +214,21 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     }
   }, [currentTime, videoUrl])
 
-  // Prefer the compressed AAC playback stems (~7% of the WAV bytes); fall back
-  // to the raw WAVs for jobs separated before the .m4a files existed.
-  // Keyed by job id so switching sessions naturally resets to m4a-first.
-  const [wavFallbackJobs, setWavFallbackJobs] = useState<Record<string, boolean>>({})
-  const stemExt: 'm4a' | 'wav' = jobId && wavFallbackJobs[jobId] ? 'wav' : 'm4a'
-  const onStemError = useCallback(() => {
-    if (jobId) setWavFallbackJobs((prev) => (prev[jobId] ? prev : { ...prev, [jobId]: true }))
-  }, [jobId])
+  // The stems' files, best first: the compressed AAC copies (~7% of the WAV
+  // bytes), then the raw WAVs for jobs separated before the .m4a files existed.
   // Cache-busted by bgm_volume_db and stems_version — the backend overwrites
   // these same files when the BGM gain changes or the tracks are made again,
   // so the URLs need to change too or the browser keeps the old audio.
-  const noVocalsUrl = jobId && projectId
-    ? `/uploads/${projectId}/${jobId}/no_vocals.${stemExt}?v=${bgmVolumeDb ?? 0}-${stemsVersion ?? 0}`
-    : null
-  const vocalsUrl   = jobId && projectId ? `/uploads/${projectId}/${jobId}/vocals.${stemExt}?v=${stemsVersion ?? 0}` : null
+  const stemFiles = useMemo(() => {
+    if (!jobId || !projectId) return null
+    const dir = `/uploads/${projectId}/${jobId}`
+    const music = `?v=${bgmVolumeDb ?? 0}-${stemsVersion ?? 0}`
+    const voices = `?v=${stemsVersion ?? 0}`
+    return {
+      music: [`${dir}/no_vocals.m4a${music}`, `${dir}/no_vocals.wav${music}`],
+      voices: [`${dir}/vocals.m4a${voices}`, `${dir}/vocals.wav${voices}`],
+    }
+  }, [jobId, projectId, bgmVolumeDb, stemsVersion])
 
   // Separated stems exist from stems_ready onwards (demucs ran in Stage 1)
   const hasStemAudio = !!jobStatus && [
@@ -244,127 +236,47 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     'synthesizing', 'mixing', 'completed',
   ].includes(jobStatus)
 
-  // Volume & Mute — BGM and Vocals (the voices: useVoicePlayback)
+  // The video's own sound is heard only until the episode is separated; then
+  // the stems and the voices are (usePreviewAudio)
   useEffect(() => {
     const video = videoRef.current
-    const bgm = bgmAudioRef.current
-    const vocals = vocalsAudioRef.current
+    if (video) video.volume = hasStemAudio ? 0 : volume
+  }, [volume, hasStemAudio, videoUrl])
 
-    if (hasStemAudio) {
-      if (video) video.volume = 0
-      if (bgm) bgm.volume = mutedTrackIds['__bgm__'] ? 0 : volume
-      if (vocals) vocals.volume = (mutedTrackIds['__vocals__'] ?? originalVoicesReplaced(jobStatus)) ? 0 : volume
-    } else {
-      if (video) video.volume = volume
-      if (bgm) bgm.volume = 0
-      if (vocals) vocals.volume = 0
-    }
-  }, [volume, mutedTrackIds, jobStatus, hasStemAudio])
-
-  // The stems' levels follow the export every frame while playing:
+  // The stems' levels follow the export (usePreviewAudio reads them every frame):
   // - the music: its pieces (silence between them) × the dip under the voices;
   // - the original voices: their pieces — when the track is muted (as after
   //   analysis) only the pieces switched into the export, which the export plays.
   // Before the pieces are known (or with no video length yet) a stem is one whole piece.
+  // Through gain nodes: a piece turned above 0 dB is heard above the file's level, as exported.
   const { data: pieces } = useStemPieces(jobId)
-  const duckSpansMemo = useMemo(() => (duckMusic ? duckSpans(segments) : []), [duckMusic, segments])
+  const duckSpansMemo = useMemo(() => (duckMusic ? duckSpans(voiceSegments) : []), [duckMusic, voiceSegments])
   const vocalsMuted = mutedTrackIds['__vocals__'] ?? originalVoicesReplaced(jobStatus)
+  const stemLevel = useRef<(stem: Stem, t: number) => number>(() => 0)
   useEffect(() => {
-    const bgm = bgmAudioRef.current
-    const vocals = vocalsAudioRef.current
-    if (!hasStemAudio) return
     const musicBase = mutedTrackIds['__bgm__'] ? 0 : volume
-    // Through gain nodes: a piece turned above 0 dB is heard above the file's level, as exported
-    const bgmGain = bgm && pieces?.made ? gainFor(bgm) : null
-    const vocalsGain = vocals && pieces?.made ? gainFor(vocals) : null
     const live = (list: StemPiece[] | undefined, t: number) => {
       const lv = useEditorStore.getState().livePieceVolume
       const p = lv && list && pieceAt(list, t)
       return p && p.id === lv.id ? 10 ** ((lv.db - p.volume_db) / 20) : 1
     }
-    const apply = () => {
-      const t = videoRef.current?.currentTime ?? 0
-      if (isPlaying) resumeAudio()
-      if (bgm) {
-        const duck = duckSpansMemo.length ? duckGainAt(duckSpansMemo, t) : 1
-        setLevel(bgm, bgmGain, musicBase * stemLevelAt(pieces, 'music', t, vocalsMuted) * live(pieces?.music, t) * duck)
-      }
-      if (vocals) {
-        setLevel(vocals, vocalsGain, volume * stemLevelAt(pieces, 'voices', t, vocalsMuted) * live(pieces?.voices, t))
-      }
-    }
-    apply()
-    if (!isPlaying) return
-    let raf = requestAnimationFrame(function tick() {
-      apply()
-      raf = requestAnimationFrame(tick)
-    })
-    return () => cancelAnimationFrame(raf)
-  }, [duckSpansMemo, isPlaying, volume, mutedTrackIds, hasStemAudio, currentTime, pieces, vocalsMuted])
+    stemLevel.current = (stem, t) => stem === 'music'
+      ? musicBase * stemLevelAt(pieces, 'music', t, vocalsMuted) * live(pieces?.music, t)
+        * (duckSpansMemo.length ? duckGainAt(duckSpansMemo, t) : 1)
+      : volume * stemLevelAt(pieces, 'voices', t, vocalsMuted) * live(pieces?.voices, t)
+  }, [duckSpansMemo, volume, mutedTrackIds, pieces, vocalsMuted])
+
+  // Everything heard: the voices (every clip under the playhead plays its window,
+  // as in the export), the music & effects and the original voices — on one clock
+  usePreviewAudio({
+    videoRef, videoUrl, isPlaying, playbackRate, volume,
+    segments: voiceSegments, muted: mutedTrackIds, stems: hasStemAudio ? stemFiles : null, stemLevel,
+  })
 
   // Playback rate
   useEffect(() => {
     if (videoRef.current) videoRef.current.playbackRate = playbackRate
-    if (bgmAudioRef.current) bgmAudioRef.current.playbackRate = playbackRate
-    if (vocalsAudioRef.current) vocalsAudioRef.current.playbackRate = playbackRate
   }, [playbackRate, jobStatus])
-
-  // Synchronize separate audio tracks (BGM & Vocals) with the main video tag
-  useEffect(() => {
-    const video = videoRef.current
-    if (!video || !hasStemAudio) return
-
-    const bgm = bgmAudioRef.current
-    const vocals = vocalsAudioRef.current
-
-    const syncTimes = () => {
-      const t = video.currentTime
-      if (bgm && Math.abs(bgm.currentTime - t) > 0.15) {
-        bgm.currentTime = t
-      }
-      if (vocals && Math.abs(vocals.currentTime - t) > 0.15) {
-        vocals.currentTime = t
-      }
-    }
-
-    const playAudios = () => {
-      if (bgm) bgm.play().catch(() => {})
-      if (vocals) vocals.play().catch(() => {})
-    }
-
-    const pauseAudios = () => {
-      if (bgm) bgm.pause()
-      if (vocals) vocals.pause()
-    }
-
-    // Set initial rates
-    if (bgm) bgm.playbackRate = playbackRate
-    if (vocals) vocals.playbackRate = playbackRate
-
-    video.addEventListener('play', playAudios)
-    video.addEventListener('pause', pauseAudios)
-    video.addEventListener('seeking', syncTimes)
-    video.addEventListener('seeked', syncTimes)
-    video.addEventListener('timeupdate', syncTimes)
-
-    // Initial sync
-    syncTimes()
-    if (isPlaying) {
-      playAudios()
-    } else {
-      pauseAudios()
-    }
-
-    return () => {
-      video.removeEventListener('play', playAudios)
-      video.removeEventListener('pause', pauseAudios)
-      video.removeEventListener('seeking', syncTimes)
-      video.removeEventListener('seeked', syncTimes)
-      video.removeEventListener('timeupdate', syncTimes)
-      if (bgm) bgm.pause()
-      if (vocals) vocals.pause()
-    }
-  }, [jobStatus, hasStemAudio, isPlaying, playbackRate])
 
   // Auto-hide controls
   const resetControlsTimer = useCallback(() => {
@@ -429,17 +341,12 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
             ref={videoRef}
             src={videoUrl}
             className="w-full h-full object-contain"
-            preload="metadata"
+            // Loaded ahead, like the sound: the first play doesn't stall to load the picture
+            preload="auto"
             playsInline
           />
-          {hasStemAudio && noVocalsUrl && (
-            <audio ref={bgmAudioRef} src={noVocalsUrl} preload="auto" onError={onStemError} />
-          )}
-          {hasStemAudio && vocalsUrl && (
-            <audio ref={vocalsAudioRef} src={vocalsUrl} preload="auto" onError={onStemError} />
-          )}
           {jobId && overlays && overlays.length > 0 && (
-            <OverlayCanvas overlays={overlays} segments={segments} jobId={jobId} currentTime={currentTime} videoPixelWidth={videoPixelWidth} />
+            <OverlayCanvas overlays={overlays} segments={subtitleSegments} jobId={jobId} currentTime={currentTime} videoPixelWidth={videoPixelWidth} />
           )}
         </>
       ) : (

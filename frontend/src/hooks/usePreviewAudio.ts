@@ -1,0 +1,405 @@
+// src/hooks/usePreviewAudio.ts
+// The preview's sound, played the way an editor plays it (lib/audioPlan): every
+// voice and both stems — the music & effects and the original voices — are
+// decoded into memory and started on the one AudioContext clock at exactly the
+// right offset, so nothing is ever seeked while it plays. Media elements kept
+// in step by seeking cut the sound in Safari and the desktop app: WebKit stalls
+// a playing element ~0.6 s on every seek, the stall puts it behind, and it is
+// seeked again (measured 2026-10-24). The picture is never touched while it
+// plays either — WebKit stops a video outright while its speed changes: when
+// picture and sound drift apart further than the eye forgives (a seek, a
+// stall), the sound starts again from where the picture is (lib/playbackSync).
+
+import { useEffect, useRef, useState, type RefObject } from 'react'
+import type { Segment } from '@/types'
+import {
+  anchorAt, fadePoints, heardAt, LEAD, pictureHold, previewVoiceUrl, soundKey, stillAnchor, toCtx, toMedia, upcoming,
+  voiceStart, type Anchor,
+} from '@/lib/audioPlan'
+import { fadeGainAt, isVoiced, voiceUrl } from '@/lib/clipRules'
+import { syncAction } from '@/lib/playbackSync'
+import { useEditorStore } from '@/store/editorStore'
+
+/** Voices are loaded this far ahead of the playhead (s)… */
+const LOAD_AHEAD = 8
+/** …and scheduled this far ahead. */
+const START_AHEAD = 1
+/** Decoded voices kept (a few hundred KB each); the oldest used go first. */
+const MAX_VOICES = 120
+/** A failed load is tried again after this long (ms). */
+const RETRY_MS = 5000
+
+export type Stem = 'music' | 'voices'
+
+let context: AudioContext | null = null
+function audioContext(): AudioContext | null {
+  if (context) return context
+  const w = window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }
+  const Ctx = w.AudioContext || w.webkitAudioContext
+  if (!Ctx) return null
+  try { context = new Ctx() } catch { return null }
+  return context
+}
+
+/** How long after it is sent a sound is heard (Bluetooth earbuds: ~0.4 s). */
+function outputDelay(ctx: AudioContext): number {
+  return (ctx.baseLatency || 0) + ((ctx as AudioContext & { outputLatency?: number }).outputLatency || 0)
+}
+
+async function fetchDecode(ctx: AudioContext, url: string): Promise<AudioBuffer | null> {
+  try {
+    const res = await fetch(url)
+    if (!res.ok) return null
+    return await ctx.decodeAudioData(await res.arrayBuffer())
+  } catch {
+    return null
+  }
+}
+
+// Voices by URL, oldest used first
+const voiceLoads = new Map<string, Promise<AudioBuffer | null>>()
+const voiceBuffers = new Map<string, AudioBuffer>()
+function loadVoice(ctx: AudioContext, url: string): void {
+  const pending = voiceLoads.get(url)
+  if (pending) {
+    voiceLoads.delete(url)
+    voiceLoads.set(url, pending)
+    return
+  }
+  const load = fetchDecode(ctx, url).then((buffer) => {
+    if (buffer) voiceBuffers.set(url, buffer)
+    else setTimeout(() => { if (voiceLoads.get(url) === load) voiceLoads.delete(url) }, RETRY_MS)
+    return buffer
+  })
+  voiceLoads.set(url, load)
+  while (voiceLoads.size > MAX_VOICES) {
+    const oldest = voiceLoads.keys().next().value as string
+    voiceLoads.delete(oldest)
+    voiceBuffers.delete(oldest)
+  }
+}
+
+// The open episode's stems (≈50 MB each in memory): another episode's are let go
+const stemLoads = new Map<string, Promise<AudioBuffer | null>>()
+const stemBuffers = new Map<string, AudioBuffer>()
+function loadStems(ctx: AudioContext, files: string[][]): void {
+  const keys = files.map((urls) => urls.join(' '))
+  for (const key of [...stemLoads.keys()]) {
+    if (!keys.includes(key)) { stemLoads.delete(key); stemBuffers.delete(key) }
+  }
+  files.forEach((urls, i) => {
+    const key = keys[i]
+    if (stemLoads.has(key)) return
+    // The compressed copy first, the WAV for episodes separated before it existed
+    const load = (async () => {
+      for (const url of urls) {
+        const buffer = await fetchDecode(ctx, url)
+        if (buffer) return buffer
+      }
+      return null
+    })().then((buffer) => {
+      if (buffer && stemLoads.get(key) === load) stemBuffers.set(key, buffer)
+      if (!buffer) setTimeout(() => { if (stemLoads.get(key) === load) stemLoads.delete(key) }, RETRY_MS)
+      return buffer
+    })
+    stemLoads.set(key, load)
+  })
+}
+
+interface Sound { src: AudioBufferSourceNode; level: GainNode; nodes: AudioNode[]; lastLevel: number }
+interface VoiceSound extends Sound { key: string }
+interface StemSound extends Sound { buffer: AudioBuffer }
+
+function stopSound(s: Sound): void {
+  try { s.src.stop() } catch { /* never started */ }
+  for (const n of s.nodes) n.disconnect()
+}
+
+/** Ease a level to its new value (a jump clicks); only when it changed. */
+function setLevel(ctx: AudioContext, s: Sound, level: number): void {
+  if (Math.abs(s.lastLevel - level) < 1e-4) return
+  s.level.gain.setTargetAtTime(level, ctx.currentTime, 0.01)
+  s.lastLevel = level
+}
+
+/** A volume line being dragged (one clip or a selection) plays at its new level before it is saved. */
+function liveFactor(seg: Segment): number {
+  const target = useEditorStore.getState().liveClipVolume?.[seg.id]
+  return target == null ? 1 : 10 ** ((target - (seg.volume_db ?? 0)) / 20)
+}
+
+export interface PreviewAudioInput {
+  videoRef: RefObject<HTMLVideoElement | null>
+  /** The video's source: a new one is a new element to listen to. */
+  videoUrl?: string
+  isPlaying: boolean
+  playbackRate: number
+  volume: number
+  /** The voice clips that are heard (muted tracks already left out). */
+  segments: Segment[]
+  /** Speakers muted in the editor. */
+  muted: Record<string, boolean>
+  /** Each stem's files, best first; null before the episode is separated. */
+  stems: Record<Stem, string[]> | null
+  /** A stem's level at a media time: its pieces, the dip under the voices, its switch, the volume. */
+  stemLevel: RefObject<(stem: Stem, t: number) => number>
+}
+
+class PreviewSound {
+  input: PreviewAudioInput | null = null
+  private anchor: Anchor | null = null
+  private anchoredAt = 0
+  private lastVideoTime: number | null = null
+  /** The picture is waiting for the first sound to be heard. */
+  private holding: ReturnType<typeof setTimeout> | null = null
+  private starts = 0
+  private voices = new Map<string, VoiceSound>()
+  private stems = new Map<Stem, StemSound>()
+
+  /** Silence everything; the next frame of playback starts again from where the video is. */
+  stop(): void {
+    this.starts++
+    if (this.holding) { clearTimeout(this.holding); this.holding = null }
+    for (const s of this.voices.values()) stopSound(s)
+    for (const s of this.stems.values()) stopSound(s)
+    this.voices.clear()
+    this.stems.clear()
+    this.anchor = null
+    this.lastVideoTime = null
+  }
+
+  private heard(): Segment[] {
+    const { segments, muted } = this.input!
+    return segments.filter((s) => isVoiced(s) && !muted[s.speaker_id ?? '__none__'])
+  }
+
+  /** Load the voices around the playhead, so playing starts with them. */
+  preload(): void {
+    const ctx = audioContext()
+    const video = this.input?.videoRef.current
+    if (!ctx || !video) return
+    for (const seg of upcoming(this.heard(), video.currentTime, LOAD_AHEAD)) loadVoice(ctx, previewVoiceUrl(seg))
+  }
+
+  /** Play from the still picture: the sound at once from the playhead, the picture once that sound is heard. */
+  async start(): Promise<void> {
+    const ctx = audioContext()
+    const video = this.input?.videoRef.current
+    if (!video) return
+    this.stop()
+    const start = this.starts
+    if (ctx && ctx.state !== 'running') {
+      await Promise.race([ctx.resume().catch(() => {}), new Promise((r) => setTimeout(r, 300))])
+    }
+    if (start !== this.starts || !this.input?.isPlaying) return        // stopped meanwhile
+    if (!ctx || ctx.state !== 'running' || video.readyState < 3) {
+      // No sound clock yet, or the picture must load first (it would stall while the
+      // sound ran on): the picture plays, and the sound joins once it moves (tick)
+      video.play().catch(() => {})
+      return
+    }
+    const hold = pictureHold(outputDelay(ctx))
+    this.anchor = stillAnchor(ctx.currentTime, video.currentTime, this.input.playbackRate || 1)
+    this.anchoredAt = performance.now() + hold * 1000
+    this.holding = setTimeout(() => {
+      this.holding = null
+      video.play().catch(() => {})
+    }, hold * 1000)
+    this.tick()
+  }
+
+  /** One frame of playback. */
+  tick(): void {
+    const ctx = audioContext()
+    const input = this.input
+    const video = input?.videoRef.current
+    if (!ctx || !input || !video) return
+    if ((video.paused && !this.holding) || video.ended) { if (this.anchor) this.stop(); return }
+    if (ctx.state !== 'running') { ctx.resume().catch(() => {}); return }
+    const rate = input.playbackRate || 1
+    const latency = outputDelay(ctx)
+    if (this.anchor && this.anchor.rate !== rate) this.stop()
+
+    if (!this.anchor) {
+      // After a seek, a stall or a new speed while playing: start once the video
+      // is really moving (it takes WebKit a moment), from where it is
+      if (video.seeking || video.readyState < 3) { this.lastVideoTime = null; return }
+      const t = video.currentTime
+      if (this.lastVideoTime === null || t <= this.lastVideoTime) { this.lastVideoTime = t; return }
+      this.anchor = anchorAt(ctx.currentTime, t, rate, latency)
+      this.anchoredAt = performance.now()
+    }
+    const a = this.anchor
+
+    // The sound follows the picture, never the other way: too far apart, it
+    // starts again from where the picture is
+    if (!this.holding) {
+      const drift = video.currentTime - heardAt(a, ctx.currentTime, latency)
+      if (syncAction(drift, performance.now() - this.anchoredAt) === 'resync') {
+        this.stop()
+        return
+      }
+    }
+
+    const now = toMedia(a, ctx.currentTime)
+    const startAt = (media: number) => Math.max(toCtx(a, media), ctx.currentTime + LEAD)
+
+    // The stems: one sound each for the whole episode
+    if (input.stems) {
+      for (const stem of ['music', 'voices'] as const) {
+        const buffer = stemBuffers.get(input.stems[stem].join(' '))
+        let s = this.stems.get(stem)
+        if (s && s.buffer !== buffer) { stopSound(s); this.stems.delete(stem); s = undefined }
+        if (!s && buffer && now < buffer.duration) {
+          const when = startAt(now)
+          const src = ctx.createBufferSource()
+          src.buffer = buffer
+          src.playbackRate.value = rate
+          const level = ctx.createGain()
+          level.gain.value = input.stemLevel.current(stem, toMedia(a, when))
+          src.connect(level).connect(ctx.destination)
+          src.start(when, toMedia(a, when))
+          s = { src, level, nodes: [src, level], lastLevel: level.gain.value, buffer }
+          this.stems.set(stem, s)
+        }
+        if (s) setLevel(ctx, s, input.stemLevel.current(stem, now))
+      }
+    }
+
+    // The voices: each clip from its start (or mid-way, when it comes in late) to its end
+    const heard = this.heard()
+    for (const seg of upcoming(heard, now, LOAD_AHEAD)) loadVoice(ctx, previewVoiceUrl(seg))
+    const wanted = new Map(upcoming(heard, now, START_AHEAD).map((s) => [s.id, s]))
+    for (const [id, s] of this.voices) {
+      const seg = wanted.get(id)
+      if (!seg || seg.end_time <= now || s.key !== soundKey(seg)) { stopSound(s); this.voices.delete(id) }
+    }
+    for (const seg of wanted.values()) {
+      const playing = this.voices.get(seg.id)
+      const level = input.volume * liveFactor(seg)
+      if (playing) { setLevel(ctx, playing, level); continue }
+      const buffer = voiceBuffers.get(previewVoiceUrl(seg))
+      if (!buffer) continue        // still loading: it comes in, mid-way, once it's here
+      const when = startAt(seg.start_time)
+      const plan = voiceStart(seg, toMedia(a, when))
+      if (!plan) continue
+      const src = ctx.createBufferSource()
+      src.buffer = buffer
+      src.playbackRate.value = rate
+      // The fades, on the clock: straight lines between the envelope's corners
+      const fade = ctx.createGain()
+      const points = fadePoints(seg, plan.at)
+      fade.gain.setValueAtTime(points[0][1], ctx.currentTime)
+      fade.gain.setValueAtTime(points[0][1], when)
+      for (const [m, g] of points.slice(1)) fade.gain.linearRampToValueAtTime(g, toCtx(a, m))
+      const gain = ctx.createGain()
+      gain.gain.value = level
+      src.connect(fade).connect(gain).connect(ctx.destination)
+      src.start(when, plan.offset)
+      src.stop(toCtx(a, seg.end_time))
+      this.voices.set(seg.id, { src, level: gain, nodes: [src, fade, gain], lastLevel: level, key: soundKey(seg) })
+    }
+  }
+}
+
+/** Play the preview's sound with the video: the voices, the music & effects and the original voices. */
+export function usePreviewAudio(input: PreviewAudioInput): void {
+  const [sound] = useState(() => new PreviewSound())
+  useEffect(() => { sound.input = input })
+
+  // The stems load as soon as the episode opens (≈1 s), so playing starts with them
+  const files = input.stems
+  const stemKey = files ? `${files.music.join(' ')}\n${files.voices.join(' ')}` : ''
+  const filesRef = useRef(files)
+  useEffect(() => { filesRef.current = files })
+  useEffect(() => {
+    const ctx = audioContext()
+    if (ctx && filesRef.current) loadStems(ctx, [filesRef.current.music, filesRef.current.voices])
+  }, [stemKey])
+
+  // Play and pause the video with the sound; every frame while playing; when
+  // stopped, the voices around the playhead get loaded
+  const { isPlaying, videoRef, segments, videoUrl } = input
+  useEffect(() => {
+    if (!isPlaying) {
+      sound.stop()
+      videoRef.current?.pause()
+      sound.preload()
+      return
+    }
+    sound.start()
+    let raf = requestAnimationFrame(function frame() {
+      sound.tick()
+      raf = requestAnimationFrame(frame)
+    })
+    return () => { cancelAnimationFrame(raf); sound.stop() }
+  }, [isPlaying, videoUrl, videoRef, sound])
+  useEffect(() => { if (!isPlaying) sound.preload() }, [segments, isPlaying, sound])
+
+  // Browsers start an AudioContext only from a key press or a click: wake it in one
+  useEffect(() => {
+    const wake = () => { if (context?.state === 'suspended') context.resume().catch(() => {}) }
+    window.addEventListener('keydown', wake, true)
+    window.addEventListener('pointerdown', wake, true)
+    return () => {
+      window.removeEventListener('keydown', wake, true)
+      window.removeEventListener('pointerdown', wake, true)
+    }
+  }, [])
+
+  // A seek or a stall while playing: silence at once, start again once the video moves
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+    const restart = () => sound.stop()
+    const preload = () => sound.preload()
+    video.addEventListener('seeking', restart)
+    video.addEventListener('waiting', restart)
+    video.addEventListener('seeked', preload)
+    return () => {
+      video.removeEventListener('seeking', restart)
+      video.removeEventListener('waiting', restart)
+      video.removeEventListener('seeked', preload)
+    }
+  }, [videoRef, videoUrl, sound])
+
+  useEffect(() => () => sound.stop(), [sound])
+}
+
+// ── One clip on its own (double-click on the timeline) ────────────────────────
+
+let preview: { audio: HTMLAudioElement; raf: number } | null = null
+
+/** Stop a clip started with previewClip. */
+export function stopPreview(): void {
+  if (!preview) return
+  cancelAnimationFrame(preview.raf)
+  preview.audio.pause()
+  preview = null
+}
+
+/** Play one clip's window once — the part of its voice the clip plays, at its rate, with its fades. */
+export function previewClip(seg: Segment, volume = 1): void {
+  stopPreview()
+  if (!isVoiced(seg)) return
+  const rate = seg.fit_rate || 1
+  const from = seg.voice_offset ?? 0
+  const until = from + (seg.end_time - seg.start_time) * rate
+  const audio = new Audio(voiceUrl(seg))
+  audio.preload = 'auto'
+  // A rate other than 1 is a time-stretch, like the export's atempo
+  ;(audio as HTMLAudioElement & { preservesPitch?: boolean }).preservesPitch = true
+  audio.volume = Math.max(0, Math.min(1, volume * fadeGainAt(seg, seg.start_time)))
+  audio.playbackRate = Math.max(0.0625, Math.min(16, rate))
+  const current = { audio, raf: 0 }
+  preview = current
+  const watch = () => {
+    if (preview !== current) return
+    if (audio.currentTime >= until || audio.ended) { stopPreview(); return }
+    // Where the clip is on the timeline now, for its fades
+    audio.volume = Math.max(0, Math.min(1, volume * fadeGainAt(seg, seg.start_time + (audio.currentTime - from) / rate)))
+    current.raf = requestAnimationFrame(watch)
+  }
+  audio.currentTime = from
+  audio.play().then(() => { current.raf = requestAnimationFrame(watch) }).catch(() => {})
+}

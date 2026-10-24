@@ -7,7 +7,7 @@
 
 import type { QueryClient } from '@tanstack/react-query'
 import { jobs as jobsApi, segments as segmentsApi, speakers as speakersApi, stemPieces as stemPiecesApi } from '@/api/client'
-import type { LayoutChange, Stem, StemPiece, Segment, SegmentCreate, SegmentUpdate, SpeakerMergeResponse, SpeakerUpdate, SplitResult } from '@/types'
+import type { LayoutChange, Stem, StemPiece, Segment, SegmentCreate, SegmentUpdate, SpeakerMergeResponse, SpeakerUpdate, SplitResult, TrackFlagMap } from '@/types'
 import { invalidateSpeakerLines, putSegments } from '@/hooks/useApi'
 import { useHistoryStore } from '@/store/historyStore'
 import { splitUndoPatch } from '@/lib/undoPatches'
@@ -176,12 +176,15 @@ export function recordLayoutChange(
   jobId: string,
   changes: { id: string; before: LayoutChange; after: LayoutChange }[],
   label: string,
+  /** The tracks' switches before and after, when the drop inserted a track and moved them. */
+  flags?: { before: TrackFlagMap; after: TrackFlagMap },
 ) {
   if (!changes.length) return
   const send = async (side: 'before' | 'after') => {
-    const updated = await segmentsApi.layout(jobId, changes.map((c) => c[side]))
+    const updated = await segmentsApi.layout(jobId, changes.map((c) => c[side]), flags?.[side])
     putSegments(qc, jobId, updated)
     qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    if (flags) qc.invalidateQueries({ queryKey: ['job', jobId] })
   }
   useHistoryStore.getState().push({ label, undo: () => send('before'), redo: () => send('after') })
 }
@@ -243,6 +246,14 @@ export function recordPiecesChange(
 }
 
 /** The music dipping under the voices switched on or off: one undo step. */
+/** A track's switch (lock, hide, mute): one undo step. */
+export function recordTrackFlagsChange(qc: QueryClient, jobId: string, before: TrackFlagMap, after: TrackFlagMap, label: string) {
+  const send = async (flags: TrackFlagMap) => {
+    qc.setQueryData(['job', jobId], await jobsApi.setTrackFlags(jobId, flags))
+  }
+  useHistoryStore.getState().push({ label, undo: () => send(before), redo: () => send(after) })
+}
+
 export function recordDuckingChange(qc: QueryClient, jobId: string, before: boolean, after: boolean) {
   const send = async (on: boolean) => {
     qc.setQueryData(['job', jobId], await jobsApi.setDucking(jobId, on))

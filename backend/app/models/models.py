@@ -190,6 +190,10 @@ class Job(Base):
     # The music and the original voices were given their pieces (0.3.2): from
     # then on a stem with no pieces is one the user emptied — silence.
     stem_pieces_made = Column(Boolean, nullable=True)
+    # Each voice track's switches — lock, hide, mute — like CapCut's track
+    # headers: JSON {"<lane_index>": {"locked", "hidden", "muted"}}, only tracks
+    # with a switch on (timeline.flags_from / flags_to). NULL = none.
+    track_flags = Column(Text, nullable=True)
 
     project  = relationship("Project", back_populates="jobs")
     segments = relationship("Segment", back_populates="job", cascade="all, delete",

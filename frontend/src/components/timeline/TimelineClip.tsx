@@ -5,7 +5,7 @@
 // Dragging moves it in time and between tracks like CapCut; a drop never moves
 // another clip in time (lib/tracks.ts planDrop).
 import { memo, useRef, useEffect, useState, useMemo } from 'react'
-import { Loader2, Gauge, FilePenLine } from 'lucide-react'
+import { Loader2, Gauge, FilePenLine, Lock } from 'lucide-react'
 import type { Segment, SegmentUpdate, LayoutChange } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { timeToPixels, pixelsToTime, hexToRgba, cn } from '@/lib/utils'
@@ -15,7 +15,7 @@ import {
 } from '@/lib/clipRules'
 import { dbLabel, gainFor, levelBars, peaksFrom, volumeAfterDrag, volumeTop } from '@/lib/waveform'
 import { dropSpot, planDrop, type DropSpot } from '@/lib/tracks'
-import { previewClip } from '@/hooks/useVoicePlayback'
+import { previewClip } from '@/hooks/usePreviewAudio'
 import { DragTip } from './DragTip'
 
 export const LANE_HEIGHT = 64  // clip row height — also the divisor for drop-target row math
@@ -44,7 +44,14 @@ interface InteractiveSegmentProps {
   /** The parts of this clip's voice that run into a later line (red stripes). */
   overruns?: [number, number][]
   /** One layout request + one undo step for the gesture (TimelineEditor.handleCommitLayout). */
-  onCommitLayout: (changes: LayoutChange[], label: string) => void
+  /** `moving`: the clips a drag moved (a drop that inserts a track moves the switches below it). */
+  onCommitLayout: (changes: LayoutChange[], label: string, moving?: string[]) => void
+  /** Its track's switches: locked = no edits; hidden = its subtitle isn't shown; muted = not heard. */
+  locked?: boolean
+  hidden?: boolean
+  muted?: boolean
+  /** Every locked track: nothing is dropped onto them, and a group drag leaves their clips. */
+  lockedLanes?: Set<number>
   /** A clip setting changed on the clip itself (fades, the volume line): one PATCH + one undo step. */
   onPatch?: (seg: Segment, after: SegmentUpdate, before: SegmentUpdate, label: string) => void
   /** A volume line was dragged: each clip's new dB (one undo step); clears the live volume once saved. */
@@ -72,6 +79,7 @@ export const InteractiveSegment = memo(function InteractiveSegment({
   isPersisting, isRegenerating, isSplitting,
   mutedTrackIds, soloedTrackIds, volume,
   activeTool, snapEnabled, onSplit,
+  locked = false, hidden = false, muted = false, lockedLanes,
 }: InteractiveSegmentProps) {
   const elementRef = useRef<HTMLDivElement>(null)
 
@@ -224,7 +232,9 @@ export const InteractiveSegment = memo(function InteractiveSegment({
     // EVERY selected clip by the same time and track delta.
     const selectedIds = useEditorStore.getState().selectedSegmentIds
     const isGroupDrag = actionType === 'drag' && selectedIds.length > 1 && selectedIds.includes(seg.id)
-    const groupIdSet = new Set(isGroupDrag ? selectedIds : [seg.id])
+    // A locked track's clips stay where they are
+    const lockedIds = new Set(lockedLanes ? allSegments.filter((s) => lockedLanes.has(s.lane_index ?? 0)).map((s) => s.id) : [])
+    const groupIdSet = new Set((isGroupDrag ? selectedIds : [seg.id]).filter((id) => !lockedIds.has(id)))
     const groupMates = isGroupDrag ? allSegments.filter((s) => s.id !== seg.id && groupIdSet.has(s.id)) : []
     const mateEls = groupMates
       .map((s) => document.querySelector<HTMLElement>(`[data-seg-id="${s.id}"]`))
@@ -354,8 +364,8 @@ export const InteractiveSegment = memo(function InteractiveSegment({
       if (actionType === 'drag') {
         const deltaSecs = Math.round(pixelsToTime(lastLeft - startLeft, zoom, PX_PER_SEC) * 1000) / 1000
         const ids = [seg.id, ...groupMates.map((s) => s.id)]
-        const changes = planDrop(allSegments, ids, seg.id, deltaSecs, lastSpot)
-        onCommitLayout(changes, ids.length > 1 ? `Move ${ids.length} clips` : 'Move clip')
+        const changes = planDrop(allSegments, ids, seg.id, deltaSecs, lastSpot, lockedLanes)
+        onCommitLayout(changes, ids.length > 1 ? `Move ${ids.length} clips` : 'Move clip', ids)
       } else if (trimmed) {
         const same = actionType === 'resize-left'
           ? Math.abs((trimmed.start_time ?? seg.start_time) - seg.start_time) < 1e-6
@@ -377,9 +387,11 @@ export const InteractiveSegment = memo(function InteractiveSegment({
       data-seg-id={seg.id}
       className={cn(
         'timeline-segment absolute top-[6px] bottom-[6px] select-none overflow-hidden transition-[box-shadow,outline]',
-        activeTool === 'blade' ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing',
+        activeTool === 'blade' ? 'cursor-crosshair' : locked ? 'cursor-default' : 'cursor-grab active:cursor-grabbing',
         isActive && 'active border-brand-500 outline-2 outline-brand-500 ring-2 ring-brand-500/20',
-        isSplitting && 'opacity-60'
+        isSplitting && 'opacity-60',
+        // A hidden or muted track's clips are drawn faded
+        (hidden || muted) && !isSplitting && 'opacity-50',
       )}
       style={{
         left,
@@ -419,7 +431,8 @@ export const InteractiveSegment = memo(function InteractiveSegment({
           onSplit(seg, seg.start_time + pixelsToTime(e.clientX - rect.left, zoom, PX_PER_SEC))
           return
         }
-        handlePointerDown(e, 'drag')
+        // A locked track's clip can be picked, never moved
+        if (!locked) handlePointerDown(e, 'drag')
         // Grabbing a clip that's already part of the multi-selection must NOT
         // collapse the selection (onSelect clears it) — that press is the
         // start of a group drag. Plain click on an unselected clip keeps the
@@ -465,7 +478,7 @@ export const InteractiveSegment = memo(function InteractiveSegment({
 
       {/* Left Trim Handle — a voiced clip only (a voiceless one follows its text);
           hidden while the blade tool is active so a click cuts instead */}
-      {activeTool === 'select' && voiced && (
+      {activeTool === 'select' && voiced && !locked && (
         <div
           className="absolute left-0 top-0 bottom-0 w-3 cursor-col-resize z-20 flex items-center justify-center group/left hover:bg-white/10 active:bg-white/20 transition-all"
           onPointerDown={(e) => {
@@ -498,6 +511,11 @@ export const InteractiveSegment = memo(function InteractiveSegment({
           {showSpeed && (
             <span className="shrink-0 flex items-center gap-0.5 rounded bg-black/45 px-1 text-[10.5px] font-semibold text-white tabular-nums">
               <Gauge size={11} />{`${Math.round(speed * 100) / 100}×`}
+            </span>
+          )}
+          {locked && (
+            <span className="shrink-0 text-amber-300" title="Track locked">
+              <Lock size={11} />
             </span>
           )}
           {outdated && (
@@ -539,7 +557,7 @@ export const InteractiveSegment = memo(function InteractiveSegment({
       )}
 
       {/* Fade handles on the top corners of the selected clip */}
-      {isActive && voiced && activeTool === 'select' && onPatch && width > 36 && (
+      {isActive && voiced && activeTool === 'select' && onPatch && !locked && width > 36 && (
         <>
           <div
             className="absolute top-0 z-30 h-3 w-3 -translate-x-1/2 rounded-full border border-white/80 bg-ink-900 cursor-ew-resize hover:bg-brand-500"
@@ -558,7 +576,7 @@ export const InteractiveSegment = memo(function InteractiveSegment({
 
       {/* The volume line: it follows the pointer, and the waveform grows and
           shrinks with it; its dB shows on hover and while dragging */}
-      {voiced && onVolumeChange && width >= 40 && activeTool === 'select' && (
+      {voiced && onVolumeChange && !locked && width >= 40 && activeTool === 'select' && (
         <div className="absolute inset-x-2.5 bottom-[3px] z-20 pointer-events-none" style={{ height: WAVE_BAND_PX }}>
           <div
             className="absolute inset-x-0 h-[9px] -translate-y-1/2 cursor-ns-resize pointer-events-auto group/vol"
@@ -620,7 +638,7 @@ export const InteractiveSegment = memo(function InteractiveSegment({
       )}
 
       {/* Right Trim Handle — see note on the left handle */}
-      {activeTool === 'select' && voiced && (
+      {activeTool === 'select' && voiced && !locked && (
         <div
           className="absolute right-0 top-0 bottom-0 w-3 cursor-col-resize z-20 flex items-center justify-center group/right hover:bg-white/10 active:bg-white/20 transition-all"
           onPointerDown={(e) => {

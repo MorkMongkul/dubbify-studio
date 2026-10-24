@@ -54,7 +54,7 @@ test('deleting a piece leaves a gap; a setting changes one piece', () => {
 })
 
 // ── Review fixes ──────────────────────────────────────────────────────────────
-import { keysActOn, setLevel, stemLevelAt } from '../src/lib/stemPieces.ts'
+import { keysActOn, stemLevelAt } from '../src/lib/stemPieces.ts'
 
 test('a stem the user emptied is silent; one never given pieces plays whole', () => {
   const emptied = { music: [], voices: [p('v', 0, 5, { stem: 'voices', in_export: false })], made: true }
@@ -77,14 +77,4 @@ test('with a piece selected, the editing keys act on the piece only', () => {
   assert.equal(keysActOn({ stem: 'music', id: 'm' }, lists), 'piece')
   assert.equal(keysActOn({ stem: 'music', id: 'gone' }, lists), 'clips')
   assert.equal(keysActOn(null, lists), 'clips')
-})
-
-test('a level above 1 goes to the gain node, not the element (an element stops at 1)', () => {
-  const el = { volume: 0.5 }
-  const gain = { gain: { value: 1 } }
-  setLevel(el, gain, 2)
-  assert.deepEqual([el.volume, gain.gain.value], [1, 2])
-  const bare = { volume: 0.5 }
-  setLevel(bare, null, 2)
-  assert.equal(bare.volume, 1)
 })

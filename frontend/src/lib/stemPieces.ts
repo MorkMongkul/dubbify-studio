@@ -95,14 +95,3 @@ export function stemLevelAt(lists: StemPieceLists | null | undefined, stem: 'mus
 export function keysActOn(selected: { stem: 'music' | 'voices'; id: string } | null, lists: StemPieceLists | null | undefined): 'piece' | 'clips' {
   return selected && lists?.[selected.stem].some((p) => p.id === selected.id) ? 'piece' : 'clips'
 }
-
-/** Play an element at `level`: through its gain node (which can go above 1), else its own volume (which stops at 1). */
-export function setLevel(el: { volume: number }, gain: { gain: { value: number } } | null, level: number): void {
-  const l = Math.max(0, level)
-  if (gain) {
-    if (el.volume !== 1) el.volume = 1
-    gain.gain.value = l
-  } else {
-    el.volume = Math.min(1, l)
-  }
-}

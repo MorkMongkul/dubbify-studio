@@ -10,7 +10,7 @@ import { standInMessage, withTurn } from '@/lib/chatMessages'
 import type { StemPieceLists } from '@/lib/stemPieces'
 import type {
   Segment, LayoutChange, Stem, StemPiece, ProjectCreate, ProjectUpdate, SpeakerUpdate, SpeakerCreate, SegmentUpdate, SegmentCreate, Voice, OverlayUpdate, AppSettingsUpdate, GeminiModelSetting,
-  ChatLineRef, ChatMessage, StoryEdit,
+  ChatLineRef, ChatMessage, StoryEdit, TrackFlagMap,
 } from '@/types'
 
 // ── Health ────────────────────────────────────────────────────
@@ -262,10 +262,13 @@ export function putSegments(qc: ReturnType<typeof useQueryClient>, jobId: string
 export function useLayoutSegments() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ jobId, changes }: { jobId: string; changes: LayoutChange[] }) =>
-      segments.layout(jobId, changes),
+    mutationFn: ({ jobId, changes, trackFlags }: { jobId: string; changes: LayoutChange[]; trackFlags?: TrackFlagMap }) =>
+      segments.layout(jobId, changes, trackFlags),
     onMutate: ({ changes }) => useEditorStore.getState().setPendingLayout(changes),
-    onSuccess: (updated, { jobId }) => putSegments(qc, jobId, updated),
+    onSuccess: (updated, { jobId, trackFlags }) => {
+      putSegments(qc, jobId, updated)
+      if (trackFlags) qc.invalidateQueries({ queryKey: ['job', jobId] })
+    },
     onError: (_, { jobId }) => qc.invalidateQueries({ queryKey: ['segments', jobId] }),
     onSettled: (_, __, { changes }) => useEditorStore.getState().clearPendingLayout(changes.map((c) => c.id)),
   })
@@ -340,6 +343,16 @@ export function useSetBgmVolume() {
   return useMutation({
     mutationFn: ({ jobId, volumeDb }: { jobId: string; volumeDb: number }) =>
       jobs.setBgmVolume(jobId, volumeDb),
+    onSuccess: (updated) => {
+      qc.setQueryData(['job', updated.id], updated)
+    },
+  })
+}
+
+export function useSetTrackFlags() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ jobId, flags }: { jobId: string; flags: TrackFlagMap }) => jobs.setTrackFlags(jobId, flags),
     onSuccess: (updated) => {
       qc.setQueryData(['job', updated.id], updated)
     },
