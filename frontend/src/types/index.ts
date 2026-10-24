@@ -132,6 +132,8 @@ export interface Job {
   frame_rate?: number | null
   /** The music & effects dip under the voices (off for episodes analysed before 0.3.1). */
   duck_music?: boolean
+  /** Each voice track's switches (lock, hide, mute), keyed by lane_index; only tracks with one on. */
+  track_flags?: TrackFlagMap
 }
 
 export interface SubtitleTrack {
@@ -275,6 +277,8 @@ export interface SegmentUpdate {
 
 /** One clip's new place on the timeline (PUT /jobs/{id}/segments/layout). */
 export type { LayoutChange } from '@/lib/tracks'
+import type { TrackFlagMap } from '@/lib/trackFlags'
+export type { TrackFlagMap } from '@/lib/trackFlags'
 
 /** POST /segments/{id}/split: the original (shortened) and the new second half. */
 export interface SplitResult {

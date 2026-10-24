@@ -42,6 +42,8 @@ import { StoryPanel } from '@/components/panels/StoryPanel'
 import { PanelHeader, PanelEmptyState } from '@/components/panels/PanelShell'
 import { Button } from '@/components/ui/Button'
 import { Modal, InputField } from '@/components/ui/Modal'
+import { exportWarnings } from '@/lib/trackFlags'
+import { trackRows } from '@/lib/tracks'
 import { MoveloStudioLogo } from '@/components/brand/Movelo'
 import { ProgressRing } from '@/components/ui/ProgressRing'
 import { JobProgressRing } from '@/components/progress/JobProgressRing'
@@ -358,6 +360,8 @@ export default function EditorPage() {
   // In-app destination picker, used whenever the native Save As dialog isn't
   // available. `reason` records why so the modal can explain itself.
   const [exportPrompt, setExportPrompt] = useState<{ path: string; reason: string } | null>(null)
+  // Muted or hidden tracks are left out of the export: say so before it starts
+  const [exportLeftOut, setExportLeftOut] = useState<string[] | null>(null)
 
   // Suggested filename: project name (or session id) + .mp4
   const suggestedExportName = `${(currentProject?.name || `movelo-${jobId?.slice(0, 8)}`)
@@ -382,7 +386,14 @@ export default function EditorPage() {
     })
   }, [jobId, mix])
 
-  const handleExport = async () => {
+  const handleExport = () => {
+    if (!jobId) return
+    const leftOut = exportWarnings(trackRows(displaySegs), job?.track_flags)
+    if (leftOut.length) setExportLeftOut(leftOut)
+    else proceedExport()
+  }
+
+  const proceedExport = async () => {
     if (!jobId) return
     const target = await chooseVideoSavePath(suggestedExportName)
     if (target.kind === 'cancelled') return
@@ -790,7 +801,7 @@ export default function EditorPage() {
                   // No fixed aspect-ratio wrapper here: VideoPlayer sizes itself
                   // to the clip's real dimensions (landscape or portrait/Reel),
                   // bounded by the available pane space via max-w/max-h.
-                  <VideoPlayer videoUrl={videoUrl} segments={displaySegs} speakers={spks} className="max-w-full max-h-full" jobId={jobId} projectId={projectId} jobStatus={job.status} overlays={jobOverlays} bgmVolumeDb={job.bgm_volume_db} stemsVersion={job.stems_version} frameRate={job.frame_rate} duckMusic={!!job.duck_music} />
+                  <VideoPlayer videoUrl={videoUrl} segments={displaySegs} speakers={spks} className="max-w-full max-h-full" jobId={jobId} projectId={projectId} jobStatus={job.status} overlays={jobOverlays} bgmVolumeDb={job.bgm_volume_db} stemsVersion={job.stems_version} frameRate={job.frame_rate} duckMusic={!!job.duck_music} trackFlags={job.track_flags} />
                 ) : jobId && job && !videoUrl ? (
                   <div className="flex flex-col items-center gap-4 text-center max-w-xs">
                     <Loader2 size={20} className="animate-spin text-brand-300" />
@@ -879,6 +890,24 @@ export default function EditorPage() {
       {/* Destination picker — the fallback when there's no native Save As
           dialog (browser dev, or the desktop dialog failed). The path is on
           the machine running the backend, which is always this machine. */}
+      <Modal
+        open={!!exportLeftOut}
+        onClose={() => setExportLeftOut(null)}
+        title="Some tracks won't be exported"
+        size="md"
+      >
+        <div className="space-y-4">
+          <ul className="space-y-1.5 text-[13px]" style={{ color: 'var(--color-text-secondary)' }}>
+            {exportLeftOut?.map((line) => <li key={line}>{line}</li>)}
+          </ul>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setExportLeftOut(null)}>Cancel</Button>
+            <Button onClick={() => { setExportLeftOut(null); proceedExport() }} icon={<Download size={13} />}>
+              Export anyway
+            </Button>
+          </div>
+        </div>
+      </Modal>
       <Modal
         open={!!exportPrompt}
         onClose={() => setExportPrompt(null)}

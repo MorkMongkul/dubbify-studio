@@ -3,7 +3,7 @@
 
 import axios, { type AxiosProgressEvent } from 'axios'
 import type {
-  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, SpeakerMergeResponse, Segment, SegmentUpdate, SegmentCreate, LayoutChange, SplitResult, Stem, StemPiece, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView,
+  Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, SpeakerMergeResponse, Segment, SegmentUpdate, SegmentCreate, LayoutChange, SplitResult, Stem, StemPiece, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView, TrackFlagMap,
 } from '@/types'
 import type { StemPieceLists } from '@/lib/stemPieces'
 
@@ -162,6 +162,9 @@ export const jobs = {
   /** The music & effects dip under the voices (preview and export). */
   setDucking: (jobId: string, on: boolean) =>
     api.patch<Job>(`/jobs/${jobId}/ducking`, { duck_music: on }).then((r) => r.data),
+  /** Every voice track's switches (lock, hide, mute), keyed by lane_index. */
+  setTrackFlags: (jobId: string, flags: TrackFlagMap) =>
+    api.put<Job>(`/jobs/${jobId}/track-flags`, { flags }).then((r) => r.data),
 
   frames: (jobId: string) =>
     api.get<PictureStrip>(`/jobs/${jobId}/frames`).then((r) => r.data),
@@ -208,8 +211,10 @@ export const segments = {
     api.delete(`/segments/${segmentId}`),
 
   /** Move / trim / re-track several clips at once; returns every clip whose place changed. */
-  layout: (jobId: string, changes: LayoutChange[]) =>
-    api.put<{ segments: Segment[] }>(`/jobs/${jobId}/segments/layout`, { changes }).then((r) => r.data.segments),
+  /** `trackFlags`: the tracks' switches after a drop that inserted a track (they move with their tracks). */
+  layout: (jobId: string, changes: LayoutChange[], trackFlags?: TrackFlagMap) =>
+    api.put<{ segments: Segment[] }>(`/jobs/${jobId}/segments/layout`, trackFlags ? { changes, track_flags: trackFlags } : { changes })
+      .then((r) => r.data.segments),
 
   split: (segmentId: string, at: number) =>
     api.post<SplitResult>(`/segments/${segmentId}/split`, { at }).then((r) => r.data),

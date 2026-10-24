@@ -1,12 +1,13 @@
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Maximize2, Minimize2, VolumeX, Play, Pause, SkipBack, SkipForward } from 'lucide-react'
-import type { Segment, Speaker, Overlay, StemPiece } from '@/types'
+import type { Segment, Speaker, Overlay, StemPiece, TrackFlagMap } from '@/types'
 import { useEditorStore } from '@/store/editorStore'
 import { formatTime, cn, originalVoicesReplaced } from '@/lib/utils'
 import { OverlayCanvas } from './OverlayCanvas'
 import { gainFor, resumeAudio, useVoicePlayback } from '@/hooks/useVoicePlayback'
 import { frameSecs, isTypingTarget, nextEdge, shuttle } from '@/lib/transport'
+import { switchesOf } from '@/lib/trackFlags'
 import { duckGainAt, duckSpans } from '@/lib/ducking'
 import { pieceAt, setLevel, stemLevelAt } from '@/lib/stemPieces'
 import { useStemPieces } from '@/hooks/useApi'
@@ -27,9 +28,11 @@ interface VideoPlayerProps {
   frameRate?: number | null
   /** The music & effects dip under the voices (job.duck_music). */
   duckMusic?: boolean
+  /** Each voice track's switches: a muted track isn't heard (nor dips the music), a hidden one shows no subtitles. */
+  trackFlags?: TrackFlagMap
 }
 
-export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus, overlays, bgmVolumeDb, stemsVersion, frameRate, duckMusic }: VideoPlayerProps) {
+export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, jobStatus, overlays, bgmVolumeDb, stemsVersion, frameRate, duckMusic, trackFlags }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const bgmAudioRef = useRef<HTMLAudioElement>(null)
   const vocalsAudioRef = useRef<HTMLAudioElement>(null)
@@ -77,8 +80,17 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
     segmentsRef.current = segments
   }, [segments])
 
+  // What the export plays and shows: muted tracks' voices aren't heard, hidden
+  // tracks' subtitles aren't shown (the track headers' switches)
+  const voiceSegments = useMemo(
+    () => segments.filter((s) => !switchesOf(trackFlags, s.lane_index ?? 0).muted), [segments, trackFlags])
+  const subtitleSegments = useMemo(
+    () => segments.filter((s) => !switchesOf(trackFlags, s.lane_index ?? 0).hidden), [segments, trackFlags])
+  const voiceSegmentsRef = useRef(voiceSegments)
+  useEffect(() => { voiceSegmentsRef.current = voiceSegments }, [voiceSegments])
+
   // The dubbed voices: every clip under the playhead plays its window, as in the export
-  useVoicePlayback({ videoRef, segmentsRef, isPlaying, playbackRate, volume, mutedRef, videoUrl })
+  useVoicePlayback({ videoRef, segmentsRef: voiceSegmentsRef, isPlaying, playbackRate, volume, mutedRef, videoUrl })
 
   // ── Transport keys ────────────────────────────────────────────────────
   // J / K / L: back, stop, forward (again: 2×, then 4×). The window can't
@@ -267,7 +279,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
   //   analysis) only the pieces switched into the export, which the export plays.
   // Before the pieces are known (or with no video length yet) a stem is one whole piece.
   const { data: pieces } = useStemPieces(jobId)
-  const duckSpansMemo = useMemo(() => (duckMusic ? duckSpans(segments) : []), [duckMusic, segments])
+  const duckSpansMemo = useMemo(() => (duckMusic ? duckSpans(voiceSegments) : []), [duckMusic, voiceSegments])
   const vocalsMuted = mutedTrackIds['__vocals__'] ?? originalVoicesReplaced(jobStatus)
   useEffect(() => {
     const bgm = bgmAudioRef.current
@@ -439,7 +451,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
             <audio ref={vocalsAudioRef} src={vocalsUrl} preload="auto" onError={onStemError} />
           )}
           {jobId && overlays && overlays.length > 0 && (
-            <OverlayCanvas overlays={overlays} segments={segments} jobId={jobId} currentTime={currentTime} videoPixelWidth={videoPixelWidth} />
+            <OverlayCanvas overlays={overlays} segments={subtitleSegments} jobId={jobId} currentTime={currentTime} videoPixelWidth={videoPixelWidth} />
           )}
         </>
       ) : (

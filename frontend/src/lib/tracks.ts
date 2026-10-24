@@ -44,9 +44,12 @@ export function fitsOnLane(segs: Placed[], lane: number, start: number, end: num
  * would overlap a clip on its target track becomes a new track just below the
  * grabbed clip's target row instead. A new track takes a free lane number
  * between its neighbours when there is one, else every clip on the tracks
- * below moves down (emitted as lane changes).
+ * below moves down (emitted as lane changes). A locked track takes no clips:
+ * a drop onto one becomes a new track too.
  */
-export function planDrop(segs: Placed[], moving: string[], grabbedId: string, deltaSecs: number, spot: DropSpot): LayoutChange[] {
+export function planDrop(
+  segs: Placed[], moving: string[], grabbedId: string, deltaSecs: number, spot: DropSpot, locked?: Set<number>,
+): LayoutChange[] {
   const ids = new Set(moving)
   const movers = segs.filter((s) => ids.has(s.id))
   const grabbed = movers.find((s) => s.id === grabbedId)
@@ -91,6 +94,7 @@ export function planDrop(segs: Placed[], moving: string[], grabbedId: string, de
   const blocked = movers.some((s) => {
     const { start, end } = moved(s)
     const lane = lanes.get(s.id)!
+    if (locked?.has(lane) && lane !== laneOf(s)) return true
     if (!fitsOnLane(segs, lane, start, end, ids)) return true
     // two moving clips clamped onto the same track
     return movers.some((o) => o.id !== s.id && lanes.get(o.id) === lane && overlaps(start, end, moved(o).start, moved(o).end))
