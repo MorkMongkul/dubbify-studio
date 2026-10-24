@@ -17,7 +17,7 @@ from typing import List
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.models.models import Job, Project, JobStatus, Segment, StemPiece
+from app.models.models import Job, Project, JobStatus, Segment, StemPiece, MediaClip
 from app.schemas.schemas import JobResponse, PipelineStartResponse, BgmVolumeUpdate, JobTitleUpdate, JobFinishedUpdate, JobDuckingUpdate, TrackFlagsUpdate
 from app.services import picture_strip, story_learning, timeline
 from app.services.pipeline import (
@@ -602,5 +602,6 @@ async def delete_job(job_id: str, db: AsyncSession = Depends(get_db, scope="func
     # cascade and any FK ordering issues), then the job.
     await db.execute(delete(Segment).where(Segment.job_id == job_id))
     await db.execute(delete(StemPiece).where(StemPiece.job_id == job_id))
+    await db.execute(delete(MediaClip).where(MediaClip.job_id == job_id))
     await db.delete(job)
     await db.commit()

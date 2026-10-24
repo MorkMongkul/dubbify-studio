@@ -139,6 +139,8 @@ class Project(Base):
 
     jobs     = relationship("Job", back_populates="project", cascade="all, delete")
     speakers = relationship("Speaker", back_populates="project", cascade="all, delete")
+    media_assets = relationship("MediaAsset", back_populates="project", cascade="all, delete")
+    media_templates = relationship("MediaTemplate", back_populates="project", cascade="all, delete")
 
 
 # ── Job ───────────────────────────────────────────────────────
@@ -194,6 +196,9 @@ class Job(Base):
     # headers: JSON {"<lane_index>": {"locked", "hidden", "muted"}}, only tracks
     # with a switch on (timeline.flags_from / flags_to). NULL = none.
     track_flags = Column(Text, nullable=True)
+    # Each media track's switches (0.4.0) — lock, hide, mute — keyed by media
+    # lane like track_flags, but separate: media lanes are their own tracks.
+    media_track_flags = Column(Text, nullable=True)
 
     project  = relationship("Project", back_populates="jobs")
     segments = relationship("Segment", back_populates="job", cascade="all, delete",
@@ -202,6 +207,8 @@ class Job(Base):
                             order_by="Overlay.z_index")
     stem_pieces = relationship("StemPiece", back_populates="job", cascade="all, delete",
                                order_by="StemPiece.start_time")
+    media_clips = relationship("MediaClip", back_populates="job", cascade="all, delete",
+                               order_by="MediaClip.start_time")
 
 
 # ── Speaker ───────────────────────────────────────────────────
@@ -318,6 +325,83 @@ class StemPiece(Base):
     in_export     = Column(Boolean, default=False)
 
     job = relationship("Job", back_populates="stem_pieces")
+
+
+# ── Media (0.4.0) ─────────────────────────────────────────────
+class MediaAsset(Base):
+    """
+    An image or a video in a project's media library (the Media tab), shared by
+    every episode of the project. `path` is the upload, which the export reads;
+    `preview_path` is what the editor plays (app/services/media_assets.py: for a
+    transparent video an H.264 copy with its alpha matte stacked under the
+    colour); `audio_path` its sound for the preview. `alpha_kept` is false where
+    the bundled ffmpeg can't read the transparency (WebM, HEVC with alpha).
+    `last_box` (JSON x/y/width/height) is where it was last placed: a new clip of
+    it starts there.
+    """
+    __tablename__ = "media_assets"
+
+    id            = Column(String, primary_key=True, default=generate_uuid)
+    project_id    = Column(String, ForeignKey("projects.id"), nullable=False, index=True)
+    name          = Column(String(255), nullable=False)
+    kind          = Column(String(10), nullable=False)        # "image" | "video"
+    path          = Column(String, nullable=False)
+    preview_path  = Column(String, default="")
+    thumb_path    = Column(String, default="")
+    audio_path    = Column(String, nullable=True)
+    width         = Column(Integer, default=0)
+    height        = Column(Integer, default=0)
+    duration_secs = Column(Float, nullable=True)
+    has_alpha     = Column(Boolean, default=False)
+    alpha_kept    = Column(Boolean, default=False)
+    has_audio     = Column(Boolean, default=False)
+    last_box      = Column(Text, nullable=True)
+    status        = Column(String(12), default="preparing")   # "preparing" | "ready" | "failed"
+    error         = Column(Text, nullable=True)
+    created_at    = Column(DateTime, server_default=func.now())
+
+    project = relationship("Project", back_populates="media_assets")
+    clips   = relationship("MediaClip", back_populates="asset", cascade="all, delete")
+
+
+class MediaClip(Base):
+    """
+    One use of a media asset on an episode's media tracks: shown from start_time
+    to end_time (timeline seconds), playing the asset from source_in, in a box
+    of the frame (fractions, like the old overlays) at volume_db. A higher
+    lane_index is drawn over a lower one; clips never change lane by themselves.
+    """
+    __tablename__ = "media_clips"
+
+    id         = Column(String, primary_key=True, default=generate_uuid)
+    job_id     = Column(String, ForeignKey("jobs.id"), nullable=False, index=True)
+    asset_id   = Column(String, ForeignKey("media_assets.id"), nullable=False, index=True)
+    lane_index = Column(Integer, default=0)
+    start_time = Column(Float, nullable=False)
+    end_time   = Column(Float, nullable=False)
+    source_in  = Column(Float, default=0.0)
+    x          = Column(Float, default=0.0)
+    y          = Column(Float, default=0.0)
+    width      = Column(Float, default=1.0)
+    height     = Column(Float, default=1.0)
+    volume_db  = Column(Float, default=0.0)
+    created_at = Column(DateTime, server_default=func.now())
+
+    job   = relationship("Job", back_populates="media_clips")
+    asset = relationship("MediaAsset", back_populates="clips")
+
+
+class MediaTemplate(Base):
+    """An episode's media clips saved under a name, applied by hand to another episode once it's dubbed."""
+    __tablename__ = "media_templates"
+
+    id         = Column(String, primary_key=True, default=generate_uuid)
+    project_id = Column(String, ForeignKey("projects.id"), nullable=False, index=True)
+    name       = Column(String(255), nullable=False)
+    items      = Column(Text, default="[]")    # JSON: asset_id, lane, times, source_in, box, volume_db
+    created_at = Column(DateTime, server_default=func.now())
+
+    project = relationship("Project", back_populates="media_templates")
 
 
 # ── Overlay ───────────────────────────────────────────────────
