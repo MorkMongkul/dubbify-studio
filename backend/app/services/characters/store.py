@@ -275,24 +275,24 @@ async def recognise(
     return labels, checks, found
 
 
-async def identify(db: AsyncSession, job: Job, segments: list[Segment]) -> bool:
+async def identify(db: AsyncSession, job: Job, segments: list[Segment]) -> str:
     """Detect speakers without Gemini: every line that isn't confirmed is checked against the project's characters.
     A known character takes the line (who_check None when sure, else its guesses); a voice nobody has leaves the line
     on its speaker, marked to check. Text, timing and confirmed lines are never touched. Prints are made only for
     lines without today's, in one run of the models, and kept.
 
-    Returns False — nothing changed — when it can't run: the project has no characters yet, there are no vocals, or
-    the models can't run (logged), and the caller falls back to Gemini. Commits before the models run; the lines
+    Returns "done", or — nothing changed, the caller falls back to Gemini — why it couldn't run: "no_profiles" (the
+    project has no characters yet), "no_vocals", or "cant_run" (the models can't run; logged). Commits before the models run; the lines
     are read again afterwards (the user may have edited or deleted some). Flushes; the caller commits."""
     profiles = await project_profiles(db, job.project_id, exclude_job_id=job.id)
     if not profiles:
-        return False
+        return "no_profiles"
     open_ids = [s.id for s in segments if not is_confirmed(s, job)]
     if not open_ids:
-        return True
+        return "done"
     vocals = _vocals_of(job)
     if vocals is None:
-        return False
+        return "no_vocals"
     stored = {row.segment_id: row for row in
               (await db.execute(select(LinePrint).where(LinePrint.segment_id.in_(open_ids)))).scalars()}
     todo = [s for s in segments if s.id in open_ids
@@ -301,7 +301,7 @@ async def identify(db: AsyncSession, job: Job, segments: list[Segment]) -> bool:
     if todo:
         found = await _find_prints(db, job, [actor_span(s) for s in todo], vocals)
         if found is None:
-            return False
+            return "cant_run"
         computed = {s.id: p for s, p in zip(todo, found)}
 
     # the user may have deleted, edited or confirmed lines while the models ran
@@ -326,7 +326,7 @@ async def identify(db: AsyncSession, job: Job, segments: list[Segment]) -> bool:
     await db.flush()
     logger.info(f"Job {job.id[:8]}: {len(still_open)} lines checked against {len(profiles)} characters, "
                 f"{len(computed)} prints made")
-    return True
+    return "done"
 
 
 def heard_by_label(labels: list[str], gemini_labels: list[str], who_checks: list[list[dict] | None],

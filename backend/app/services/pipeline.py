@@ -368,14 +368,18 @@ async def run_speaker_detection(job_id: str) -> None:
             if not vocals_path:
                 raise RuntimeError("No extracted audio found for this session.")
             # Characters first: lines are checked against the project's characters, locally, no Gemini
-            if await store.identify(db, job, segments):
+            outcome = await store.identify(db, job, segments)
+            if outcome == "done":
                 await remove_unused_auto_speakers(db, project.id)
                 await _update_job(db, job, JobStatus.COMPLETED, 100, "")
                 logger.info(f"Speaker detection done for job {job_id[:8]} — checked against the characters")
                 return
-            if not settings.GEMINI_API_KEY:   # the fallback below needs it; say so instead of failing obscurely
-                raise RuntimeError("Movelo can't recognise voices on this Mac and no Gemini key is set — "
-                                   "add one in Settings → AI models.")
+            if not settings.GEMINI_API_KEY and outcome != "no_profiles":   # the fallback below needs it
+                raise RuntimeError(
+                    "This episode's voices weren't separated, so Movelo can't recognise them, and no Gemini key is "
+                    "set — add one in Settings → AI models." if outcome == "no_vocals" else
+                    "Movelo can't recognise voices on this Mac and no Gemini key is set — add one in Settings → "
+                    "AI models.")
 
             # Lines the user confirmed are never relabelled
             segments = [s for s in segments if not store.is_confirmed(s, job)]

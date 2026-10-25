@@ -19,7 +19,7 @@ from app.services.characters import models, store
 from app.services.characters import prints as prints_module
 from app.services.characters.types import LinePrints
 from app.tests.test_characters_pipeline import (  # noqa: F401  (fixtures)
-    _episode, _line_prints, _lines, _old_confirmed_line, _prints, _project, _store_warnings, _transcribe, _vocals,
+    _episode, _first_episode, _line_prints, _lines, _old_confirmed_line, _prints, _project, _store_warnings, _transcribe, _vocals,
     background_db, face, uploads, voice,
 )
 
@@ -252,3 +252,35 @@ async def test_no_gemini_key_and_no_models_says_so(client, monkeypatch, uploads,
     job = await store_job(background_db, job_id)
     assert job.status == JobStatus.COMPLETED   # its lines are still there
     assert "can't recognise voices on this Mac" in job.error_msg and "Gemini key" in job.error_msg
+
+
+@pytest.mark.asyncio
+async def test_no_gemini_key_and_no_vocals_names_the_vocals(monkeypatch, uploads, background_db):
+    project_id, job_id, ids, _ = await _detect_setup(background_db, uploads, [(0.0, 2.0, {})], vocals=False)
+    audio = uploads / "audio.wav"
+    audio.write_bytes(b"RIFFfake")
+    async with background_db() as s:   # extracted audio exists, the separated vocals don't
+        (await s.get(Job, job_id)).audio_path = str(audio)
+        await s.commit()
+    monkeypatch.setattr(pipeline.settings, "GEMINI_API_KEY", "")
+    _no_gemini(monkeypatch)
+    await pipeline.run_speaker_detection(job_id)
+
+    job = await store_job(background_db, job_id)
+    assert job.status == JobStatus.COMPLETED
+    assert "weren't separated" in job.error_msg and "Gemini key" in job.error_msg
+    assert "on this Mac" not in job.error_msg
+
+
+@pytest.mark.asyncio
+async def test_no_gemini_key_and_no_characters_is_not_blamed_on_this_mac(monkeypatch, uploads, background_db):
+    project_id, job_id = await _first_episode(background_db)
+    async with background_db() as s:
+        s.add(Segment(job_id=job_id, start_time=0.0, end_time=2.0, source_text="旧", khmer_text="km"))
+        await s.commit()
+    _vocals(uploads, project_id, job_id)
+    monkeypatch.setattr(pipeline.settings, "GEMINI_API_KEY", "")
+    _transcribe(monkeypatch, [("SPEAKER_00", 0.0, 2.0, "旧")])
+    await pipeline.run_speaker_detection(job_id)   # directly: the route would have refused with a 400
+
+    assert "on this Mac" not in (await store_job(background_db, job_id)).error_msg
