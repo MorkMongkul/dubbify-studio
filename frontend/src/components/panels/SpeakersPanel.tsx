@@ -10,11 +10,13 @@ import { AudioLines, ChevronLeft, Merge, RefreshCw, Users } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
-  useAnalyzeJob, useDetectSpeakers, useJob, useMergeSpeaker, useSegments, useSpeakers, useVoices, useUpdateSpeaker,
+  useAnalyzeJob, useCharacterSuggestions, useDetectSpeakers, useDismissCharacterSuggestion, useJob, useMergeSpeaker, useSegments, useSpeakers, useVoices, useUpdateSpeaker,
 } from '@/hooks/useApi'
 import { getSpeakerColor, getSpeakerDisplayName, isJobRunning } from '@/lib/utils'
 import { recordSpeakerChange, recordSpeakerMerge } from '@/lib/historyHelpers'
 import { voiceUsers } from '@/lib/voiceTags'
+import { CharacterFace } from '@/components/speakers/CharacterFace'
+import { SameCharacter } from '@/components/speakers/SameCharacter'
 import type { Speaker } from '@/types'
 import { useHistoryStore } from '@/store/historyStore'
 import { PanelHeader, PanelEmptyState } from './PanelShell'
@@ -42,6 +44,9 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
   const mergeSpeaker = useMergeSpeaker()
   const [mergingId, setMergingId] = useState<string | null>(null)
   const [mergeIntoId, setMergeIntoId] = useState<string | null>(null)
+  // "Same character?": pairs Movelo thinks are one; only a click merges
+  const { data: suggestions = [] } = useCharacterSuggestions(projectId ?? null)
+  const dismissSuggestion = useDismissCharacterSuggestion()
 
   // Speakers actually present in this session, each keeping the index it has
   // in the FULL project speaker list: that index is what getSpeakerColor() is
@@ -86,6 +91,12 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
       onError: (e) => toast.error((e as Error).message || 'Could not merge the speakers'),
     })
   }
+
+  // ▶ in "Same character?" plays a line from the episode's original voices
+  const voicesUrl = jobId && projectId && job?.stems_separated
+    ? `/uploads/${projectId}/${jobId}/vocals.m4a?v=${job.bgm_volume_db ?? 0}-${job.stems_version ?? 0}`
+    : null
+  const colorOf = (speaker: Speaker) => speaker.color ?? getSpeakerColor(Math.max(0, spks.findIndex((sp) => sp.id === speaker.id)))
 
   const runDetectSpeakers = () => {
     if (!jobId) return
@@ -171,6 +182,19 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
             )}
           </div>
         )}
+        <SameCharacter
+          suggestions={suggestions}
+          speakers={spks}
+          segments={segs}
+          voicesUrl={voicesUrl}
+          disabled={busy}
+          nameOf={nameOf}
+          colorOf={colorOf}
+          onMerge={runMerge}
+          onDismiss={(a, b) => dismissSuggestion.mutate({ projectId, a, b }, {
+            onError: (e) => toast.error((e as Error).message || "Couldn't dismiss the suggestion"),
+          })}
+        />
         {sessionSpeakers.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-6 text-center">
             <Users size={18} className="text-ink-700 mb-2" />
@@ -182,7 +206,7 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
             return (
               <div key={speaker.id} className="p-2 rounded bg-ink-800/30 border border-ink-800/40 space-y-1.5">
                 <div className="flex items-center gap-1.5">
-                  <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                  <CharacterFace speaker={speaker} color={color} size={22} />
                   {editingSpeakerId === speaker.id ? (
                     <input
                       autoFocus

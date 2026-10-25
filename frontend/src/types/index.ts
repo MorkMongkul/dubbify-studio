@@ -485,6 +485,7 @@ export const PIPELINE_STEPS: { key: JobStatus; label: string; icon: string }[] =
   { key: 'separating',   label: 'Separate',  icon: 'scissors' },
   { key: 'diarizing',    label: 'Speakers',  icon: 'users' },
   { key: 'transcribing', label: 'Transcribe', icon: 'file-text' },
+  { key: 'recognizing',  label: 'Characters', icon: 'users' },
   { key: 'translating',  label: 'Translate', icon: 'globe' },
   { key: 'synthesizing', label: 'Synthesize', icon: 'mic' },
   { key: 'mixing',       label: 'Mix',       icon: 'music' },

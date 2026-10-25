@@ -396,7 +396,7 @@ export function TranscriptPanel({
   // selected segment already has audio, skipping all of them would leave the
   // button doing nothing at all when clicked — "Generate" can then only
   // sensibly mean "regenerate everything I selected", so that's what it does.
-  const handleBatchSynthesize = async () => {
+  const startBatchSynthesize = async () => {
     const pendingIds = selectedSegmentIds.filter((id) => {
       const seg = segments.find((s) => s.id === id)
       return seg && !seg.tts_audio_path
@@ -424,6 +424,16 @@ export function TranscriptPanel({
 
     await runBatchSynthesize(pendingIds, 'Generating', skipped > 0 ? ` (${skipped} already done, skipped)` : '')
   }
+
+  // Voices made for lines whose speaker is still a guess would be the wrong
+  // voice if the guess is wrong: ask first, and go on only on OK.
+  const [confirmUnchecked, setConfirmUnchecked] = useState(false)
+  const linesToCheck = toCheck(segments).length
+  const handleBatchSynthesize = () => {
+    if (linesToCheck > 0) { setConfirmUnchecked(true); return }
+    void startBatchSynthesize()
+  }
+  useEffect(() => { if (selectedSegmentIds.length === 0) setConfirmUnchecked(false) }, [selectedSegmentIds.length])
 
   // Follow a running batch. Effect-driven (keyed on the store, not a
   // handler-local loop) so a panel remount mid-batch — navigation, project
@@ -722,6 +732,24 @@ export function TranscriptPanel({
             <div className="flex items-center gap-1.5 text-[10px] text-brand-600 dark:text-brand-300 font-bold">
               <span>{selectedSegmentIds.length} Selected</span>
             </div>
+            {confirmUnchecked ? (
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-amber-300/90">{linesToCheck} line{linesToCheck === 1 ? '' : 's'} still to check</span>
+                <button
+                  onClick={() => { setConfirmUnchecked(false); void startBatchSynthesize() }}
+                  className="text-[10px] bg-brand-600 hover:bg-brand-500 text-white px-2.5 py-1 rounded font-semibold transition-all cursor-pointer"
+                  title="Make the voices anyway"
+                >
+                  OK
+                </button>
+                <button
+                  onClick={() => setConfirmUnchecked(false)}
+                  className="text-[10px] text-ink-500 hover:text-ink-300 dark:text-ink-400 dark:hover:text-white px-1.5 py-1 cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
             <div className="flex items-center gap-2">
               <button
                 onClick={handleBatchSynthesize}
@@ -751,6 +779,7 @@ export function TranscriptPanel({
                 Clear
               </button>
             </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>

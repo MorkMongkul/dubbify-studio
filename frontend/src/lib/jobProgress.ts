@@ -34,10 +34,13 @@ export function jobProgress(
     if (status === 'separating') {
       return { title: 'Separating music and voices…' }
     }
-    if (!listening && status !== 'translating') return null
+    const recognizing = status === 'recognizing'
+    if (!listening && !recognizing && status !== 'translating') return null
     if (action === 'analyze') {
+      if (recognizing) return { title: 'Analyzing again: recognizing characters…' }
       return { title: listening ? 'Analyzing again: transcribing and finding speakers…' : 'Analyzing again: translating…' }
     }
+    if (recognizing) return { title: 'Recognizing characters…' }
     if (listening) return { title: 'Detecting speakers…' }
     return { title: action === 'translate-missing' ? 'Translating missing lines…' : 'Translating…' }
   }
@@ -53,7 +56,7 @@ export function jobProgress(
     case 'transcribing':
       return { title: 'Transcribing and finding speakers…' }
     case 'recognizing':
-      return { title: 'Recognising characters…' }   // Task 13 gives it real wording
+      return { title: 'Recognizing characters…' }
     case 'translating':
       return { title: 'Translating to Khmer…' }
     default:
@@ -70,7 +73,8 @@ export function jobProgress(
 // about 2 min 20 s, transcription about 1 min, translation a few seconds).
 // A step that runs long slows down near the end of its slice and waits there;
 // only the next step, or Done, moves past it. Two rings: a new video (upload,
-// audio, music and voices) and Analyze (transcribe and find speakers, translate).
+// audio, music and voices) and Analyze (transcribe and find speakers, recognize
+// characters, translate); Detect speakers is one step, so its ring is 0–100.
 
 interface RingStep {
   from: number
@@ -85,12 +89,15 @@ const RING_STEPS: Record<string, RingStep> = {
   extracting:   { from: 6,  to: 12,  usualSecs: (v) => 3 + 0.02 * v },
   // The separation service has a fixed start-up (a 30-second clip took about 70 s)
   separating:   { from: 12, to: 100, usualSecs: (v) => 45 + 0.55 * v },
-  diarizing:    { from: 0,  to: 80,  usualSecs: (v) => 15 + 0.3 * v },
-  // Comes right after transcription, for a moment
-  transcribing: { from: 80, to: 85,  usualSecs: () => 2 },
-  recognizing:  { from: 80, to: 85,  usualSecs: () => 2 },
+  diarizing:    { from: 0,  to: 55,  usualSecs: (v) => 15 + 0.3 * v },
+  // Comes right after listening, for a moment
+  transcribing: { from: 55, to: 60,  usualSecs: () => 2 },
+  // Faces on, measured on an M1: 164 s for a 129 s video, 147 s for 147 s
+  recognizing:  { from: 60, to: 85,  usualSecs: (v) => 10 + 1.2 * v },
   translating:  { from: 85, to: 100, usualSecs: (v) => 5 + 0.04 * v },
 }
+/** Detect speakers runs only this step, so it fills a ring of its own. */
+const DETECT_RING: RingStep = { ...RING_STEPS.recognizing, from: 0, to: 100 }
 
 const SHORT_EPISODE_SECS = 180
 
@@ -104,8 +111,13 @@ function filled(fractionOfUsual: number): number {
  * The ring's percentage (0–99) for a running step that has been going for
  * `elapsedSecs`, on a video `videoSecs` long; null when no ring step runs.
  */
-export function stagePercent(status: string | null | undefined, elapsedSecs: number, videoSecs: number): number | null {
-  const step = status ? RING_STEPS[status] : undefined
+export function stagePercent(
+  status: string | null | undefined,
+  elapsedSecs: number,
+  videoSecs: number,
+  action?: JobAction | null,
+): number | null {
+  const step = status === 'recognizing' && action === 'detect-speakers' ? DETECT_RING : status ? RING_STEPS[status] : undefined
   if (!step) return null
   const usual = step.usualSecs(videoSecs > 0 ? videoSecs : SHORT_EPISODE_SECS)
   return Math.min(99, Math.floor(step.from + filled(elapsedSecs / usual) * (step.to - step.from)))
