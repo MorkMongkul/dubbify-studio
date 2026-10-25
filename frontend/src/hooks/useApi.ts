@@ -635,9 +635,14 @@ export function useDetectSpeakers() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (jobId: string) => jobs.detectSpeakers(jobId),
-    onSuccess: (_, jobId) => {
+    onSuccess: async (_, jobId) => {
       useEditorStore.getState().setJobAction(jobId, 'detect-speakers')
-      qc.invalidateQueries({ queryKey: ['job', jobId] })
+      await qc.invalidateQueries({ queryKey: ['job', jobId] })
+      // Checking stored prints against the characters can end before the job is fetched again: its status
+      // then never seems to change (EditorPage refetches on a change), so the lines and characters are fetched
+      // here too. Still running: the change to completed fetches them again.
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      qc.invalidateQueries({ queryKey: ['speakers'] })
     },
   })
 }
