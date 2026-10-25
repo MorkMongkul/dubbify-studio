@@ -24,7 +24,7 @@ def main() -> int:
         return 1
     estimate = parts.faces
     faces = estimate <= speed.FACE_STEP_BUDGET_SECS
-    print(f"Face step for a {speed.EPISODE_SECS} s episode ({speed.FRAMES} frames, {speed.FACE_FRAMES} face-frames)")
+    print(f"Face step for a {speed.EPISODE_SECS} s episode ({speed.SPEECH_FRAMES} frames in lines, {speed.FACE_FRAMES} face-frames)")
     for name, secs in (("decode", parts.decode), ("YuNet", parts.yunet), ("Light-ASD", parts.light_asd),
                        ("SFace", parts.sface)):
         print(f"  {name:<10}{secs:7.1f} s")

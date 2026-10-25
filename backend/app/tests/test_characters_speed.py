@@ -115,3 +115,9 @@ def test_faces_are_decided_inside_the_worker_thread(monkeypatch, tmp_path):
     assert found == ["found"]
     assert seen["with_faces"] is False
     assert seen["thread"] is not threading.main_thread()
+
+
+def test_only_the_frames_inside_lines_are_counted():
+    assert speed.SPEECH_FRAMES == 1950          # 3000 frames x 0.65 of the episode in lines
+    assert speed.FACE_FRAMES == 1462            # x 0.5 of the time with a face x 1.5 faces
+    assert speed.FEATURES == 243                # SFace on every 6th

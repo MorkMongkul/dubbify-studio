@@ -27,10 +27,12 @@ logger = logging.getLogger(__name__)
 
 FACE_STEP_BUDGET_SECS = 180   # for a 120 s episode
 EPISODE_SECS = 120
-FRAMES = EPISODE_SECS * 25    # every frame is decoded and run through YuNet: conservative
+FRAMES = EPISODE_SECS * 25
+SPEECH_SHARE = 0.65           # the share of an episode inside lines (only those are read): above 9 of the owner's 11 episodes, mean 0.51
+SPEECH_FRAMES = int(FRAMES * SPEECH_SHARE)   # decoded and run through YuNet
 FACE_SHARE = 0.5              # the spike's mix: a face is on screen for half of the time...
 FACES_ON_SCREEN = 1.5         # ...and then 1.5 of them
-FACE_FRAMES = int(FRAMES * FACE_SHARE * FACES_ON_SCREEN)   # 2250: what Light-ASD reads
+FACE_FRAMES = int(SPEECH_FRAMES * FACE_SHARE * FACES_ON_SCREEN)   # 1462: what Light-ASD reads
 FEATURES = FACE_FRAMES // 6   # 375: SFace describes every 6th frame of a face (faces.FEATURE_EVERY)
 
 SIZE = (720, 1280)            # the synthetic picture: a vertical episode, which costs the most
@@ -107,11 +109,11 @@ def measure() -> Parts:
     voice_secs = time.perf_counter() - start
     del voice
 
-    return Parts(decode=decode * FRAMES / DECODE_FRAMES,
-                 yunet=yunet * FRAMES / DECODE_FRAMES,
+    return Parts(decode=decode * SPEECH_FRAMES / DECODE_FRAMES,
+                 yunet=yunet * SPEECH_FRAMES / DECODE_FRAMES,
                  light_asd=light_asd * FACE_FRAMES / ASD_FRAMES,
                  sface=sface * FEATURES / SFACE_CALLS,
-                 voice=voice_secs * EPISODE_SECS / VOICE_SECS)
+                 voice=voice_secs * EPISODE_SECS * SPEECH_SHARE / VOICE_SECS)
 
 
 def _cache_path() -> Path | None:
