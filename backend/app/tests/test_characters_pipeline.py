@@ -8,8 +8,10 @@ Gemini, translation and the prints are replaced at the service boundary
 characters.prints.prints_for_spans); the profiles come from real stored prints
 (unit vectors: character k has voice k and face k).
 """
+import asyncio
 import json
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -18,7 +20,7 @@ import pytest
 from sqlalchemy import select
 
 import app.core.database as core_db
-from app.models.models import Job, JobStatus, LinePrint, Project, Segment, Speaker
+from app.models.models import Gender, Job, JobStatus, LinePrint, Project, Segment, Speaker
 from app.services import pipeline, subtitle_pipeline
 from app.services.characters import models, store
 from app.services.characters import prints as prints_module
@@ -104,9 +106,10 @@ def _vocals(uploads: Path, project_id: str, job_id: str) -> Path:
 
 
 def _transcribe(monkeypatch, lines):
-    """lines: (Gemini's label, start, end, text)."""
+    """lines: (Gemini's label, start, end, text[, the voice Gemini heard])."""
     async def fake(audio_path, references=(), taken_labels=(), language="zh", clip_audio=None):
-        heard = [DiarizedSegment(label, start, end, "unknown", "adult", text) for label, start, end, text in lines]
+        heard = [DiarizedSegment(line[0], line[1], line[2], line[4] if len(line) > 4 else "unknown", "adult", line[3])
+                 for line in lines]
         return heard, False
     monkeypatch.setattr(pipeline, "transcribe_audio", fake)
 
@@ -146,10 +149,21 @@ async def _line_prints(db_sessionmaker, job_id: str) -> dict:
         return {row.segment_id: row for row in rows}
 
 
-def _store_warnings(caplog) -> list[str]:
-    """What recognition logged at WARNING or above (with any traceback)."""
-    return [r.getMessage() + (f" {r.exc_info[1]}" if r.exc_info else "") for r in caplog.records
-            if r.name == store.__name__ and r.levelno >= logging.WARNING]
+def _store_warnings(caplog) -> list[logging.LogRecord]:
+    """What recognition logged at WARNING or above."""
+    return [r for r in caplog.records if r.name == store.__name__ and r.levelno >= logging.WARNING]
+
+
+async def _old_confirmed_line(db_sessionmaker, project_id: str, job_id: str) -> str:
+    """This episode already has a line the user confirmed on "Uncle Wang" (SPEAKER_02), 2.0–4.0 s. Returns his id."""
+    async with db_sessionmaker() as s:
+        uncle = Speaker(project_id=project_id, label="SPEAKER_02", display_name="Uncle Wang")
+        s.add(uncle)
+        await s.flush()
+        s.add(Segment(job_id=job_id, speaker_id=uncle.id, start_time=2.0, end_time=4.0, source_start=2.0,
+                      source_end=4.0, source_text="旧", khmer_text="km", who_confirmed=True))
+        await s.commit()
+        return uncle.id
 
 
 async def _job(db_sessionmaker, job_id: str) -> Job:
@@ -201,6 +215,39 @@ async def test_only_confirmed_lines_with_todays_prints_make_profiles(db_sessionm
     assert set(profiles) == {ids[name] for name in ("voiced", "approved", "picked", "finished")}
     assert np.array_equal(profiles[ids["approved"]].voice, voice(1)) and profiles[ids["approved"]].face is None
     assert set(with_this_episode) == set(profiles) | {ids["this_episode"]}
+
+
+# ── Carry-over on a re-analysis ───────────────────────────────────────────────
+
+@pytest.mark.parametrize("new, old, kept", [
+    ((0.0, 10.0), [((0.0, 4.9), "A")], None),                        # 49% of the new line
+    ((0.0, 10.0), [((0.0, 5.1), "A")], "A"),                         # 51%
+    ((0.0, 10.0), [((0.0, 5.0), "A")], None),                        # exactly half isn't more than half
+    ((2.0, 3.0), [((0.0, 10.0), "A")], "A"),                         # a short new line inside a long old one
+    ((0.0, 10.0), [((4.0, 5.0), "A")], None),                        # a long new line over a short old one
+    ((0.0, 10.0), [((0.0, 3.0), "A"), ((5.0, 8.0), "A")], "A"),      # 30% + 30% of one character
+    ((0.0, 10.0), [((0.0, 4.0), "A"), ((6.0, 10.0), "B")], None),    # 40% each of two
+    ((0.0, 10.0), [((0.0, 3.0), "A"), ((3.0, 9.0), "B")], "B"),
+])
+def test_a_new_line_keeps_the_character_covering_more_than_half_of_it(new, old, kept):
+    assert store.carried([new], old) == [kept]
+
+
+@pytest.mark.asyncio
+async def test_carry_over_compares_where_the_actor_spoke_not_the_moved_clip(db_sessionmaker):
+    async with db_sessionmaker() as s:
+        project = Project(name="P")
+        s.add(project)
+        await s.flush()
+        job = Job(project_id=project.id, status=JobStatus.COMPLETED)
+        uncle = Speaker(project_id=project.id, label="SPEAKER_02")
+        s.add_all([job, uncle])
+        await s.flush()
+        # the actor spoke at 2–4 s; the user moved the clip to 10–12 s
+        s.add(Segment(job_id=job.id, speaker_id=uncle.id, start_time=10.0, end_time=12.0, source_start=2.0,
+                      source_end=4.0, who_confirmed=True))
+        await s.commit()
+        assert await store.kept_characters(s, job, [(2.1, 3.9), (10.1, 11.9)]) == ["SPEAKER_02", None]
 
 
 # ── The analysis ──────────────────────────────────────────────────────────────
@@ -261,6 +308,41 @@ async def test_the_first_episode_keeps_gemini_speakers_and_gets_prints(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_a_face_crop_that_cannot_be_written_never_fails_the_analysis(monkeypatch, uploads, background_db):
+    project_id, job_id = await _first_episode(background_db)
+    _vocals(uploads, project_id, job_id)
+    (uploads / project_id / job_id / "faces").write_bytes(b"")     # a file where the crops folder should be
+    _transcribe(monkeypatch, [("SPEAKER_00", 0.0, 1.0, "你好")])
+    _prints(monkeypatch, [LinePrints(voice(3), face(4), 0.9, b"\xff\xd8a face")])
+    _translate(monkeypatch, pipeline)
+    await pipeline.run_analysis_pipeline(job_id)
+
+    assert (await _job(background_db, job_id)).status == JobStatus.COMPLETED
+    [kept] = (await _line_prints(background_db, job_id)).values()
+    assert np.array_equal(np.frombuffer(kept.face_print, np.float32), face(4)) and kept.face_crop_path is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_analysis_leaves_no_face_crops(monkeypatch, uploads, background_db):
+    project_id, job_id = await _first_episode(background_db)
+    _vocals(uploads, project_id, job_id)
+    _transcribe(monkeypatch, [("SPEAKER_00", 0.0, 1.0, "你好")])
+    _prints(monkeypatch, [LinePrints(voice(3), face(4), 0.9, b"\xff\xd8a face")])
+    _translate(monkeypatch, pipeline)
+
+    async def broken(*args, **kwargs):      # after the prints were saved, before the commit
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(pipeline, "remove_unused_auto_speakers", broken)
+    await pipeline.run_analysis_pipeline(job_id)
+
+    assert (await _job(background_db, job_id)).status == JobStatus.FAILED
+    assert await _line_prints(background_db, job_id) == {}
+    faces = uploads / project_id / job_id / "faces"
+    assert not faces.exists() or list(faces.iterdir()) == []
+
+
+@pytest.mark.asyncio
 async def test_analysis_without_vocals_keeps_gemini_speakers(monkeypatch, uploads, background_db, caplog):
     project_id, _ids = await _project(background_db)
     job_dir = uploads / project_id
@@ -284,14 +366,18 @@ async def test_analysis_without_vocals_keeps_gemini_speakers(monkeypatch, upload
     assert await _line_prints(background_db, job_id) == {}
     assert (await _job(background_db, job_id)).status == JobStatus.COMPLETED
     [warning] = _store_warnings(caplog)
-    assert "vocals.wav" in warning
+    assert "vocals.wav" in warning.getMessage()
 
 
-@pytest.mark.parametrize("error", [RuntimeError("ffmpeg could not read the video"),
-                                   ImportError("onnxruntime needs macOS 13.4"),
-                                   models.ModelMissing("face_recognition_sface_2021dec.onnx is missing")])
+@pytest.mark.parametrize("error, says", [
+    (RuntimeError("ffmpeg could not read the video"), "failed"),
+    (OSError(24, "Too many open files"), "failed"),          # not "can't run here": the Mac can run them
+    (ImportError("onnxruntime needs macOS 13.4"), "can't run here"),
+    (models.ModelMissing("face_recognition_sface_2021dec.onnx is missing"), "can't run here"),
+])
 @pytest.mark.asyncio
-async def test_recognition_that_fails_keeps_gemini_speakers(error, monkeypatch, uploads, background_db, caplog):
+async def test_recognition_that_fails_keeps_gemini_speakers(error, says, monkeypatch, uploads, background_db,
+                                                            caplog):
     project_id, _ids = await _project(background_db)
     job_id = await _episode(background_db, project_id)
     _vocals(uploads, project_id, job_id)
@@ -307,12 +393,39 @@ async def test_recognition_that_fails_keeps_gemini_speakers(error, monkeypatch, 
     job = await _job(background_db, job_id)
     assert job.status == JobStatus.COMPLETED and job.error_msg == ""
     [warning] = _store_warnings(caplog)
-    assert str(error) in warning
+    assert str(error) in warning.getMessage() and says in warning.getMessage()
+    assert warning.exc_info is not None and warning.exc_info[1] is error     # the traceback is in the log
+
+
+@pytest.mark.parametrize("cannot", ["raises", "no vocals"])
+@pytest.mark.asyncio
+async def test_a_confirmed_character_is_kept_when_recognition_cannot_run(cannot, monkeypatch, uploads,
+                                                                         background_db):
+    project_id, _ids = await _project(background_db)
+    job_id = await _episode(background_db, project_id, status=JobStatus.COMPLETED)
+    uncle = await _old_confirmed_line(background_db, project_id, job_id)
+    if cannot == "raises":
+        _vocals(uploads, project_id, job_id)
+    else:
+        audio = uploads / project_id / job_id / "audio.wav"
+        audio.parent.mkdir(parents=True)
+        audio.write_bytes(b"RIFFfake")
+        async with background_db() as s:
+            (await s.get(Job, job_id)).audio_path = str(audio)
+            await s.commit()
+    _transcribe(monkeypatch, [("SPEAKER_09", 2.1, 3.9, "新")])
+    _prints(monkeypatch, RuntimeError("ffmpeg died"))
+    _translate(monkeypatch, pipeline)
+    await pipeline.run_analysis_pipeline(job_id)
+
+    [(line, label)] = await _lines(background_db, job_id)
+    assert (line.speaker_id, label, line.who_confirmed, line.who_check) == (uncle, "SPEAKER_02", True, None)
 
 
 @pytest.mark.asyncio
-async def test_status_goes_recognizing_between_transcribing_and_translating(monkeypatch, uploads, background_db):
-    project_id, job_id = await _first_episode(background_db)
+async def test_status_goes_recognizing_between_transcribing_and_translating(monkeypatch, uploads, file_db):
+    project_id, _ids = await _project(file_db)
+    job_id = await _episode(file_db, project_id)
     _vocals(uploads, project_id, job_id)
     _transcribe(monkeypatch, [("SPEAKER_00", 0.0, 1.0, "你好")])
     statuses = []
@@ -324,9 +437,11 @@ async def test_status_goes_recognizing_between_transcribing_and_translating(monk
 
     monkeypatch.setattr(pipeline, "_update_job", record)
     during = []
+    pool = file_db.kw["bind"].pool      # the app's own pool: one connection
 
     def prints_while(video_path, vocals_path, spans, with_faces=True):
-        during.append(statuses[-1][0])
+        # Recorded, not asserted here: recognition would swallow the AssertionError and carry on
+        during.append((statuses[-1][0], pool.checkedout()))
         return [LinePrints(voice(0), None, None, None)]
 
     monkeypatch.setattr(prints_module, "prints_for_spans", prints_while)
@@ -335,9 +450,30 @@ async def test_status_goes_recognizing_between_transcribing_and_translating(monk
 
     order = [status for status, _ in statuses]
     assert order.index(JobStatus.TRANSCRIBING) < order.index(JobStatus.RECOGNIZING) < order.index(JobStatus.TRANSLATING)
-    assert during == [JobStatus.RECOGNIZING]
+    assert during == [(JobStatus.RECOGNIZING, 0)]     # the models ran with no connection held
     progress = [p for _, p in statuses]
     assert progress == sorted(progress)
+
+
+@pytest.mark.asyncio
+async def test_a_line_still_to_check_never_decides_what_a_character_sounds_like(monkeypatch, uploads,
+                                                                                background_db):
+    project_id, ids = await _project(background_db)
+    job_id = await _episode(background_db, project_id)
+    _vocals(uploads, project_id, job_id)
+    _transcribe(monkeypatch, [("SPEAKER_07", 0.0, 1.0, "你好", "man"), ("SPEAKER_08", 2.0, 3.0, "再见", "woman")])
+    near = voice(0) + 0.95 * voice(1)
+    _prints(monkeypatch, [LinePrints(voice(0), None, None, None),                            # Lin Dong, sure
+                          LinePrints(near / np.linalg.norm(near), None, None, None)])        # Lin Dong? to check
+    seen = {}
+    _translate(monkeypatch, pipeline, seen)
+    await pipeline.run_analysis_pipeline(job_id)
+
+    assert seen["labels"] == ["SPEAKER_00", "SPEAKER_00"]
+    [lin] = [row for row in seen["cast"].splitlines() if row.startswith("- SPEAKER_00:")]
+    assert "probably a man" in lin
+    async with background_db() as s:
+        assert (await s.get(Speaker, ids["SPEAKER_00"])).gender == Gender.MALE
 
 
 @pytest.mark.asyncio
@@ -468,3 +604,32 @@ async def test_subtitle_analysis_recognises_too(monkeypatch, uploads, background
     assert {row.model_version for row in kept.values()} == {store.MODEL_VERSION}
     assert np.array_equal(np.frombuffer(kept[rows[0][0].id].voice_print, np.float32), voice(0))
     assert (await _job(background_db, job_id)).status == JobStatus.COMPLETED
+
+
+
+# ── One episode at a time ─────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_two_analyses_never_run_the_models_at_once(monkeypatch, uploads, file_db):
+    project_id, _ids = await _project(file_db)
+    jobs = [await _episode(file_db, project_id) for _ in range(2)]
+    for job_id in jobs:
+        _vocals(uploads, project_id, job_id)
+    running, most = [], []
+
+    def slow_prints(video_path, vocals_path, spans, with_faces=True):
+        running.append(1)
+        most.append(len(running))
+        time.sleep(0.1)
+        running.pop()
+        return [LinePrints(voice(0), None, None, None)]
+
+    monkeypatch.setattr(prints_module, "prints_for_spans", slow_prints)
+
+    async def recognise(job_id):
+        async with file_db() as s:
+            return await store.recognise(s, await s.get(Job, job_id), [(0.0, 1.0)], ["SPEAKER_07"])
+
+    results = await asyncio.gather(*(recognise(job_id) for job_id in jobs))
+    assert max(most) == 1
+    assert [labels for labels, _, _ in results] == [["SPEAKER_00"], ["SPEAKER_00"]]

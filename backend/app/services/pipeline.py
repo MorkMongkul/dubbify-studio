@@ -205,12 +205,13 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
             # Who speaks each line, before translating: Khmer politeness and pronouns depend on it
             await _update_job(db, job, JobStatus.RECOGNIZING, 60)
             spans = [(seg.start_time, seg.end_time) for seg in diarized]
+            gemini_labels = [seg.speaker_label for seg in diarized]
             kept = await store.kept_characters(db, job, spans)
-            labels, who_checks, prints = await store.recognise(
-                db, job, spans, [seg.speaker_label for seg in diarized], kept)
+            labels, who_checks, prints = await store.recognise(db, job, spans, gemini_labels, kept)
 
             story = await translation_story(db, project.id, job.id)
-            heard = {label: s.gender for label, s in zip(labels, diarized) if s.gender in VOICES}
+            heard = store.heard_by_label(labels, gemini_labels, who_checks, kept,
+                                         [seg.gender if seg.gender in VOICES else None for seg in diarized])
             cast = await translation_cast(db, job, labels, heard)
             memory = await translation_memory(db, project.id, job.id)
             await _update_job(db, job, JobStatus.TRANSLATING, 65)
