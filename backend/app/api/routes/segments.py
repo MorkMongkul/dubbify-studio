@@ -18,7 +18,7 @@ from app.core.database import get_db
 from app.core.paths import resolve_media_path
 from app.models.models import LinePrint, Segment, Speaker, Job, Project, Voice
 from app.schemas.schemas import (
-    SegmentResponse, SegmentUpdate, SegmentCreate, LayoutRequest, LayoutResponse, SplitRequest, SplitResponse,
+    CharacterPick, CharacterPicked, SegmentResponse, SegmentUpdate, SegmentCreate, LayoutRequest, LayoutResponse, SplitRequest, SplitResponse,
     SpeakerResponse, SpeakerUpdate, SpeakerCreate, SpeakerMerge, SpeakerMergeResponse, SpeakerUnmerge,
 )
 from app.services import story_notes, timeline, voice_level
@@ -136,6 +136,10 @@ async def update_segment(
     old_start = seg.start_time
 
     update_data = payload.model_dump(exclude_unset=True)
+    if (update_data.get("speaker_id") not in (None, seg.speaker_id)
+            and "who_confirmed" not in update_data and "who_check" not in update_data):
+        # Choosing another character is a decision: the line is confirmed. (A voice change is casting only.)
+        update_data["who_confirmed"], update_data["who_check"] = True, None
     if update_data.get("tts_audio_path"):
         update_data["tts_audio_path"] = await _clip_path_in_session(db, seg, update_data["tts_audio_path"])
     if "who_check" in update_data:
@@ -257,6 +261,34 @@ async def _segment_or_404(db: AsyncSession, segment_id: str) -> Segment:
     if not seg:
         raise HTTPException(status_code=404, detail="Segment not found")
     return seg
+
+
+@router.post("/segments/{segment_id}/character", response_model=CharacterPicked)
+async def pick_character(
+    segment_id: str,
+    payload: CharacterPick,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """
+    The user picks who speaks this line: it is confirmed for that speaker, and — when nobody
+    edited its Khmer — translated again for them. The pick is saved first and never fails because
+    of the translation (retranslated=False then). previous_khmer lets the editor undo it.
+    """
+    from app.services import pipeline
+
+    seg = await _segment_or_404(db, segment_id)
+    job = (await db.execute(select(Job).where(Job.id == seg.job_id))).scalar_one()
+    speaker = (await db.execute(select(Speaker).where(Speaker.id == payload.speaker_id))).scalar_one_or_none()
+    if speaker is None or speaker.project_id != job.project_id:
+        raise HTTPException(status_code=400, detail="That character isn't in this project")
+    previous = seg.khmer_text
+    seg.speaker_id, seg.who_confirmed, seg.who_check = speaker.id, True, None
+    await db.commit()   # the pick stands whatever the translation does, and the connection is free for Gemini
+    retranslated = await pipeline.retranslate_line(db, seg.id)
+    seg = (await db.execute(select(Segment).where(Segment.id == segment_id)
+                            .execution_options(populate_existing=True))).scalar_one()
+    return CharacterPicked(segment=SegmentResponse.model_validate(seg), retranslated=retranslated,
+                           previous_khmer=previous or "")
 
 
 @router.post("/segments/{segment_id}/split", response_model=SplitResponse)

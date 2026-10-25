@@ -286,6 +286,18 @@ export function useSplitSegment() {
   })
 }
 
+export function usePickCharacter() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ segmentId, speakerId }: { segmentId: string; speakerId: string; jobId: string }) =>
+      segments.pickCharacter(segmentId, speakerId),
+    onSuccess: (picked, { jobId }) => {
+      putSegments(qc, jobId, [picked.segment])
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    },
+  })
+}
+
 export function useDuplicateSegment() {
   const qc = useQueryClient()
   return useMutation({

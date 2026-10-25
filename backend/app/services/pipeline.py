@@ -25,7 +25,7 @@ from app.models.models import Job, Project, Segment, Speaker, JobStatus
 from app.services.audio_extractor import extract_audio, get_video_duration, video_frame_rate
 from app.services.source_separator import render_bgm_volume, separate_vocals_bgm
 from app.services.asr import VOICES, labels_for_spans, transcribe_audio
-from app.services.translator import translate_batch_with_report
+from app.services.translator import EARLIER_LINES, translate_batch_with_report
 from app.services.timeline import actor_span, follow_text, lay_out_new, settle_job
 from app.services.pipeline_common import (
     update_job_status as _update_job,
@@ -340,6 +340,72 @@ async def run_translation(job_id: str) -> None:
         except Exception as e:
             logger.exception(f"Translating missing lines failed for job {job_id[:8]}: {e}")
             await restore_or_fail_job(db, job_id, f"Translation failed: {e}")
+
+
+def is_machine_khmer(segment: Segment) -> bool:
+    """The Khmer is still what translation wrote: nobody edited it. Lines from before 0.5.0 (no
+    khmer_machine) count as edited."""
+    return segment.khmer_machine is not None and segment.khmer_text == segment.khmer_machine
+
+
+async def retranslate_line(db: AsyncSession, segment_id: str) -> bool:
+    """
+    Translate one line again for the speaker it now has (picking a character): one Gemini call
+    with the same Story notes, WHO IS SPEAKING cast and memory as the episode's translation, and
+    the lines before it with their Khmer. Only an unedited line, only by Gemini: the free fallback
+    ignores who is speaking and would replace better Khmer. Returns whether the Khmer changed;
+    never raises — the pick has been saved already and must stand.
+    """
+    try:
+        seg = (await db.execute(select(Segment).where(Segment.id == segment_id)
+                                .execution_options(populate_existing=True))).scalar_one_or_none()
+        if seg is None or not is_machine_khmer(seg) or not (seg.source_text or "").strip():
+            return False
+        if settings.TRANSLATION_BACKEND.lower() != "gemini" or not settings.GEMINI_API_KEY:
+            return False
+        job, project = await _load_job_and_project(db, seg.job_id)
+        if not project:
+            return False
+        label = (await db.execute(select(Speaker.label).where(Speaker.id == seg.speaker_id))).scalar_one_or_none() \
+            if seg.speaker_id else None
+        label = label or "SPEAKER"
+        machine, source = seg.khmer_machine, seg.source_text
+        before = (await db.execute(
+            select(Segment.source_text, Segment.khmer_text, Speaker.label)
+            .outerjoin(Speaker, Speaker.id == Segment.speaker_id)
+            .where(Segment.job_id == seg.job_id, Segment.id != seg.id, Segment.start_time <= seg.start_time)
+            .order_by(Segment.start_time.desc()).limit(EARLIER_LINES * 2)
+        )).all()
+        earlier = [{"speaker_label": lab or "SPEAKER", "source_text": zh, "translation": km}
+                   for zh, km, lab in reversed(before) if (zh or "").strip() and (km or "").strip()][-EARLIER_LINES:]
+        story = await translation_story(db, project.id, job.id)
+        cast = await translation_cast(db, job, [label] + [e["speaker_label"] for e in earlier])
+        memory = await translation_memory(db, project.id, job.id)
+        await db.commit()   # release the connection before the Gemini call
+
+        texts, report = await translate_batch_with_report(
+            [source], project.source_lang, project.target_lang,
+            segments_context=[{"speaker_label": label, "source_text": source}],
+            story=story, cast=cast, memory=memory, earlier=earlier,
+        )
+        text = texts[0] if texts else ""
+        if not text or report.fallback or report.failed:
+            return False   # the free fallback knows nothing of who speaks; keep Gemini's earlier Khmer
+
+        # Fresh from the database (not this session's earlier copy): a Khmer edit made meanwhile wins
+        seg = (await db.execute(select(Segment).where(Segment.id == segment_id)
+                                .execution_options(populate_existing=True))).scalar_one_or_none()
+        if seg is None or seg.khmer_text != machine or seg.khmer_machine != machine:
+            return False
+        seg.khmer_text = seg.khmer_machine = text
+        follow_text(seg)    # a line with no voice is as long as its text
+        await db.commit()
+        await settle_job(db, seg.job_id, [seg.id])
+        return True
+    except Exception as e:
+        logger.warning(f"Re-translating line {segment_id[:8]} for its new speaker failed: {e}")
+        await db.rollback()
+        return False
 
 
 # ── Speaker detection on existing segments ────────────────────────────────────

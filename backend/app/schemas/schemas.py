@@ -311,6 +311,11 @@ class SegmentUpdate(BaseModel):
     fade_out_secs: Optional[float] = Field(None, ge=0)
     who_check: Optional[List[WhoGuess]] = None     # null clears it
     who_confirmed: Optional[bool] = None
+    khmer_machine: Optional[str] = None            # only undo sends it: it puts a re-translated line back
+
+
+class CharacterPick(BaseModel):
+    speaker_id: str
 
 
 class SegmentResponse(BaseModel):
@@ -414,6 +419,12 @@ class SplitRequest(BaseModel):
 class SplitResponse(BaseModel):
     first: SegmentResponse
     second: SegmentResponse
+
+
+class CharacterPicked(BaseModel):
+    segment: SegmentResponse
+    retranslated: bool          # the line's Khmer was translated again for the new speaker
+    previous_khmer: str         # the Khmer before the pick, given even when nothing changed (undo puts it back)
 
 
 class StemPieceIn(BaseModel):

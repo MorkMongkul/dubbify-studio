@@ -590,6 +590,7 @@ async def translate_batch_with_report(
     story: str = "",
     cast: str = "",
     memory: list | None = None,
+    earlier: list | None = None,
 ) -> tuple[list[str], TranslationReport]:
     """
     Translate a batch (one Gemini call per chunk of CHUNK_SIZE lines) and report
@@ -598,7 +599,9 @@ async def translate_batch_with_report(
     the project's story notes as story_notes.for_translation gives them, and
     `cast` who each speaker tag is (pipeline_common.translation_cast), and
     `memory` the team's (source, translation) pairs from the project's other
-    episodes (pipeline_common.translation_memory), most recent first.
+    episodes (pipeline_common.translation_memory), most recent first. `earlier`
+    is context for the first line when the batch doesn't start at the episode's
+    start: dicts with speaker_label, source_text and translation.
     """
     report = TranslationReport()
     if not texts:
@@ -611,17 +614,18 @@ async def translate_batch_with_report(
         for start in range(0, len(texts), CHUNK_SIZE):
             chunk = texts[start:start + CHUNK_SIZE]
             ctx = segments_context[start:start + CHUNK_SIZE] if segments_context else None
-            earlier = [
+            lines_before = [
                 {"speaker_label": (segments_context[i].get("speaker_label", "")
                                    if segments_context and i < len(segments_context) else ""),
                  "source_text": texts[i], "translation": results[i]}
                 for i in range(max(0, start - EARLIER_LINES), start) if texts[i].strip() and results[i]
             ]
+            lines_before = (earlier or []) + lines_before if start == 0 else lines_before
             logger.info(
                 f"Translating lines {start + 1}-{start + len(chunk)} of {len(texts)} → {target_lang}"
             )
             results.extend(await _translate_chunk(
-                chunk, source_lang, target_lang, ctx, report, story, cast, earlier, memory))
+                chunk, source_lang, target_lang, ctx, report, story, cast, lines_before, memory))
         return await _finish_lines(texts, results, source_lang, target_lang, report, count_fallback=True), report
 
     # deep-translator as the configured backend (or Gemini configured without a key)

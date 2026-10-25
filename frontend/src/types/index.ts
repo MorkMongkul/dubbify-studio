@@ -288,6 +288,16 @@ export interface SegmentUpdate {
   fade_out_secs?: number
   who_check?: WhoGuess[] | null
   who_confirmed?: boolean
+  /** Only undo sends it: puts a re-translated line's machine Khmer back, so it still counts as unedited. */
+  khmer_machine?: string | null
+}
+
+/** POST /segments/{id}/character: the pick, and whether the line's Khmer was translated again for the new speaker. */
+export interface CharacterPicked {
+  segment: Segment
+  retranslated: boolean
+  /** The Khmer before the pick, even when nothing changed. */
+  previous_khmer: string
 }
 
 /** One clip's new place on the timeline (PUT /jobs/{id}/segments/layout). */

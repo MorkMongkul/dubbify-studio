@@ -3,7 +3,7 @@
 
 import axios, { type AxiosProgressEvent } from 'axios'
 import type {
-  MediaAsset, MediaClip, MediaClipList, MediaTemplate, MediaTrackFlagMap, Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, SpeakerMergeResponse, Segment, SegmentUpdate, SegmentCreate, LayoutChange, SplitResult, Stem, StemPiece, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView, TrackFlagMap,
+  MediaAsset, MediaClip, MediaClipList, MediaTemplate, MediaTrackFlagMap, Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, SpeakerMergeResponse, Segment, SegmentUpdate, SegmentCreate, LayoutChange, SplitResult, CharacterPicked, Stem, StemPiece, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView, TrackFlagMap,
 } from '@/types'
 import type { StemPieceLists } from '@/lib/stemPieces'
 
@@ -218,6 +218,9 @@ export const segments = {
 
   split: (segmentId: string, at: number) =>
     api.post<SplitResult>(`/segments/${segmentId}/split`, { at }).then((r) => r.data),
+
+  pickCharacter: (segmentId: string, speakerId: string) =>
+    api.post<CharacterPicked>(`/segments/${segmentId}/character`, { speaker_id: speakerId }).then((r) => r.data),
 
   duplicate: (segmentId: string) =>
     api.post<Segment>(`/segments/${segmentId}/duplicate`).then((r) => r.data),
