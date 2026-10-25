@@ -85,11 +85,18 @@ def self_test() -> int:
         shaping = text_shaping()
         voices = load_manifest()["voices"]
         missing = [v["file"] for v in voices if not (ASSETS / v["file"]).exists()]
+        from app.services.characters import models
+
+        try:
+            character_models = models.self_test()
+        except Exception as e:  # a missing model or a library that won't load: the build must not ship
+            character_models = f"FAILED: {type(e).__name__}: {e}"
     finally:
         shutil.rmtree(data_dir, ignore_errors=True)
     print(f"backend imports: ok\nKhmer text shaping: {shaping}\n"
           f"built-in voices: {len(voices)}" + (f", {len(missing)} clips missing" if missing else ""))
-    return 0 if shaping.startswith("ok") and voices and not missing else 1
+    print(character_models)
+    return 0 if shaping.startswith("ok") and voices and not missing and character_models == models.OK else 1
 
 
 def main() -> None:

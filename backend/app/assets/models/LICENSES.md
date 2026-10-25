@@ -38,3 +38,39 @@ dataset (https://research.google.com/ava/). Google publishes AVA's annotations u
 third-party YouTube content and are not redistributed here. Whether the AVA terms place any condition on using
 weights trained on it in a commercial product: **to confirm** (not verified from the dataset's own terms page; Light-ASD
 itself carries only the MIT licence above).
+
+## ERes2NetV2 (`3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx`)
+
+Voice print: a vector that says whose voice a stretch of speech is. Fetched by `scripts/fetch-models.sh` (not stored in
+git). It is the 3D-Speaker project's ERes2NetV2 speaker model for Mandarin, converted to ONNX and published in the
+sherpa-onnx "speaker-recongition-models" release; the backend runs it through the `sherpa-onnx` library (Apache-2.0).
+
+- Source: https://github.com/modelscope/3D-Speaker (code and model family); model card
+  https://modelscope.cn/models/iic/speech_eres2netv2_sv_zh-cn_16k-common
+- Licence: Apache License 2.0. Verified from the repository (`LICENSE` and its README's "License" section: "3D-Speaker is
+  released under the Apache License 2.0") and from the model card's licence field ("Apache License 2.0").
+- Distributed through: https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models (that release
+  says each model keeps its own licence; the one above is this model's).
+
+## SFace (`face_recognition_sface_2021dec.onnx`)
+
+Face print: a vector that says whose face a picture is. Fetched by `scripts/fetch-models.sh` (not stored in git).
+
+- Source: https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface
+- Licence: Apache License 2.0. Verified from that folder's `README.md` ("All files in this directory are licensed under
+  Apache 2.0 License") and its `LICENSE` file.
+
+## YuNet (`face_detection_yunet_2023mar.onnx`)
+
+Face detection: where the faces in a picture are. Stored in git.
+
+- Source: https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet
+- Licence: MIT, Copyright (c) 2020 Shiqi Yu. Verified from that folder's `README.md` ("All files in this directory are
+  licensed under MIT License") and its `LICENSE` file, which is the standard MIT text shown above for Light-ASD.
+
+## Libraries that run the models
+
+`sherpa-onnx` (Apache-2.0, https://github.com/k2-fsa/sherpa-onnx), `onnxruntime` (MIT) and `opencv-python-headless`
+(Apache-2.0 for OpenCV 4.5+ and its Python wrapper; the wheel also bundles FFmpeg and other libraries under their own
+LGPL/BSD licences, which the wheel's own `LICENSE-3RD-PARTY.txt` lists). Licences of these three libraries were not
+re-verified for this file: **to confirm** before the release notes name them.

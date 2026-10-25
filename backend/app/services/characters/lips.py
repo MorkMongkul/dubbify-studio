@@ -3,22 +3,16 @@
 `speaking_scores` takes the sound of one line and one face followed over it, and returns a score per video frame
 (> 0: this face is speaking this sound). The model and its export: scripts/export-light-asd.py."""
 from functools import lru_cache
-from pathlib import Path
 
 import numpy as np
 
+from app.services.characters import models
 from app.services.characters.mfcc import mfcc
 
 VIDEO_FPS = 25
 MFCC_PER_SECOND = 100
 MIN_FRAMES = 5
 DURATIONS = (1, 2, 4)  # seconds; Light-ASD scores a clip at a few lengths and the demo averages them
-
-_MODEL = Path(__file__).resolve().parents[2] / "assets" / "models" / "lightasd-ava.onnx"
-
-
-def _model_path() -> Path:
-    return _MODEL
 
 
 @lru_cache(maxsize=1)
@@ -27,7 +21,7 @@ def _session():
 
     options = onnxruntime.SessionOptions()
     options.log_severity_level = 3
-    return onnxruntime.InferenceSession(str(_model_path()), options, providers=["CPUExecutionProvider"])
+    return onnxruntime.InferenceSession(str(models.path("lightasd")), options, providers=["CPUExecutionProvider"])
 
 
 def run_onnx(audio: np.ndarray, video: np.ndarray) -> np.ndarray:
