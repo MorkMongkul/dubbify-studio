@@ -85,7 +85,7 @@ def test_faces_are_followed_by_overlap_and_the_most_speaking_track_wins(monkeypa
         here = []
         if k < 40 and not 10 <= k <= 12:  # A (left): missing 0.16 s, so two tracks of 10 and 27 frames
             here.append(_face(100 + k % 3, 120, 60, 0.9))
-        if 5 <= k < 35 and k != 15:  # B (right): one missed frame (0.08 s) is bridged, 29 frames
+        if 5 <= k < 35 and k != 15:  # B (right): one missed frame (0.08 s) is bridged, 29 frames found, 30 crops
             here.append(_face(450 + k % 2, 120, 60, 0.8 + k / 1000))
             b_faces.append(here[-1])
         if k == 20:  # a second box on B in the same frame starts a track of its own
@@ -131,7 +131,8 @@ def test_faces_are_followed_by_overlap_and_the_most_speaking_track_wins(monkeypa
 
     p, judged = run(left=0.5, right=1.5)
     # A's two tracks and B are judged, each on the sound from its first frame to the end of its last (640 samples each)
-    assert sorted(judged) == sorted([(10 * 640, 10), (27 * 640, 27), (30 * 640, 29)])
+    # with a crop for every one of those frames
+    assert sorted(judged) == sorted([(10 * 640, 10), (27 * 640, 27), (30 * 640, 30)])
     assert p.speaking_score == pytest.approx(1.5)
     sampled = [feature(None, f) for f in b_faces[::6]]  # every 6th frame of B, from its first
     expected = np.mean([v / np.linalg.norm(v) for v in sampled], axis=0)
@@ -142,6 +143,46 @@ def test_faces_are_followed_by_overlap_and_the_most_speaking_track_wins(monkeypa
 
     p, _ = run(left=-0.5, right=0.0)  # nobody's mean is above 0: the speaker is off screen
     assert p == LinePrints(None, None, None, None)
+
+
+def test_a_missed_frame_is_cropped_at_the_last_box_so_crops_keep_step_with_the_sound(monkeypatch):
+    """A face missed on one frame mid-track still gets a crop for that frame: that frame's pixels at the track's last
+    box. Without it every later crop would be judged against sound 40 ms early."""
+    w, h, n = 320, 240, 20
+    rng = np.random.default_rng(4)
+    pictures = [rng.integers(0, 256, (h, w, 3), dtype=np.uint8) for _ in range(n)]
+    boxes = {k: _face(100 + 2 * k, 80, 60, 0.9) for k in range(2, 16) if k != 8}  # missed on frame 8
+    judged = []
+
+    def frames(video_path, start, end, fps=25, *, size=None):
+        for k in range(n):
+            yield start + k / 25, pictures[k]
+
+    def detect(frame):
+        k = next(i for i, picture in enumerate(pictures) if picture is frame)
+        return np.array([boxes[k]] if k in boxes else np.zeros((0, 15), np.float32))
+
+    def speaking_scores(audio, crops):
+        judged.append((audio, crops))
+        return np.ones(len(crops))
+
+    monkeypatch.setattr(faces, "video_size", lambda path: (w, h))
+    monkeypatch.setattr(faces, "frames", frames)
+    monkeypatch.setattr(faces, "detect", detect)
+    monkeypatch.setattr(faces, "feature", lambda frame, face: np.ones(128, np.float32))
+    monkeypatch.setattr(lips, "speaking_scores", speaking_scores)
+    monkeypatch.setattr(voiceprint, "read_audio", lambda path, start, end: np.zeros(round(end * 16000), np.int16))
+    monkeypatch.setattr(voiceprint, "voice_print", lambda audio: None)
+
+    [p] = prints_for_spans("video.mp4", "vocals.wav", [(0.0, n / 25)])
+    [(audio, crops)] = judged
+    first, last = 2, 15
+    assert len(crops) == last - first + 1 and len(audio) == (last - first + 1) * 640
+    for k in range(first, last + 1):
+        box = boxes.get(k, boxes.get(k - 1))  # frame 8 at frame 7's box
+        assert np.array_equal(crops[k - first], faces.asd_crop(pictures[k], box)), k
+    assert not np.array_equal(crops[8 - first], faces.asd_crop(pictures[7], boxes[7]))
+    assert p.speaking_score == pytest.approx(1.0)
 
 
 def test_a_face_judged_speaking_gives_its_face_print_and_a_thumbnail(tmp_path, monkeypatch):
@@ -169,14 +210,18 @@ def test_a_face_judged_speaking_gives_its_face_print_and_a_thumbnail(tmp_path, m
 
 
 def test_prints_keep_no_frames(tmp_path, monkeypatch):
-    """Review Focus 1: frames are used and let go one at a time (60 s of 720x1280 is 4 GB of frames)."""
+    """Review Focus 1: frames are used and let go one at a time (60 s of 720x1280 is 4 GB of frames), while a face is
+    followed through every line: crops, a thumbnail and the voice prints are real. The detector, SFace and lip-sync
+    are stubbed (onnxruntime's own memory isn't seen by tracemalloc, and YuNet over 1500 frames is slow)."""
     _need("eres2netv2")
     video, vocals = tmp_path / "long.mp4", tmp_path / "vocals.wav"
     _ff("-f", "lavfi", "-i", "testsrc2=s=720x1280:r=25:d=60", "-c:v", "mpeg4", "-q:v", "10", str(video))
     _ff("-f", "lavfi", "-i", "sine=f=220:d=60", "-ac", "2", "-ar", "44100", str(vocals))
     seen = []
-    detect = faces.detect
-    monkeypatch.setattr(faces, "detect", lambda frame: seen.append(frame.shape) or detect(frame))
+    face = _face(240, 520, 240, 0.9)
+    monkeypatch.setattr(faces, "detect", lambda frame: seen.append(frame.shape) or face[None])
+    monkeypatch.setattr(faces, "feature", lambda frame, f: np.full(128, 128 ** -0.5, np.float32))
+    monkeypatch.setattr(lips, "speaking_scores", lambda audio, crops: np.full(len(crops), 1.0))
     spans = [(i * 5.0, i * 5.0 + 5.0) for i in range(12)]
     tracemalloc.start()
     try:
@@ -184,6 +229,6 @@ def test_prints_keep_no_frames(tmp_path, monkeypatch):
         peak = tracemalloc.get_traced_memory()[1]
     finally:
         tracemalloc.stop()
-    assert len(result) == 12 and all(p.voice is not None for p in result)
+    assert len(result) == 12 and all(p.voice is not None and p.face is not None and p.face_crop for p in result)
     assert len(seen) >= 1490 and seen[0] == (1280, 720, 3)
     assert peak < 300 * 1024 ** 2

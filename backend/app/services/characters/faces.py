@@ -31,7 +31,7 @@ TEMPLATE_MEAN = np.array([56.0262, 71.9008], np.float32)
 CROP_PAD = 0.40
 CROP_GREY = 110
 TRACK_IOU = 0.3
-TRACK_GAP = 0.09  # s: two missed frames at 25 fps
+TRACK_GAP = 0.09  # s: bridges one missed frame at 25 fps (0.08 s); two would be 0.12 s
 FEATURE_EVERY = 6
 THUMBNAIL = 160
 
@@ -246,26 +246,40 @@ def thumbnail(frame: np.ndarray, face: np.ndarray) -> Image.Image | None:
 
 @dataclass
 class Track:
-    """One face followed through a line: per frame its box and Light-ASD crop, SFace features every 6th frame
-    (L2-normalised), and a thumbnail of its best-scored detection. Never a frame."""
-    frames: list[int] = field(default_factory=list)  # frame numbers from the line's start
+    """One face followed through a line: its boxes where it was found, a Light-ASD crop for every frame from its first
+    to its last (so the crops keep step with the sound), SFace features every 6th face found (L2-normalised), and a
+    thumbnail of its best-scored detection. Never a frame."""
+    frames: list[int] = field(default_factory=list)  # frame numbers (from the line's start) where it was found
     times: list[float] = field(default_factory=list)
     boxes: list[np.ndarray] = field(default_factory=list)
     crops: list[np.ndarray] = field(default_factory=list)
     features: list[np.ndarray] = field(default_factory=list)
     best_score: float = -1.0
     picture: Image.Image | None = None
+    pending: np.ndarray | None = None  # the crop of a frame it was missed on, kept if it continues
 
     def add(self, k: int, t: float, frame: np.ndarray, face: np.ndarray) -> None:
         self.frames.append(k)
         self.times.append(t)
         self.boxes.append(face[:4].copy())
+        if self.pending is not None:
+            self.crops.append(self.pending)
+            self.pending = None
         self.crops.append(asd_crop(frame, face))
         if len(self.frames) % FEATURE_EVERY == 1:
             vector = feature(frame, face)
             self.features.append(vector / np.linalg.norm(vector))
         if face[14] > self.best_score:
             self.best_score, self.picture = float(face[14]), thumbnail(frame, face)
+
+    def missed(self, t: float, frame: np.ndarray) -> None:
+        """Call for every frame after its faces are followed. If this track's face wasn't found here but could still
+        be on the next frame, crop this frame at its last box (real pixels, as the demo's interpolated boxes); a
+        track that can't continue drops it. At most one is held: 0.09 s bridges one missed frame."""
+        if self.times[-1] == t:
+            return
+        can_continue = t + 1 / FPS - self.times[-1] <= TRACK_GAP
+        self.pending = asd_crop(frame, self.boxes[-1]) if can_continue else None
 
 
 def follow(tracks: list[Track], t: float, face: np.ndarray) -> Track:

@@ -49,11 +49,13 @@ def _speaking_face(video_path: str, size: tuple[int, int], start: float, end: fl
             for face in faces.detect(frame):
                 if min(face[2], face[3]) >= faces.MIN_SIDE:
                     faces.follow(tracks, t, face).add(k, t, frame, face)
+            for track in tracks:
+                track.missed(t, frame)
     best, best_score = None, 0.0
     for track in tracks:
         if len(track.frames) < MIN_TRACK:
             continue
-        # from the track's first frame to the end of its last; the crops skip its missed frames, as the spike did
+        # from the track's first frame to the end of its last, a crop for each (a missed frame's at the last box)
         heard = audio[track.frames[0] * SAMPLES_PER_FRAME:(track.frames[-1] + 1) * SAMPLES_PER_FRAME]
         scores = lips.speaking_scores(heard, np.stack(track.crops))
         if scores is not None and float(np.mean(scores)) > best_score:
