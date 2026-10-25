@@ -292,6 +292,13 @@ export interface SegmentUpdate {
   khmer_machine?: string | null
 }
 
+/** GET /projects/{id}/character-suggestions: two characters (a < b) that may be one. Only the user's click merges. */
+export interface CharacterSuggestion {
+  a: string
+  b: string
+  reason: 'same voice' | 'same voice and face'
+}
+
 /** POST /segments/{id}/character: the pick, and whether the line's Khmer was translated again for the new speaker. */
 export interface CharacterPicked {
   segment: Segment

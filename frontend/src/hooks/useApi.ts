@@ -196,6 +196,7 @@ export function invalidateSpeakerLines(qc: ReturnType<typeof useQueryClient>, pr
   qc.invalidateQueries({ queryKey: ['speakers', projectId] })
   qc.invalidateQueries({ queryKey: ['segments'] })
   qc.invalidateQueries({ queryKey: ['story', projectId] })
+  qc.invalidateQueries({ queryKey: ['character-suggestions', projectId] })   // a merge or its undo changes who may be one
 }
 
 export function useMergeSpeaker() {
@@ -204,6 +205,24 @@ export function useMergeSpeaker() {
     mutationFn: ({ speakerId, into }: { speakerId: string; into: string; projectId: string }) =>
       speakers.merge(speakerId, into),
     onSuccess: (_result, { projectId }) => invalidateSpeakerLines(qc, projectId),
+  })
+}
+
+export function useCharacterSuggestions(projectId: string | null) {
+  return useQuery({
+    queryKey: ['character-suggestions', projectId],
+    queryFn: () => speakers.suggestions(projectId!),
+    enabled: !!projectId,
+    staleTime: 10000,
+  })
+}
+
+export function useDismissCharacterSuggestion() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ projectId, a, b }: { projectId: string; a: string; b: string }) =>
+      speakers.dismissSuggestion(projectId, a, b),
+    onSuccess: (_result, { projectId }) => qc.invalidateQueries({ queryKey: ['character-suggestions', projectId] }),
   })
 }
 

@@ -19,7 +19,7 @@ from app.core.paths import resolve_media_path
 from app.models.models import LinePrint, Segment, Speaker, Job, Project, Voice
 from app.schemas.schemas import (
     CharacterPick, CharacterPicked, SegmentResponse, SegmentUpdate, SegmentCreate, LayoutRequest, LayoutResponse, SplitRequest, SplitResponse,
-    SpeakerResponse, SpeakerUpdate, SpeakerCreate, SpeakerMerge, SpeakerMergeResponse, SpeakerUnmerge,
+    SpeakerResponse, SpeakerUpdate, SpeakerCreate, SpeakerMerge, SpeakerMergeResponse, CharacterSuggestion, CharacterDismiss, SpeakerUnmerge,
 )
 from app.services import story_notes, timeline, voice_level
 from app.services.audio_extractor import voice_at_rate
@@ -677,3 +677,42 @@ async def unmerge_speaker(
     await _refresh_faces(db, target.project_id)
     await db.refresh(speaker)
     return speaker
+
+
+@router.get("/projects/{project_id}/character-suggestions", response_model=List[CharacterSuggestion])
+async def character_suggestions(
+    project_id: str,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """
+    Characters that may be one person: cast with the same voice by the user, or close in voice and face. Only
+    suggestions — nothing is merged here; the user's click calls /speakers/{id}/merge.
+    """
+    from app.services.characters import suggestions
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return await suggestions.suggest(db, project_id, project.character_dismissals)
+
+
+@router.post("/projects/{project_id}/character-suggestions/dismiss", status_code=status.HTTP_204_NO_CONTENT)
+async def dismiss_character_suggestion(
+    project_id: str,
+    payload: CharacterDismiss,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """Not the same: the pair (given in either order) is never suggested again."""
+    from app.services.characters import suggestions
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if payload.a == payload.b:
+        raise HTTPException(status_code=400, detail="Choose two different characters")
+    found = (await db.execute(select(Speaker.id).where(
+        Speaker.project_id == project_id, Speaker.id.in_([payload.a, payload.b])))).scalars().all()
+    if len(set(found)) != 2:
+        raise HTTPException(status_code=400, detail="Those characters aren't in this project")
+    pairs = suggestions.dismissals_from(project.character_dismissals)
+    pairs.add(suggestions.pair_of(payload.a, payload.b))
+    project.character_dismissals = suggestions.dismissals_to(pairs)
+    await db.commit()

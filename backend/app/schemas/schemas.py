@@ -427,6 +427,18 @@ class CharacterPicked(BaseModel):
     previous_khmer: str         # the Khmer before the pick, given even when nothing changed (undo puts it back)
 
 
+class CharacterSuggestion(BaseModel):
+    """Two characters that may be one (a < b): the user decides, with Same person as… or Not the same."""
+    a: str
+    b: str
+    reason: Literal["same voice", "same voice and face"]
+
+
+class CharacterDismiss(BaseModel):
+    a: str
+    b: str                                      # either order
+
+
 class StemPieceIn(BaseModel):
     """One piece of a stem, as the editor sends the stem's whole list."""
     id: Optional[str] = None
