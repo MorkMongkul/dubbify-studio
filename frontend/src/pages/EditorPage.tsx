@@ -495,7 +495,7 @@ export default function EditorPage() {
     // Only after Analyze: a new video's one warning (music and voices weren't
     // separated) already stays on the transcript as a banner with Try again
     const completedFromStage2 = job.status === 'completed'
-      && (prev === 'diarizing' || prev === 'transcribing' || prev === 'translating')
+      && (prev === 'diarizing' || prev === 'transcribing' || prev === 'recognizing' || prev === 'translating')
     if (completedFromStage2) {
       toast.error(job.error_msg, { duration: 12000 })
     }

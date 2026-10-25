@@ -73,7 +73,7 @@ interface StatusBadgeProps {
 }
 
 export function StatusBadge({ status, label, className }: StatusBadgeProps) {
-  const isRunning = ['uploading','extracting','separating','diarizing','transcribing','translating','synthesizing','mixing'].includes(status)
+  const isRunning = ['uploading','extracting','separating','diarizing','transcribing','recognizing','translating','synthesizing','mixing'].includes(status)
   return (
     <Badge
       variant={statusVariantMap[status]}

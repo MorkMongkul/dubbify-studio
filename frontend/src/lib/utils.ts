@@ -106,7 +106,7 @@ export function originalVoicesReplaced(status: string | undefined | null): boole
 
 /** Check if job is still processing */
 export function isJobRunning(status: string): boolean {
-  const running = ['pending', 'extracting', 'separating', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing']
+  const running = ['pending', 'extracting', 'separating', 'diarizing', 'transcribing', 'recognizing', 'translating', 'synthesizing', 'mixing']
   return running.includes(status)
 }
 
