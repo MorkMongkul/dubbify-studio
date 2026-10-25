@@ -22,6 +22,7 @@ os.environ.update({
     "ALLOWED_HOSTS": "127.0.0.1,localhost,test,testserver",
 })
 
+import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
 from httpx import AsyncClient, ASGITransport  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession  # noqa: E402
@@ -111,3 +112,12 @@ async def file_db(tmp_path, monkeypatch):
     finally:
         app.dependency_overrides[get_db] = override_get_db
         await engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _no_speed_measuring(monkeypatch):
+    """The face step's speed test (characters.speed) runs the real models: no test may start it, and each starts
+    without an answer left by another. A fast machine unless a test says otherwise."""
+    from app.services.characters import speed
+    monkeypatch.setattr(speed, "_memo", None)
+    monkeypatch.setattr(speed, "measure", lambda: speed.Parts(1.0, 1.0, 1.0, 1.0, 1.0))

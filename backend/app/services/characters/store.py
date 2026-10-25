@@ -190,6 +190,13 @@ def _one_at_a_time(work, *args):
         return work(*args)
 
 
+def _prints_of(video: Path, vocals: str, spans: list[tuple[float, float]]) -> list[LinePrints]:
+    """Worker thread, one analysis at a time: whether this Mac can afford the faces is decided here, because the first
+    time it runs the models for a few seconds."""
+    from app.services.characters import prints, speed
+    return prints.prints_for_spans(video, vocals, spans, with_faces=speed.face_step_enabled())
+
+
 def _vocals_of(job: Job) -> Path | None:
     """The job's separated vocals, or None (logged): without them no print can be made."""
     vocals = Path(settings.UPLOAD_DIR) / job.project_id / job.id / "vocals.wav"
@@ -206,8 +213,7 @@ async def _find_prints(db: AsyncSession, job: Job, spans: list[tuple[float, floa
     video = resolve_media_path(job.video_path)
     await db.commit()
     try:
-        from app.services.characters import prints
-        found = await asyncio.to_thread(_one_at_a_time, prints.prints_for_spans, video, str(vocals), spans)
+        found = await asyncio.to_thread(_one_at_a_time, _prints_of, video, str(vocals), spans)
     except (ImportError, models.ModelMissing) as e:
         # a Mac below macOS 13.4 (onnxruntime), or a dev checkout without scripts/fetch-models.sh
         logger.warning(f"Job {job.id[:8]}: characters weren't recognised, the models can't run here: {e}",
