@@ -62,6 +62,19 @@ async def lifespan(app: FastAPI):
         # Not fatal: an episode not converted yet still plays the same in the
         # preview and the export; the next launch retries.
         logger.exception("Couldn't convert older episodes to the new timeline")
+    # Lines the owner gave their own voice become characters (once per project; quick database work)
+    try:
+        from app.services.characters import upgrade
+        moved = await upgrade.convert_projects(core_db.AsyncSessionLocal)
+        if moved:
+            logger.info(f"Moved {moved} line(s) with their own voice to characters.")
+        # then, in the background and at every start: stray face crops swept, missing prints made, thumbnails set
+        task = asyncio.create_task(upgrade.finish_upgrade(core_db.AsyncSessionLocal))
+        _background.add(task)
+        task.add_done_callback(_background.discard)
+    except Exception:
+        # Not fatal: the editor works without characters; the next launch retries.
+        logger.exception("Couldn't upgrade older projects to characters")
     # Media left preparing when the app quit: prepared again, in the background
     task = asyncio.create_task(resume_interrupted(core_db.AsyncSessionLocal))
     _background.add(task)

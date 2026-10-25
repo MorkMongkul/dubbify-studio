@@ -142,7 +142,7 @@ async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None =
     app.services.asr — Gemini decides how many voices it hears).
     """
     from app.core.database import AsyncSessionLocal
-    from app.services.characters import store   # here, so the backend starts without the characters package
+    from app.services.characters import store, upgrade   # here, so the backend starts without the characters package
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(Job).where(Job.id == job_id))
@@ -204,6 +204,7 @@ async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None =
             await db.flush()
             await remove_unused_auto_speakers(db, project.id)
             await db.commit()
+            await upgrade.refresh_faces_safely(db, project.id)
 
             # Translate
             story = await translation_story(db, project.id, job.id)

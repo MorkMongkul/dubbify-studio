@@ -172,7 +172,7 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
     how many distinct voices it hears (see app.services.asr).
     """
     from app.core.database import AsyncSessionLocal
-    from app.services.characters import store   # here, so the backend starts without the characters package
+    from app.services.characters import store, upgrade   # here, so the backend starts without the characters package
 
     async with AsyncSessionLocal() as db:
         job, project = await _load_job_and_project(db, job_id)
@@ -271,6 +271,7 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
             if job.duck_music is None:
                 job.duck_music = True   # analysed from 0.3.1 on: the music dips under the voices
             await _update_job(db, job, JobStatus.COMPLETED, 100, " ".join(warnings))
+            await upgrade.refresh_faces_safely(db, project.id)   # the new lines' faces may now be a thumbnail
             logger.info(
                 f"Analysis complete for job {job_id[:8]} — {len(diarized)} segments, "
                 f"{len(set(speaker_map[label].id for label in labels))} speakers"
@@ -418,7 +419,7 @@ async def run_speaker_detection(job_id: str) -> None:
     existed, or whose speakers came out wrong.
     """
     from app.core.database import AsyncSessionLocal
-    from app.services.characters import store
+    from app.services.characters import store, upgrade
 
     async with AsyncSessionLocal() as db:
         job, project = await _load_job_and_project(db, job_id)
@@ -438,6 +439,7 @@ async def run_speaker_detection(job_id: str) -> None:
             if outcome == "done":
                 await remove_unused_auto_speakers(db, project.id)
                 await _update_job(db, job, JobStatus.COMPLETED, 100, "")
+                await upgrade.refresh_faces_safely(db, project.id)
                 logger.info(f"Speaker detection done for job {job_id[:8]} — checked against the characters")
                 return
             if not settings.GEMINI_API_KEY and outcome != "no_profiles":   # the fallback below needs it

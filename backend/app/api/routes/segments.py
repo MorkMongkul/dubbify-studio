@@ -263,6 +263,11 @@ async def _segment_or_404(db: AsyncSession, segment_id: str) -> Segment:
     return seg
 
 
+async def _refresh_faces(db: AsyncSession, project_id: str) -> None:
+    from app.services.characters import upgrade   # here, so the backend starts without the characters package
+    await upgrade.refresh_faces_safely(db, project_id)
+
+
 @router.post("/segments/{segment_id}/character", response_model=CharacterPicked)
 async def pick_character(
     segment_id: str,
@@ -284,6 +289,7 @@ async def pick_character(
     previous = seg.khmer_text
     seg.speaker_id, seg.who_confirmed, seg.who_check = speaker.id, True, None
     await db.commit()   # the pick stands whatever the translation does, and the connection is free for Gemini
+    await _refresh_faces(db, job.project_id)   # the line's face may now be its character's best
     retranslated = await pipeline.retranslate_line(db, seg.id)
     seg = (await db.execute(select(Segment).where(Segment.id == segment_id)
                             .execution_options(populate_existing=True))).scalar_one()
@@ -628,6 +634,7 @@ async def merge_speaker(
     await db.flush()
     await db.delete(source)
     await db.commit()
+    await _refresh_faces(db, target.project_id)   # the character now has both faces to choose from
     return SpeakerMergeResponse(moved=[line.id for line in lines], removed=removed, relinked=relinked)
 
 
@@ -666,5 +673,7 @@ async def unmerge_speaker(
         project.story_notes = story_notes.link_characters(project.story_notes, payload.relinked, snap.label)
         flag_modified(project, "story_notes")
     await db.commit()
+    # a snapshot doesn't carry the thumbnail: both characters take their best confirmed face again
+    await _refresh_faces(db, target.project_id)
     await db.refresh(speaker)
     return speaker
