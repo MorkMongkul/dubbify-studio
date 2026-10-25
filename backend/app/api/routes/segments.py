@@ -139,7 +139,7 @@ async def update_segment(
     if update_data.get("tts_audio_path"):
         update_data["tts_audio_path"] = await _clip_path_in_session(db, seg, update_data["tts_audio_path"])
     if "who_check" in update_data:
-        update_data["who_check"] = json.dumps(update_data["who_check"]) if update_data["who_check"] else None
+        update_data["who_check"] = None if update_data["who_check"] is None else json.dumps(update_data["who_check"])
     for field, value in update_data.items():
         setattr(seg, field, value)
     if update_data.get("tts_audio_path") == "":

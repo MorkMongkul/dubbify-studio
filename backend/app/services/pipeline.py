@@ -3,12 +3,14 @@ app/services/pipeline.py
 ASR pipeline orchestrator — two user-controlled stages.
 
 Stage 1  run_pipeline()           → extract audio + stem separation (HF Space) → STEMS_READY
-Stage 2  run_analysis_pipeline()  → transcribe + speaker-label + translate  → COMPLETED
+Stage 2  run_analysis_pipeline()  → transcribe + recognise characters + translate  → COMPLETED
 
 Speaker labels come from app.services.asr (Gemini comparing voices across
 clips in one request) rather than a dedicated diarization model like MOSS's
-— treat them as an approximate starting point, not ground truth. The user
-splits/reassigns speakers manually in the editor for anything wrong.
+— treat them as an approximate starting point, not ground truth. Once a
+project has characters, each line's voice and speaking face are matched to
+them first (app.services.characters.store.recognise); Gemini's labels then
+only name people not seen before. The user reassigns anything wrong.
 
 TTS synthesis and final mix are triggered separately per-segment / on demand.
 """
@@ -170,6 +172,7 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
     how many distinct voices it hears (see app.services.asr).
     """
     from app.core.database import AsyncSessionLocal
+    from app.services.characters import store   # here, so the backend starts without the characters package
 
     async with AsyncSessionLocal() as db:
         job, project = await _load_job_and_project(db, job_id)
@@ -199,15 +202,22 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
             has_text = sum(1 for s in diarized if s.source_text)
             logger.info(f"Transcription: {has_text}/{len(diarized)} segments have text")
 
+            # Who speaks each line, before translating: Khmer politeness and pronouns depend on it
+            await _update_job(db, job, JobStatus.RECOGNIZING, 60)
+            spans = [(seg.start_time, seg.end_time) for seg in diarized]
+            kept = await store.kept_characters(db, job, spans)
+            labels, who_checks, prints = await store.recognise(
+                db, job, spans, [seg.speaker_label for seg in diarized], kept)
+
             story = await translation_story(db, project.id, job.id)
-            heard = {s.speaker_label: s.gender for s in diarized if s.gender in VOICES}
-            cast = await translation_cast(db, job, [s.speaker_label for s in diarized], heard)
+            heard = {label: s.gender for label, s in zip(labels, diarized) if s.gender in VOICES}
+            cast = await translation_cast(db, job, labels, heard)
             memory = await translation_memory(db, project.id, job.id)
             await _update_job(db, job, JobStatus.TRANSLATING, 65)
             source_texts = [seg.source_text for seg in diarized]
             segments_context = [
-                {"speaker_label": seg.speaker_label, "source_text": seg.source_text}
-                for seg in diarized
+                {"speaker_label": label, "source_text": seg.source_text}
+                for label, seg in zip(labels, diarized)
             ]
             # Translate Chinese → target (Khmer) DIRECTLY — no English pivot.
             logger.info(f"Translating {len(source_texts)} segments {project.source_lang} → {project.target_lang}...")
@@ -218,26 +228,31 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
 
             # Atomic swap: speakers, old-segment removal, new segments and the
             # COMPLETED status are all written in the one commit below.
-            speaker_map = await ensure_speakers(db, project.id, [seg.speaker_label for seg in diarized], heard)
+            speaker_map = await ensure_speakers(db, project.id, labels, heard)
             lane_by_speaker: dict = {}   # each speaker starts on its own lane (user can rearrange)
             new_segments = []
             for i, seg in enumerate(diarized):
+                km = km_texts[i] if i < len(km_texts) else ""
                 new_segments.append(Segment(
                     job_id=job.id,
-                    speaker_id=speaker_map[seg.speaker_label].id,
-                    lane_index=lane_by_speaker.setdefault(seg.speaker_label, len(lane_by_speaker)),
+                    speaker_id=speaker_map[labels[i]].id,
+                    lane_index=lane_by_speaker.setdefault(labels[i], len(lane_by_speaker)),
                     start_time=seg.start_time,
                     end_time=seg.end_time,
                     source_start=seg.start_time,
                     source_end=seg.end_time,
                     source_text=seg.source_text,
                     english_text="",
-                    khmer_text=km_texts[i] if i < len(km_texts) else "",
+                    khmer_text=km,
+                    khmer_machine=km,
+                    who_check=store.who_check_json(who_checks[i]),
+                    who_confirmed=bool(kept[i]),   # a confirmed old line's character stays confirmed
                 ))
             # Each line is as long as its Khmer text takes to say; the
             # detected span stays as where the actor spoke
             lay_out_new(new_segments)
             await replace_job_segments(db, job.id, new_segments)
+            await store.save_prints(db, job.id, [s.id for s in new_segments], prints, store.faces_dir(job))
             await remove_unused_auto_speakers(db, project.id)
 
             # used_mock: Gemini failed for some clips — their timing is real
@@ -256,7 +271,7 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
             await _update_job(db, job, JobStatus.COMPLETED, 100, " ".join(warnings))
             logger.info(
                 f"Analysis complete for job {job_id[:8]} — {len(diarized)} segments, "
-                f"{len(set(speaker_map[s.speaker_label].id for s in diarized))} speakers"
+                f"{len(set(speaker_map[label].id for label in labels))} speakers"
             )
 
         except Exception as e:
@@ -311,7 +326,7 @@ async def run_translation(job_id: str) -> None:
                 for (seg_id, _, _), text in zip(todo, texts):
                     seg = current.get(seg_id)
                     if seg is not None and text and needs_translation(seg):
-                        seg.khmer_text = text
+                        seg.khmer_text = seg.khmer_machine = text
                         follow_text(seg)    # a line with no voice is as long as its text
                         filled.append(seg_id)
                 await db.commit()

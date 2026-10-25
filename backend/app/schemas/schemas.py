@@ -277,12 +277,13 @@ class WhoGuess(BaseModel):
 
 
 def _who_check_list(raw):
-    """A line's guesses from segments.who_check (JSON text, or already parsed); None when absent or unreadable."""
-    if not raw:
+    """A line's guesses from segments.who_check (JSON text, or already parsed); None when absent or unreadable.
+    [] stays []: to check, though Movelo has no guess (nobody known, or no prints)."""
+    if raw is None or raw == "":
         return None
     try:
         data = json.loads(raw) if isinstance(raw, str) else raw
-        return [WhoGuess.model_validate(g) for g in data] or None
+        return [WhoGuess.model_validate(g) for g in data]
     except (TypeError, ValueError):
         return None
 
