@@ -91,7 +91,7 @@ export function debounce<T extends (...args: Parameters<T>) => void>(
 
 /** Map job status to pipeline step index */
 export function getJobStepIndex(status: string): number {
-  const steps = ['pending', 'extracting', 'separating', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing', 'completed', 'failed']
+  const steps = ['pending', 'extracting', 'separating', 'diarizing', 'transcribing', 'recognizing', 'translating', 'synthesizing', 'mixing', 'completed', 'failed']
   return steps.indexOf(status)
 }
 

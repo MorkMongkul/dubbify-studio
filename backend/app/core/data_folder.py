@@ -19,7 +19,7 @@ from pathlib import Path
 from sqlalchemy import func, literal, select, update
 
 from app.core.database import AsyncSessionLocal
-from app.models.models import Job, MediaAsset, Overlay, OverlayTemplate, Project, Segment, Speaker, Voice
+from app.models.models import Job, LinePrint, MediaAsset, Overlay, OverlayTemplate, Project, Segment, Speaker, Voice
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,8 @@ PATH_COLUMNS = (
     Job.output_path,
     Job.subtitle_path,
     Speaker.reference_audio_path,
+    Speaker.face_crop_path,
+    LinePrint.face_crop_path,
     Segment.tts_audio_path,
     Overlay.media_path,
     MediaAsset.path,

@@ -4,7 +4,7 @@ All database tables defined here.
 """
 from sqlalchemy import (
     Column, String, Integer, Float, Boolean,
-    DateTime, ForeignKey, Text, JSON, Enum as SAEnum
+    DateTime, ForeignKey, Text, JSON, LargeBinary, Enum as SAEnum
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -43,6 +43,7 @@ class JobStatus(str, enum.Enum):
     STEMS_READY  = "stems_ready"   # paused — waiting for user to click Analyze
     DIARIZING    = "diarizing"     # speaker diarization
     TRANSCRIBING = "transcribing"  # ASR
+    RECOGNIZING  = "recognizing"   # characters: voice and face prints, who is speaking
     TRANSLATING  = "translating"   # translation
     SYNTHESIZING = "synthesizing"  # TTS
     MIXING       = "mixing"        # final audio mix
@@ -136,6 +137,12 @@ class Project(Base):
     # AI learned from finished episodes, used by translation and the Assistant.
     # NULL = empty notes.
     story_notes = Column(JSON, nullable=True)
+
+    # Characters (0.5.0): the rules version the project was last brought up to
+    # (NULL = not yet), and the pairs of speakers the user said are not the same
+    # person (JSON text: a list of [a, b] speaker ids, each pair sorted).
+    characters_version    = Column(Integer, nullable=True)
+    character_dismissals  = Column(Text, nullable=True)
 
     jobs     = relationship("Job", back_populates="project", cascade="all, delete")
     speakers = relationship("Speaker", back_populates="project", cascade="all, delete")
@@ -235,6 +242,8 @@ class Speaker(Base):
     # because nobody chose one; False once the user chooses. A picked voice
     # doesn't make the speaker "confirmed" (pipeline_common.is_confirmed_speaker).
     voice_auto = Column(Boolean, default=False)
+    # A thumbnail of the speaker's face (0.5.0); NULL = none made.
+    face_crop_path = Column(String, nullable=True)
 
     project  = relationship("Project", back_populates="speakers")
     segments = relationship("Segment", back_populates="speaker")
@@ -293,12 +302,40 @@ class Segment(Base):
     # voice was made (voice_level.level_new_voice). NULL: made before 0.2.8, left as it was.
     level_gain_db = Column(Float, nullable=True)
 
+    # Characters (0.5.0). who_check: JSON text, the two guesses [{speaker_id, basis}]
+    # for a line Movelo isn't sure of; NULL = sure. who_confirmed: the user picked the
+    # speaker (NULL, as on rows from before 0.5.0, means not confirmed). khmer_machine:
+    # the machine's own Khmer, so a re-translation can tell whether the user edited it.
+    who_check     = Column(Text, nullable=True)
+    who_confirmed = Column(Boolean, nullable=True, default=False)
+    khmer_machine = Column(Text, nullable=True)
+
     # Review flags
     is_approved  = Column(Boolean, default=False)
     notes        = Column(Text, default="")
 
     job     = relationship("Job", back_populates="segments")
     speaker = relationship("Speaker", back_populates="segments")
+
+
+# ── Line prints (0.5.0) ───────────────────────────────────────
+class LinePrint(Base):
+    """
+    What a line sounds and looks like (voice print, speaking face's print), kept
+    so characters can be recognised without listening to the episode again. One
+    row per line; it goes with its line (and is dropped when the line is split,
+    since it described the whole line). `model_version` says which models made it.
+    """
+    __tablename__ = "line_prints"
+
+    segment_id     = Column(String, ForeignKey("segments.id"), primary_key=True)
+    job_id         = Column(String, ForeignKey("jobs.id"), nullable=False, index=True)
+    voice_print    = Column(LargeBinary, nullable=True)
+    face_print     = Column(LargeBinary, nullable=True)
+    speaking_score = Column(Float, nullable=True)
+    face_crop_path = Column(String, nullable=True)
+    model_version  = Column(String, nullable=False, default="")
+    made_at        = Column(DateTime, server_default=func.now())
 
 
 # ── Stem pieces (0.3.2) ───────────────────────────────────────

@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.paths import resolve_existing
 from app.models.models import (
-    AgeGroup, ChatProposedEdit, Gender, Job, JobStatus, Project, Segment, Speaker, Voice,
+    AgeGroup, ChatProposedEdit, Gender, Job, JobStatus, LinePrint, Project, Segment, Speaker, Voice,
 )
 from app.services import asr, story_notes
 from app.services.diarizer import build_voice_design_prompt
@@ -304,6 +304,7 @@ async def replace_job_segments(db: AsyncSession, job_id: str, new_segments: List
     """
     old_ids = select(Segment.id).where(Segment.job_id == job_id)
     await db.execute(delete(ChatProposedEdit).where(ChatProposedEdit.segment_id.in_(old_ids)))
+    await db.execute(delete(LinePrint).where(LinePrint.job_id == job_id))
     await db.execute(delete(Segment).where(Segment.job_id == job_id))
     db.add_all(new_segments)
     await db.flush()
@@ -345,6 +346,7 @@ _ORPHANABLE_STATUSES = [
     JobStatus.SEPARATING,
     JobStatus.DIARIZING,
     JobStatus.TRANSCRIBING,
+    JobStatus.RECOGNIZING,
     JobStatus.TRANSLATING,
     JobStatus.SYNTHESIZING,
     JobStatus.MIXING,

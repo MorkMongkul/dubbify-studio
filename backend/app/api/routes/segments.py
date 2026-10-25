@@ -6,16 +6,17 @@ Also includes speaker management endpoints.
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm.attributes import flag_modified
 from typing import List
+import json
 import uuid
 from pathlib import Path
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.paths import resolve_media_path
-from app.models.models import Segment, Speaker, Job, Project, Voice
+from app.models.models import LinePrint, Segment, Speaker, Job, Project, Voice
 from app.schemas.schemas import (
     SegmentResponse, SegmentUpdate, SegmentCreate, LayoutRequest, LayoutResponse, SplitRequest, SplitResponse,
     SpeakerResponse, SpeakerUpdate, SpeakerCreate, SpeakerMerge, SpeakerMergeResponse, SpeakerUnmerge,
@@ -137,6 +138,8 @@ async def update_segment(
     update_data = payload.model_dump(exclude_unset=True)
     if update_data.get("tts_audio_path"):
         update_data["tts_audio_path"] = await _clip_path_in_session(db, seg, update_data["tts_audio_path"])
+    if "who_check" in update_data:
+        update_data["who_check"] = json.dumps(update_data["who_check"]) if update_data["who_check"] else None
     for field, value in update_data.items():
         setattr(seg, field, value)
     if update_data.get("tts_audio_path") == "":
@@ -303,6 +306,8 @@ async def split_segment(
         seg.end_time = at
         timeline.follow_text(seg)
         timeline.follow_text(second)
+    # The first half keeps the id, but its print described the whole line
+    await db.execute(delete(LinePrint).where(LinePrint.segment_id == seg.id))
     db.add(second)
     await db.commit()
     await timeline.settle_job(db, seg.job_id, [seg.id, second.id])
@@ -335,6 +340,7 @@ async def delete_segment(segment_id: str, db: AsyncSession = Depends(get_db, sco
     seg = result.scalar_one_or_none()
     if not seg:
         raise HTTPException(status_code=404, detail="Segment not found")
+    await db.execute(delete(LinePrint).where(LinePrint.segment_id == segment_id))
     await db.delete(seg)
     await db.commit()
 

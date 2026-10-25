@@ -52,6 +52,8 @@ export function jobProgress(
     case 'diarizing':
     case 'transcribing':
       return { title: 'Transcribing and finding speakers…' }
+    case 'recognizing':
+      return { title: 'Recognising characters…' }   // Task 13 gives it real wording
     case 'translating':
       return { title: 'Translating to Khmer…' }
     default:
@@ -86,6 +88,7 @@ const RING_STEPS: Record<string, RingStep> = {
   diarizing:    { from: 0,  to: 80,  usualSecs: (v) => 15 + 0.3 * v },
   // Comes right after transcription, for a moment
   transcribing: { from: 80, to: 85,  usualSecs: () => 2 },
+  recognizing:  { from: 80, to: 85,  usualSecs: () => 2 },
   translating:  { from: 85, to: 100, usualSecs: (v) => 5 + 0.04 * v },
 }
 

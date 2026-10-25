@@ -115,7 +115,7 @@ export function useJob(jobId: string | null) {
       const data = query.state.data
       const status = data?.status
       // Active pipeline stages — poll every 2s
-      const running = ['pending', 'extracting', 'separating', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing']
+      const running = ['pending', 'extracting', 'separating', 'diarizing', 'transcribing', 'recognizing', 'translating', 'synthesizing', 'mixing']
       if (status && running.includes(status)) return 2000
       // stems_ready: paused, waiting for user — poll slowly to pick up any changes
       if (status === 'stems_ready') return 5000

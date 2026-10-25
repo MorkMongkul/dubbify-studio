@@ -237,11 +237,16 @@ class SpeakerResponse(BaseModel):
     reference_audio_path: str
     voice_id: Optional[str]
     voice_auto: bool = False         # the app picked voice_id; nobody chose it
+    face_crop_path: Optional[str] = Field(None, exclude=True)   # a server path: only its URL goes out
 
     @field_validator("voice_auto", mode="before")
     @classmethod
     def _not_picked(cls, value):
         return bool(value)           # NULL on speakers from before 0.2.4
+
+    @computed_field
+    def face_crop_url(self) -> Optional[str]:
+        return _uploads_url(self.face_crop_path)
 
     model_config = {"from_attributes": True}
 
@@ -265,6 +270,23 @@ class SegmentCreate(BaseModel):
     notes: str = ""
 
 
+class WhoGuess(BaseModel):
+    """One of the two speakers Movelo can't choose between for a line."""
+    speaker_id: str
+    basis: str                                  # what the guess rests on: "voice" or "face"
+
+
+def _who_check_list(raw):
+    """A line's guesses from segments.who_check (JSON text, or already parsed); None when absent or unreadable."""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+        return [WhoGuess.model_validate(g) for g in data] or None
+    except (TypeError, ValueError):
+        return None
+
+
 class SegmentUpdate(BaseModel):
     speaker_id: Optional[str] = None
     voice_id: Optional[str] = None
@@ -286,6 +308,8 @@ class SegmentUpdate(BaseModel):
     voice_text: Optional[str] = None
     fade_in_secs: Optional[float] = Field(None, ge=0)
     fade_out_secs: Optional[float] = Field(None, ge=0)
+    who_check: Optional[List[WhoGuess]] = None     # null clears it
+    who_confirmed: Optional[bool] = None
 
 
 class SegmentResponse(BaseModel):
@@ -313,6 +337,18 @@ class SegmentResponse(BaseModel):
     voice_text: Optional[str] = None
     fade_in_secs: float = 0.0
     fade_out_secs: float = 0.0
+    who_check: Optional[List[WhoGuess]] = None
+    who_confirmed: bool = False
+
+    @field_validator("who_check", mode="before")
+    @classmethod
+    def _who_check(cls, v):
+        return _who_check_list(v)
+
+    @field_validator("who_confirmed", mode="before")
+    @classmethod
+    def _who_confirmed(cls, v):
+        return bool(v)               # NULL on lines from before 0.5.0
 
     # Rows from before 0.3.0 / 0.3.1 hold NULL
     @field_validator("fade_in_secs", "fade_out_secs", mode="before")

@@ -58,6 +58,7 @@ const statusVariantMap: Record<JobStatus, BadgeVariant> = {
   stems_ready:  'brand',
   diarizing:    'brand',
   transcribing: 'brand',
+  recognizing:  'brand',
   translating:  'blue',
   synthesizing: 'brand',
   mixing:       'blue',
