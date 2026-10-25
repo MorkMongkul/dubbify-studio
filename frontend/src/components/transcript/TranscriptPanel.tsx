@@ -1,7 +1,7 @@
 // src/components/transcript/TranscriptPanel.tsx
 import { VoiceBrowser } from '@/components/voices/VoiceBrowser'
 import { VoiceTrigger } from '@/components/voices/VoiceTrigger'
-import { useRef, useEffect, useMemo, useState } from 'react'
+import { useRef, useEffect, useMemo, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { AlignLeft, Loader2, ChevronLeft, ChevronRight, Volume2, Type, RefreshCw, Mic, Plus, Languages, AudioLines, X } from 'lucide-react'
 import type { Segment, SegmentUpdate, Speaker, Job } from '@/types'
@@ -20,6 +20,9 @@ import { jobProgress } from '@/lib/jobProgress'
 import { recordSegmentChange, recordSegmentsChange, recordSegmentCreate } from '@/lib/historyHelpers'
 import { voiceUsers } from '@/lib/voiceTags'
 import { effectiveSpeed } from '@/lib/clipRules'
+import { characterChoices, guessChips, isToCheck, nextToCheck, toCheck } from '@/lib/whoCheck'
+import { useCharacterPicks, type PickFrom } from '@/hooks/useCharacterPicks'
+import { WhoIsThis } from './WhoIsThis'
 
 interface TranscriptPanelProps {
   segments: Segment[]
@@ -45,6 +48,8 @@ export function TranscriptPanel({
   const setFocusedTimelineItemId = useEditorStore((s) => s.setFocusedTimelineItemId)
   const setActiveSegment        = useEditorStore((s) => s.setActiveSegment)
   const setAssistantLineId      = useEditorStore((s) => s.setAssistantLineId)
+  const setCheckingLineId       = useEditorStore((s) => s.setCheckingLineId)
+  const checkingLineId          = useEditorStore((s) => s.checkingLineId)
   const updateSegmentText       = useEditorStore((s) => s.updateSegmentText)
   const clearSegmentTextOverride = useEditorStore((s) => s.clearSegmentTextOverride)
  
@@ -121,7 +126,8 @@ export function TranscriptPanel({
   const synthesizeBatch = useSynthesizeBatch()
   const createSegment = useCreateSegment()
   const createSpeaker = useCreateSpeaker()
-  const [newSpeakerModal, setNewSpeakerModal] = useState<{ segmentId: string } | null>(null)
+  // The New Speaker window, opened from a line's speaker list or "＋ New character": the pick follows
+  const [newSpeakerModal, setNewSpeakerModal] = useState<{ segmentId: string; from: PickFrom } | null>(null)
   const [newSpeakerName, setNewSpeakerName] = useState('')
   const [newSpeakerVoice, setNewSpeakerVoice] = useState('')   // '' = choose for me
   // The New Speaker box shows the voice browser instead of its form
@@ -159,19 +165,45 @@ export function TranscriptPanel({
   const getSpeakerIndex = (seg: Segment) => speakers.findIndex((sp) => sp.id === seg.speaker_id)
 
   // `speakers` is every speaker in the whole PROJECT (workspace-level fetch —
-  // see useSpeakers(projectId) in EditorPage), not just this episode. That's
-  // fine for color/index lookups above, but the per-row reassignment dropdown
-  // below must only offer speakers who actually appear in THIS job — assigning
-  // a line to a speaker who only exists in some other episode is meaningless.
-  // With one episode per project this was invisible (the two lists matched);
-  // once a project holds many episodes (e.g. after consolidating episodes
-  // into one project) the unfiltered list balloons to every speaker across
-  // every episode, mostly duplicate "SPEAKER_00"/"SPEAKER_01" entries that
-  // were never renamed. Mirrors the identical filter in SpeakersPanel.
+  // see useSpeakers(projectId) in EditorPage), not just this episode: the
+  // voice browser's "Used by" counts only this episode's.
   const jobSpeakers = useMemo(() => {
     const idsInThisJob = new Set(segments.map((s) => s.speaker_id).filter(Boolean))
     return speakers.filter((sp) => idsInThisJob.has(sp.id))
   }, [segments, speakers])
+  // A line's character is any of the project's (characters are recognised
+  // across episodes): this episode's first, then the others
+  const characters = useMemo(() => characterChoices(segments, speakers), [segments, speakers])
+  const colorOf = useCallback(
+    (sp: Speaker) => sp.color ?? getSpeakerColor(Math.max(0, speakers.findIndex((x) => x.id === sp.id))),
+    [speakers],
+  )
+
+  // "Who is this?": the line keys 1 / 2 pick for, shown and played from its start
+  const goToLine = useCallback((seg: Segment) => {
+    setCheckingLineId(seg.id)
+    useEditorStore.getState().setSelectedPiece(null)
+    setActiveSegment(seg.id)
+    setCurrentTime(seg.start_time)
+    const el = cardRefs.current.get(seg.id)
+    const box = scrollRef.current?.getBoundingClientRect()
+    const r = el?.getBoundingClientRect()
+    if (el && box && r && (r.top < box.top + 40 || r.bottom > box.bottom - 40)) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }, [setCheckingLineId, setActiveSegment, setCurrentTime])
+  const { pick, unassign, pending: pendingPicks } = useCharacterPicks({
+    jobId, segments, speakers, goTo: goToLine, blocked: !!newSpeakerModal || !!lineVoiceFor,
+  })
+  // Lines still to check — a pick on its way already counts as done
+  const openChecks = useMemo(() => toCheck(segments).filter((s) => !pendingPicks[s.id]), [segments, pendingPicks])
+  const handleNextToCheck = () => {
+    const st = useEditorStore.getState()
+    const next = nextToCheck(segments, st.checkingLineId, {
+      from: st.currentTime, skip: new Set(Object.keys(pendingPicks)),
+    })
+    if (next) goToLine(next)
+  }
 
   const handleResetInspector = () => {
     setInspectorMode('global_synthesis')
@@ -218,26 +250,29 @@ export function TranscriptPanel({
     }
   }
 
-  const handleSpeakerSelectChange = async (segmentId: string, value: string) => {
+  const openNewSpeaker = (segmentId: string, from: PickFrom) => {
+    setNewSpeakerName('')
+    setNewSpeakerVoice('')
+    setPickingNewSpeakerVoice(false)
+    setNewSpeakerModal({ segmentId, from })
+  }
+
+  // The line's speaker list picks a character like "Who is this?" does — it
+  // confirms the line and may rewrite its Khmer, one undo step — but stays on
+  // the line. (Its own voice, in the Voices column, is casting only.)
+  const handleSpeakerSelectChange = (segmentId: string, value: string) => {
     if (value === '__new__') {
-      setNewSpeakerName('')
-      setNewSpeakerVoice('')
-      setPickingNewSpeakerVoice(false)
-      setNewSpeakerModal({ segmentId })
+      openNewSpeaker(segmentId, 'select')
       return
     }
     const seg = segments.find((s) => s.id === segmentId)
-    try {
-      await segmentsApi.update(segmentId, { speaker_id: value || null })
-      qc.invalidateQueries({ queryKey: ['segments', jobId] })
-      if (seg) {
-        recordSegmentChange(qc, jobId, segmentId,
-          { speaker_id: seg.speaker_id ?? null }, { speaker_id: value || null }, 'Reassign speaker')
-      }
-    } catch (err) {
-      toast.error('Failed to assign speaker')
-      console.error(err)
+    if (!seg) return
+    if (!value) {
+      unassign(seg)
+      return
     }
+    const speaker = speakers.find((sp) => sp.id === value)
+    if (speaker) pick(seg, speaker, 'select')
   }
 
   const handleCreateSpeakerConfirm = async () => {
@@ -247,27 +282,25 @@ export function TranscriptPanel({
       toast.error('Name is required')
       return
     }
+    const { segmentId, from } = newSpeakerModal
+    let speaker: Speaker
     try {
-      const seg = segments.find((s) => s.id === newSpeakerModal.segmentId)
-      const speaker = await createSpeaker.mutateAsync({
+      speaker = await createSpeaker.mutateAsync({
         projectId,
         // No voice chosen: the backend picks a fitting built-in one the first
         // time this speaker is voiced (never a random voice per line).
         data: { display_name: name, voice_id: newSpeakerVoice || null },
       })
-      await segmentsApi.update(newSpeakerModal.segmentId, { speaker_id: speaker.id })
-      qc.invalidateQueries({ queryKey: ['segments', jobId] })
-      // Only the segment's speaker_id is undoable — there's no delete-speaker
-      // endpoint, so the newly-created Speaker itself stays even after undo.
-      if (seg) {
-        recordSegmentChange(qc, jobId, newSpeakerModal.segmentId,
-          { speaker_id: seg.speaker_id ?? null }, { speaker_id: speaker.id }, 'Assign new speaker')
-      }
-      setNewSpeakerModal(null)
     } catch (err) {
       toast.error('Failed to create speaker')
       console.error(err)
+      return
     }
+    setNewSpeakerModal(null)
+    // Then picked like any character. Undo takes the pick back; the new
+    // speaker stays (there's no delete-speaker endpoint).
+    const seg = segments.find((s) => s.id === segmentId)
+    if (seg) pick(seg, speaker, from)
   }
 
   // Persist a text edit to the DB on blur so it survives reload / resume.
@@ -516,10 +549,18 @@ export function TranscriptPanel({
         <div className="flex items-center gap-1.5 min-w-0">
           {inspectorMode === 'global_synthesis' ? (
             <>
-              <AlignLeft size={12} className="text-brand-400/90 animate-pulse" />
-              <span className="text-[11px] font-bold text-brand-400/90 uppercase tracking-wider">
+              <AlignLeft size={12} className="text-brand-400/90 animate-pulse shrink-0" />
+              <span className="text-[11px] font-bold text-brand-400/90 uppercase tracking-wider truncate">
                 Transcript Inspector
               </span>
+              {openChecks.length > 0 && (
+                <span
+                  className="shrink-0 rounded-full bg-amber-500/15 px-2 py-px text-[10px] font-semibold text-amber-300 whitespace-nowrap"
+                  title="Lines Movelo isn't sure who speaks"
+                >
+                  {openChecks.length} to check
+                </span>
+              )}
             </>
           ) : (
             <>
@@ -554,6 +595,16 @@ export function TranscriptPanel({
               <ChevronRight size={14} className="rotate-90" />
             </button>
           ) : null}
+
+          {inspectorMode === 'global_synthesis' && openChecks.length > 0 && (
+            <button
+              onClick={handleNextToCheck}
+              className="text-[10px] font-semibold text-ink-300 hover:text-white hover:bg-white/10 px-1.5 py-0.5 rounded transition-colors whitespace-nowrap"
+              title="Go to the next line to check — then 1 or 2 picks a guess"
+            >
+              Next to check ▸
+            </button>
+          )}
 
           {inspectorMode === 'global_synthesis' && (
             <button
@@ -755,6 +806,10 @@ export function TranscriptPanel({
                 const speakerVoiceName = speaker?.voice_id
                   ? availableVoices.find((v) => v.id === speaker.voice_id)?.name
                   : null
+                // Movelo isn't sure who speaks it: amber, with its guesses under the text
+                const whoOpen = isToCheck(seg)
+                const isChecking = whoOpen && seg.id === checkingLineId
+                const pendingPick = pendingPicks[seg.id] ?? null
 
                 return (
                   <tr
@@ -765,14 +820,18 @@ export function TranscriptPanel({
                     }}
                     className={cn(
                       "group hover:bg-ink-900/50 transition-colors cursor-pointer",
+                      whoOpen && "bg-amber-500/[0.05]",
                       isActive && "bg-brand-500/15 dark:bg-brand-500/20 hover:bg-brand-500/20 dark:hover:bg-brand-500/25",
-                      isSelected && "bg-ink-900"
+                      isSelected && "bg-ink-900",
+                      isChecking && "bg-amber-500/[0.11] hover:bg-amber-500/[0.14] dark:bg-amber-500/[0.11] dark:hover:bg-amber-500/[0.14]",
                     )}
                     onClick={() => {
                       // Choosing a line: the editing keys act on lines again, not a music piece
                       useEditorStore.getState().setSelectedPiece(null)
                       setActiveSegment(seg.id)
                       setCurrentTime(seg.start_time)
+                      // 1 / 2 pick for the line chosen, when it's one to check
+                      setCheckingLineId(whoOpen ? seg.id : null)
                     }}
                     onMouseEnter={() => {
                       setActiveSegment(seg.id)
@@ -782,8 +841,11 @@ export function TranscriptPanel({
                       setFocusedTimelineItemId(null)
                     }}
                   >
-                    {/* Checkbox */}
-                    <td className="p-2 text-center" onClick={(e) => e.stopPropagation()}>
+                    {/* Checkbox — a line to check has the amber rule on its edge */}
+                    <td
+                      className={cn('p-2 text-center', whoOpen && 'shadow-[inset_3px_0_0_theme(colors.amber.400)]')}
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       <input
                         type="checkbox"
                         className="rounded border-ink-700 bg-ink-800 text-brand-500 focus:ring-brand-500 focus:ring-offset-ink-900 cursor-pointer h-3 w-3"
@@ -793,20 +855,35 @@ export function TranscriptPanel({
                     </td>
  
                     {/* Speaker */}
-                    <td className="p-2 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                    <td className={cn('p-2 whitespace-nowrap', whoOpen && 'align-top')} onClick={(e) => e.stopPropagation()}>
+                      {whoOpen && (
+                        <p className="mb-1 text-[10.5px] font-semibold text-amber-300">Who is this?</p>
+                      )}
                       <div className="flex items-center gap-1.5">
-                        <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                        {pendingPick?.from === 'select' ? (
+                          <Loader2 size={9} className="shrink-0 animate-spin text-amber-300" aria-label="Picking" />
+                        ) : (
+                          <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                        )}
                         <select
-                          className="bg-ink-900 text-ink-200 text-[10px] rounded border border-ink-800 hover:border-ink-700 hover:bg-ink-800 py-0.5 px-1 focus:outline-none focus:border-brand-500/50 cursor-pointer w-full max-w-[90px] truncate"
+                          className="bg-ink-900 text-ink-200 text-[10px] rounded border border-ink-800 hover:border-ink-700 hover:bg-ink-800 py-0.5 px-1 focus:outline-none focus:border-brand-500/50 cursor-pointer w-full max-w-[90px] truncate disabled:opacity-50 disabled:cursor-wait"
                           value={seg.speaker_id ?? ''}
+                          disabled={!!pendingPick}
                           onChange={(e) => handleSpeakerSelectChange(seg.id, e.target.value)}
                         >
                           <option value="">Unassigned</option>
-                          {jobSpeakers.map((sp) => (
-                            <option key={sp.id} value={sp.id}>
-                              {sp.display_name || sp.label}
-                            </option>
-                          ))}
+                          <optgroup label="In this episode">
+                            {characters.filter((c) => c.inEpisode).map(({ speaker: sp }) => (
+                              <option key={sp.id} value={sp.id}>{sp.display_name || sp.label}</option>
+                            ))}
+                          </optgroup>
+                          {characters.some((c) => !c.inEpisode) && (
+                            <optgroup label="Other characters">
+                              {characters.filter((c) => !c.inEpisode).map(({ speaker: sp }) => (
+                                <option key={sp.id} value={sp.id}>{sp.display_name || sp.label}</option>
+                              ))}
+                            </optgroup>
+                          )}
                           <option value="__new__">+ New Speaker…</option>
                         </select>
                       </div>
@@ -847,6 +924,17 @@ export function TranscriptPanel({
                         <p lang="zh-Hans" className="px-1.5 pb-0.5 text-[11px] leading-snug text-ink-500 select-text">
                           {seg.source_text}
                         </p>
+                      )}
+                      {whoOpen && (
+                        <WhoIsThis
+                          chips={guessChips(seg, speakers)}
+                          choices={characters}
+                          colorOf={colorOf}
+                          checking={isChecking}
+                          pending={pendingPick}
+                          onPick={(sp, from) => pick(seg, sp, from)}
+                          onNew={() => openNewSpeaker(seg.id, 'menu')}
+                        />
                       )}
                     </td>
 

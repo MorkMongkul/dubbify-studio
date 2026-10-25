@@ -313,6 +313,8 @@ export function usePickCharacter() {
     onSuccess: (picked, { jobId }) => {
       putSegments(qc, jobId, [picked.segment])
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      // Line counts follow the pick, and the line's face may now be its character's best
+      qc.invalidateQueries({ queryKey: ['speakers'] })
     },
   })
 }

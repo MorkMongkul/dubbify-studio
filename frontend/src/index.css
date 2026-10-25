@@ -111,6 +111,10 @@
 [data-theme="light"] .hover\:bg-white\/6:hover  { background-color: rgba(11,18,48,0.05) !important; }
 [data-theme="light"] .hover\:bg-white\/8:hover  { background-color: rgba(11,18,48,0.06) !important; }
 [data-theme="light"] .hover\:bg-white\/10:hover { background-color: rgba(11,18,48,0.08) !important; }
+/* Right-click and "Someone else…" menus (ContextMenu): items, their hover, separators */
+[data-theme="light"] [data-context-menu] .text-white\/85                 { color: rgba(11,18,48,0.85) !important; }
+[data-theme="light"] [data-context-menu] .bg-white\/\[0\.08\]             { background-color: rgba(11,18,48,0.08) !important; }
+[data-theme="light"] [data-context-menu] .hover\:bg-white\/\[0\.08\]:hover { background-color: rgba(11,18,48,0.06) !important; }
 
 /* ── Light: borders ── */
 [data-theme="light"] .border-white\/12 { border-color: rgba(11,18,48,0.10) !important; }
