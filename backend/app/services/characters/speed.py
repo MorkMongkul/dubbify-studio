@@ -35,6 +35,7 @@ FACES_ON_SCREEN = 1.5         # ...and then 1.5 of them
 FACE_FRAMES = int(SPEECH_FRAMES * FACE_SHARE * FACES_ON_SCREEN)   # 1462: what Light-ASD reads
 FEATURES = FACE_FRAMES // 6   # 375: SFace describes every 6th frame of a face (faces.FEATURE_EVERY)
 
+CALIBRATION = 1.6             # real frames cost more than the synthetic ones (no faces: no crops or NMS; YuNet 35 ms vs 50 ms): M1 ep10 took 153 s, the bench said 92-101 s
 SIZE = (720, 1280)            # the synthetic picture: a vertical episode, which costs the most
 DECODE_FRAMES = 25
 ASD_FRAMES = 50
@@ -60,6 +61,11 @@ class Parts:
         """What the face step costs. The voice print isn't in it: voices run on every Mac, with or without faces, so it
         can't decide between the two."""
         return self.decode + self.yunet + self.light_asd + self.sface
+
+    @property
+    def estimate(self) -> float:
+        """The face step's calibrated time: what is compared with the budget."""
+        return self.faces * CALIBRATION
 
 
 def _timed(work, calls: int = 1) -> float:
@@ -161,11 +167,11 @@ def face_step_enabled() -> bool:
         answer = _read_cache(version)
         if answer is None:
             parts = measure()
-            estimate = parts.faces
+            estimate = parts.estimate
             answer = {"app_version": version, "estimate_secs": round(estimate, 1),
                       "faces": estimate <= FACE_STEP_BUDGET_SECS,
                       "measured_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
-            logger.info(f"Face step for a {EPISODE_SECS} s episode: about {estimate:.0f} s (decode {parts.decode:.0f}, "
+            logger.info(f"Face step for a {EPISODE_SECS} s episode: about {estimate:.0f} s (calibrated; raw decode {parts.decode:.0f}, "
                         f"YuNet {parts.yunet:.0f}, Light-ASD {parts.light_asd:.0f}, SFace {parts.sface:.0f}; voices "
                         f"{parts.voice:.0f}); {'faces on' if answer['faces'] else 'voices only'}, budget "
                         f"{FACE_STEP_BUDGET_SECS} s")

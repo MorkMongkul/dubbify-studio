@@ -16,7 +16,7 @@ from app.services.characters import speed, store
 
 
 def parts(total: float) -> speed.Parts:
-    """Parts whose face step takes `total` s (the voice's share is not part of it)."""
+    """Parts whose raw face step takes `total` s (the voice's share is not part of it)."""
     return speed.Parts(decode=total / 4, yunet=total / 4, light_asd=total / 4, sface=total / 4, voice=999.0)
 
 
@@ -32,12 +32,12 @@ def counting(monkeypatch, total: float) -> list[int]:
 
 
 def test_a_slow_estimate_turns_faces_off(monkeypatch):
-    counting(monkeypatch, 200.0)
+    counting(monkeypatch, 200.0)   # x1.6 calibration: 320 s
     assert speed.face_step_enabled() is False
 
 
-def test_a_fast_estimate_and_the_budget_edge_keep_faces_on(monkeypatch):
-    counting(monkeypatch, speed.FACE_STEP_BUDGET_SECS)
+def test_the_calibrated_estimate_decides_and_the_budget_edge_keep_faces_on(monkeypatch):
+    counting(monkeypatch, speed.FACE_STEP_BUDGET_SECS / speed.CALIBRATION)
     assert speed.face_step_enabled() is True   # the voice's 999 s don't count against it
 
 
@@ -48,7 +48,7 @@ def test_the_estimate_is_cached_per_app_version(monkeypatch, tmp_path):
 
     assert speed.face_step_enabled() is False
     saved = json.loads((tmp_path / "character-speed.json").read_text())
-    assert saved["app_version"] == "1.0.0" and saved["faces"] is False and saved["estimate_secs"] == 200.0
+    assert saved["app_version"] == "1.0.0" and saved["faces"] is False and saved["estimate_secs"] == 320.0
     assert "measured_at" in saved
 
     assert speed.face_step_enabled() is False

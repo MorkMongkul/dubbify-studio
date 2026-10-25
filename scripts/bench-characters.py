@@ -22,14 +22,15 @@ def main() -> int:
     except Exception as e:
         print(f"Could not measure: {type(e).__name__}: {e}")
         return 1
-    estimate = parts.faces
+    estimate = parts.estimate
     faces = estimate <= speed.FACE_STEP_BUDGET_SECS
     print(f"Face step for a {speed.EPISODE_SECS} s episode ({speed.SPEECH_FRAMES} frames in lines, {speed.FACE_FRAMES} face-frames)")
     for name, secs in (("decode", parts.decode), ("YuNet", parts.yunet), ("Light-ASD", parts.light_asd),
                        ("SFace", parts.sface)):
         print(f"  {name:<10}{secs:7.1f} s")
-    print(f"  {'face total':<10}{estimate:7.1f} s   (budget {speed.FACE_STEP_BUDGET_SECS} s)")
-    print(f"  {'voice':<10}{parts.voice:7.1f} s   (not part of the face total: voices always run)")
+    print(f"  {'raw total':<10}{parts.faces:7.1f} s")
+    print(f"  {'calibrated':<10}{estimate:7.1f} s   (x{speed.CALIBRATION}; budget {speed.FACE_STEP_BUDGET_SECS} s)")
+    print(f"  {'voice':<10}{parts.voice:7.1f} s   (not part of the total: voices always run)")
     print(f"Decision: {'faces on' if faces else 'voices only'}")
     return 0
 
