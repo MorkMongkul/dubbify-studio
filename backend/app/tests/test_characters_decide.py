@@ -76,9 +76,9 @@ def test_a_profile_is_the_normalised_mean_of_its_prints():
 
 
 def test_a_face_below_the_floor_falls_back_to_the_voice():
-    face = line_with([UNKNOWN_FACE_FLOOR - 0.05, 0.0])
+    face = line_with([0.0, 0.3])  # favours B, but under the floor
     d = decide(prints(line_with([0.2 + 0.4, 0.2]), face), PROFILES)
-    assert d.speaker_id == "A" and d.sure
+    assert d.speaker_id == "A" and d.sure and d.guesses == []
 
 
 def test_a_single_voice_profile_is_never_sure_by_margin():
