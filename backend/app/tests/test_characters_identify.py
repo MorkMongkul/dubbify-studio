@@ -6,6 +6,7 @@ models can't run, it is the Gemini re-detection it was — which now also leaves
 Gemini and the prints are replaced at the service boundary (pipeline.transcribe_audio,
 characters.prints.prints_for_spans); the profiles come from real stored prints, as in test_characters_pipeline.
 """
+import asyncio
 import json
 
 import numpy as np
@@ -15,6 +16,7 @@ from sqlalchemy import select
 from app.models.models import Job, JobStatus, LinePrint, Segment, Speaker
 from app.services import pipeline
 from app.services.characters import models, store
+from app.services.characters import prints as prints_module
 from app.services.characters.types import LinePrints
 from app.tests.test_characters_pipeline import (  # noqa: F401  (fixtures)
     _episode, _line_prints, _lines, _old_confirmed_line, _prints, _project, _store_warnings, _transcribe, _vocals,
@@ -193,3 +195,60 @@ async def test_detect_speakers_without_vocals_uses_gemini_and_keeps_confirmed_li
     assert lines["旧1"] == "SPEAKER_09"
     assert _store_warnings(caplog)
     assert (await store_job(background_db, job_id)).status == JobStatus.COMPLETED
+
+
+def _while_the_models_run(monkeypatch, result, edit):
+    """prints_for_spans that, in the middle of its run, lets `edit(session)` change the database from another
+    session (as the user does while the models take their minutes)."""
+    loop = asyncio.get_running_loop()
+
+    def fake(video_path, vocals_path, spans, with_faces=True):
+        async def user_edit():
+            async with edit.sessionmaker() as s:
+                await edit.work(s)
+                await s.commit()
+        asyncio.run_coroutine_threadsafe(user_edit(), loop).result(timeout=10)
+        return list(result)
+    monkeypatch.setattr(prints_module, "prints_for_spans", fake)
+
+
+class _Edit:
+    def __init__(self, sessionmaker, work):
+        self.sessionmaker, self.work = sessionmaker, work
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["picked", "voiced"])
+async def test_a_line_confirmed_while_the_models_run_is_not_relabelled(
+        client, monkeypatch, uploads, background_db, how):
+    project_id, job_id, ids, seg_ids = await _detect_setup(background_db, uploads, [(0.0, 2.0, {})])
+    uncle = await _old_confirmed_line(background_db, project_id, job_id)
+    async with background_db() as s:
+        (await s.get(Segment, seg_ids[0])).speaker_id = uncle
+        await s.commit()
+
+    async def confirm(s):
+        seg = await s.get(Segment, seg_ids[0])
+        if how == "picked":
+            seg.who_confirmed = True
+        else:
+            seg.tts_audio_path = "tts/a.wav"
+    _no_gemini(monkeypatch)
+    _while_the_models_run(monkeypatch, [_p(0)], _Edit(background_db, confirm))
+    await _detect(client, job_id)
+
+    lines = {seg.source_text: (label, seg.who_check) for seg, label in await _lines(background_db, job_id)}
+    assert lines["旧0"] == ("SPEAKER_02", None)   # still Uncle Wang, not Lin Dong
+
+
+@pytest.mark.asyncio
+async def test_no_gemini_key_and_no_models_says_so(client, monkeypatch, uploads, background_db):
+    project_id, job_id, ids, _ = await _detect_setup(background_db, uploads, [(0.0, 2.0, {})])
+    monkeypatch.setattr(pipeline.settings, "GEMINI_API_KEY", "")
+    _no_gemini(monkeypatch)
+    _prints(monkeypatch, models.ModelMissing("no models"))
+    await _detect(client, job_id)
+
+    job = await store_job(background_db, job_id)
+    assert job.status == JobStatus.COMPLETED   # its lines are still there
+    assert "can't recognise voices on this Mac" in job.error_msg and "Gemini key" in job.error_msg

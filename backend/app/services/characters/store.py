@@ -176,7 +176,10 @@ def carried(spans: list[tuple[float, float]], confirmed: list[tuple[tuple[float,
 async def kept_characters(db: AsyncSession, job: Job, spans: list[tuple[float, float]]) -> list[str | None]:
     """A re-analysis replaces the episode's lines; per new span, the character it keeps from this episode's
     confirmed old lines (where their actor spoke), else None."""
-    old = (await db.execute(select(Segment).where(Segment.job_id == job.id))).scalars().all()
+    # populate_existing: the lines may have changed since the session last read them (analysis commits, then waits)
+    old = (await db.execute(
+        select(Segment).where(Segment.job_id == job.id).execution_options(populate_existing=True))).scalars().all()
+    await db.refresh(job)
     confirmed = [(actor_span(seg), label) for seg, label in zip(old, await confirmed_labels(db, job, old)) if label]
     return carried(spans, confirmed) if confirmed else [None] * len(spans)
 
@@ -221,15 +224,19 @@ async def _find_prints(db: AsyncSession, job: Job, spans: list[tuple[float, floa
 
 async def recognise(
     db: AsyncSession, job: Job, spans: list[tuple[float, float]], gemini_labels: list[str],
-    kept: list[str | None] | None = None,
+    kept: list[str | None] | None = None, refresh_kept=None,
 ) -> tuple[list[str], list[list[dict] | None], list[LinePrints]]:
     """Who speaks each line (spans: where the actor spoke). Per line: the label to use — `kept`'s when given (a
     confirmed character), else a known character's when the prints match one, else Gemini's — its who_check
     (None = sure; else the guesses, possibly none), and the prints ([] when they couldn't be made).
 
     Commits before the models run. Never fails: without vocals, or when the models can't run, Gemini's labels stand
-    and nothing is marked to check, as before characters existed."""
+    and nothing is marked to check, as before characters existed.
+
+    `kept` is read before the models' minutes, so a line confirmed meanwhile would be missed: `refresh_kept`, an async
+    function returning it again, is called after they ran, and `kept` is updated in place."""
     spans = list(spans)
+    given = kept
     kept = list(kept) if kept else [None] * len(spans)
     labels = [k or label for k, label in zip(kept, gemini_labels)]
     unchecked: list[list[dict] | None] = [None] * len(spans)
@@ -243,6 +250,11 @@ async def recognise(
     names = dict((await db.execute(select(Speaker.id, Speaker.label).where(Speaker.id.in_(list(profiles))))).all()) \
         if profiles else {}
     found = await _find_prints(db, job, spans, vocals)
+    if refresh_kept is not None:   # a line confirmed while the models ran is a confirmed character's now
+        kept = list(await refresh_kept())
+        if given is not None:
+            given[:] = kept
+        labels = [k or label for k, label in zip(kept, gemini_labels)]
     if found is None:
         return labels, unchecked, []
     if not profiles:   # the project's first episode: Gemini's speakers as before; its prints teach the next ones
@@ -293,7 +305,9 @@ async def identify(db: AsyncSession, job: Job, segments: list[Segment]) -> bool:
         computed = {s.id: p for s, p in zip(todo, found)}
 
     # the user may have deleted, edited or confirmed lines while the models ran
-    current = {s.id: s for s in (await db.execute(select(Segment).where(Segment.id.in_(open_ids)))).scalars()}
+    # populate_existing: with expire_on_commit off the lines are still in the session as they were before
+    current = {s.id: s for s in (await db.execute(
+        select(Segment).where(Segment.id.in_(open_ids)).execution_options(populate_existing=True))).scalars()}
     await db.refresh(job)
     still_open = [sid for sid in open_ids if sid in current and not is_confirmed(current[sid], job)]
     await save_prints(db, job.id, [sid for sid in computed if sid in current],

@@ -544,6 +544,39 @@ async def test_reanalysis_keeps_confirmed_characters_on_overlapping_lines(monkey
 
 
 @pytest.mark.asyncio
+async def test_a_line_confirmed_during_the_analysis_is_still_carried_over(monkeypatch, uploads, background_db):
+    project_id, ids = await _project(background_db)
+    job_id = await _episode(background_db, project_id, status=JobStatus.COMPLETED)
+    async with background_db() as s:
+        c = Speaker(project_id=project_id, label="SPEAKER_02", display_name="Uncle Wang")
+        s.add(c)
+        await s.flush()
+        old = Segment(job_id=job_id, speaker_id=c.id, start_time=2.0, end_time=4.0, source_start=2.0,
+                      source_end=4.0, source_text="旧", khmer_text="km", who_check="[]")   # still to check
+        s.add(old)
+        await s.commit()
+        c_id, old_id = c.id, old.id
+    _vocals(uploads, project_id, job_id)
+    _transcribe(monkeypatch, [("SPEAKER_09", 2.1, 3.9, "新")])
+    loop = asyncio.get_running_loop()
+
+    def fake(video_path, vocals_path, spans, with_faces=True):
+        async def user_confirms():   # the user picks the old line's character while the models run
+            async with background_db() as s:
+                seg = await s.get(Segment, old_id)
+                seg.who_confirmed, seg.who_check = True, None
+                await s.commit()
+        asyncio.run_coroutine_threadsafe(user_confirms(), loop).result(timeout=10)
+        return [LinePrints(voice(0), None, None, None)]   # sounds like Lin Dong
+    monkeypatch.setattr(prints_module, "prints_for_spans", fake)
+    _translate(monkeypatch, pipeline)
+    await pipeline.run_analysis_pipeline(job_id)
+
+    [(line, label)] = await _lines(background_db, job_id)
+    assert (line.speaker_id, label, line.who_confirmed) == (c_id, "SPEAKER_02", True)
+
+
+@pytest.mark.asyncio
 async def test_a_line_without_prints_is_to_check_with_no_guesses(client, monkeypatch, uploads, background_db):
     project_id, _ids = await _project(background_db)
     job_id = await _episode(background_db, project_id)
