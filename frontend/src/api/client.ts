@@ -227,8 +227,11 @@ export const segments = {
   split: (segmentId: string, at: number) =>
     api.post<SplitResult>(`/segments/${segmentId}/split`, { at }).then((r) => r.data),
 
+  /** The pick is saved first, then the line's Khmer is rewritten by Gemini (retries and waits
+   *  included) — the answer can take minutes, so this outlives the default 30 s. */
   pickCharacter: (segmentId: string, speakerId: string) =>
-    api.post<CharacterPicked>(`/segments/${segmentId}/character`, { speaker_id: speakerId }).then((r) => r.data),
+    api.post<CharacterPicked>(`/segments/${segmentId}/character`, { speaker_id: speakerId }, { timeout: 200_000 })
+      .then((r) => r.data),
 
   duplicate: (segmentId: string) =>
     api.post<Segment>(`/segments/${segmentId}/duplicate`).then((r) => r.data),

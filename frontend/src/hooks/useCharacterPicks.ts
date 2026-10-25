@@ -73,6 +73,10 @@ export function useCharacterPicks({ jobId, segments, speakers, goTo, blocked }: 
     } catch (err) {
       toast.error(`Couldn't pick ${characterName(speaker)}: ${(err as Error).message}`)
       console.error(err)
+      // The server saves the pick before it rewrites the Khmer: after a timeout or a
+      // dropped connection the line may well be picked — show what it really holds
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      qc.invalidateQueries({ queryKey: ['speakers'] })
     } finally {
       setPendingFor(seg.id, null)
     }

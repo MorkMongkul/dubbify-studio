@@ -20,7 +20,7 @@ import { jobProgress } from '@/lib/jobProgress'
 import { recordSegmentChange, recordSegmentsChange, recordSegmentCreate } from '@/lib/historyHelpers'
 import { voiceUsers } from '@/lib/voiceTags'
 import { effectiveSpeed } from '@/lib/clipRules'
-import { characterChoices, guessChips, isToCheck, nextToCheck, toCheck } from '@/lib/whoCheck'
+import { characterChoices, characterName, guessChips, isToCheck, nextToCheck, toCheck } from '@/lib/whoCheck'
 import { useCharacterPicks, type PickFrom } from '@/hooks/useCharacterPicks'
 import { WhoIsThis } from './WhoIsThis'
 
@@ -172,8 +172,28 @@ export function TranscriptPanel({
     return speakers.filter((sp) => idsInThisJob.has(sp.id))
   }, [segments, speakers])
   // A line's character is any of the project's (characters are recognised
-  // across episodes): this episode's first, then the others
-  const characters = useMemo(() => characterChoices(segments, speakers), [segments, speakers])
+  // across episodes): this episode's first, then the others. Keyed on who is in
+  // the episode, not on the lines — typing, a drag or a playback tick changes
+  // `segments` but not the list, and every row's speaker list reuses it.
+  const episodeSpeakerKey = useMemo(
+    () => [...new Set(segments.map((s) => s.speaker_id).filter(Boolean))].sort().join(','),
+    [segments],
+  )
+  const characters = useMemo(
+    () => characterChoices(episodeSpeakerKey ? episodeSpeakerKey.split(',').map((id) => ({ speaker_id: id })) : [], speakers),
+    [episodeSpeakerKey, speakers],
+  )
+  const characterOptions = useMemo(() => {
+    const here = characters.filter((c) => c.inEpisode)
+    const others = characters.filter((c) => !c.inEpisode)
+    const option = ({ speaker: sp }: { speaker: Speaker }) => <option key={sp.id} value={sp.id}>{characterName(sp)}</option>
+    return (
+      <>
+        {here.length > 0 && <optgroup label="In this episode">{here.map(option)}</optgroup>}
+        {others.length > 0 && <optgroup label="Other characters">{others.map(option)}</optgroup>}
+      </>
+    )
+  }, [characters])
   const colorOf = useCallback(
     (sp: Speaker) => sp.color ?? getSpeakerColor(Math.max(0, speakers.findIndex((x) => x.id === sp.id))),
     [speakers],
@@ -778,7 +798,8 @@ export function TranscriptPanel({
         ) : inspectorMode === 'global_synthesis' ? (
           <table className="w-full text-left border-collapse text-[11px]">
             <thead>
-              <tr className="border-b border-ink-800 bg-ink-900/50 text-ink-400 font-semibold select-none sticky top-0 z-10">
+              {/* Opaque: rows scrolled under it mustn't show through */}
+              <tr className="border-b border-ink-800 bg-ink-900 text-ink-400 font-semibold select-none sticky top-0 z-10">
                 <th className="p-2 w-8 text-center">
                   <input
                     type="checkbox"
@@ -872,18 +893,7 @@ export function TranscriptPanel({
                           onChange={(e) => handleSpeakerSelectChange(seg.id, e.target.value)}
                         >
                           <option value="">Unassigned</option>
-                          <optgroup label="In this episode">
-                            {characters.filter((c) => c.inEpisode).map(({ speaker: sp }) => (
-                              <option key={sp.id} value={sp.id}>{sp.display_name || sp.label}</option>
-                            ))}
-                          </optgroup>
-                          {characters.some((c) => !c.inEpisode) && (
-                            <optgroup label="Other characters">
-                              {characters.filter((c) => !c.inEpisode).map(({ speaker: sp }) => (
-                                <option key={sp.id} value={sp.id}>{sp.display_name || sp.label}</option>
-                              ))}
-                            </optgroup>
-                          )}
+                          {characterOptions}
                           <option value="__new__">+ New Speaker…</option>
                         </select>
                       </div>

@@ -98,6 +98,19 @@ async def test_a_pick_retranslates_an_unedited_line(client, db_sessionmaker, mon
     assert seen["earlier"] == [{"speaker_label": "SPEAKER_00", "source_text": "你好", "translation": "សួស្តី"}]
 
 
+async def test_picking_the_current_speaker_only_confirms_the_line(client, db_sessionmaker, monkeypatch):
+    # Confirming Movelo's guess is the usual pick: the speaker doesn't change, so neither does the Khmer
+    seg_id, sp, _ = await _setup(db_sessionmaker)
+    seen = {}
+    _translator(monkeypatch, text="បាទ", seen=seen)
+    body = (await client.post(f"/api/v1/segments/{seg_id}/character", json={"speaker_id": sp["a"]})).json()
+    assert body["retranslated"] is False and body["previous_khmer"] == "ចាស"
+    assert not seen   # Gemini was not even asked
+    row = await _seg(db_sessionmaker, seg_id)
+    assert row.speaker_id == sp["a"] and row.who_confirmed is True and row.who_check is None
+    assert row.khmer_text == row.khmer_machine == "ចាស"
+
+
 async def test_a_pick_never_rewrites_an_edited_line(client, db_sessionmaker, monkeypatch):
     seg_id, sp, _ = await _setup(db_sessionmaker, khmer="my edit", machine="ចាស")
     seen = {}
