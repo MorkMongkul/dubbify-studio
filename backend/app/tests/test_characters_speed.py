@@ -5,6 +5,7 @@ The timed workload is replaced at the service boundary (speed.measure), so no te
 """
 import asyncio
 import json
+import platform
 import threading
 from types import SimpleNamespace
 
@@ -13,6 +14,12 @@ import pytest
 from app.core.config import settings
 from app.services.characters import prints as prints_module
 from app.services.characters import speed, store
+
+
+@pytest.fixture(autouse=True)
+def intel(monkeypatch):
+    """Intel is the chip that gets measured; the Apple Silicon test says otherwise."""
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
 
 
 def parts(total: float) -> speed.Parts:
@@ -121,3 +128,18 @@ def test_only_the_frames_inside_lines_are_counted():
     assert speed.SPEECH_FRAMES == 1950          # 3000 frames x 0.65 of the episode in lines
     assert speed.FACE_FRAMES == 1462            # x 0.5 of the time with a face x 1.5 faces
     assert speed.FEATURES == 243                # SFace on every 6th
+
+
+def test_apple_silicon_keeps_faces_on_without_measuring(monkeypatch, tmp_path):
+    monkeypatch.setattr(platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(settings, "DUBIFY_DATA_DIR", str(tmp_path))
+    calls = counting(monkeypatch, 10_000.0)
+    assert speed.face_step_enabled() is True and speed.face_step_enabled() is True
+    assert calls == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_timing_is_the_median_of_the_runs(monkeypatch):
+    clock = iter([0.0, 1.0,  10.0, 110.0,  200.0, 203.0])   # runs of 1 s, 100 s (an outlier) and 3 s
+    monkeypatch.setattr(speed.time, "perf_counter", lambda: next(clock))
+    assert speed.median_secs(lambda: None, 3) == 3.0

@@ -4,12 +4,15 @@ The face step decodes the picture at 25 fps, finds faces with YuNet in every fra
 Light-ASD and describes every 6th frame of a face with SFace. That is the expensive part of recognising characters (the
 voice print is cheap), and on an older Mac it could take far longer than the dubbing itself. `face_step_enabled()` times
 a small fixed workload once per app version, scales it to a 120 s episode and turns faces off when that would take more
-than FACE_STEP_BUDGET_SECS. The answer is kept in DUBIFY_DATA_DIR/character-speed.json (in the process only, in dev).
+than FACE_STEP_BUDGET_SECS. Only Intel Macs are measured: every Apple Silicon chip keeps faces on (the slowest, the M1,
+took 153 s for a 120 s episode, and a fanless Mac's timings swing too much to decide on). The answer is kept in DUBIFY_DATA_DIR/character-speed.json (in the process only, in dev).
 
 It runs the models for a few seconds on its first call, so call it in a worker thread, never on the event loop."""
 import json
 import logging
 import os
+import platform
+import statistics
 import subprocess
 import tempfile
 import threading
@@ -38,6 +41,7 @@ FEATURES = FACE_FRAMES // 6   # 375: SFace describes every 6th frame of a face (
 CALIBRATION = 1.6             # real frames cost more than the synthetic ones (no faces: no crops or NMS; YuNet 35 ms vs 50 ms): M1 ep10 took 153 s, the bench said 92-101 s
 SIZE = (720, 1280)            # the synthetic picture: a vertical episode, which costs the most
 DECODE_FRAMES = 25
+YUNET_RUNS = 3                # YuNet is the noisy part: the median of this many timings
 ASD_FRAMES = 50
 SFACE_CALLS = 5
 VOICE_SECS = 5
@@ -77,6 +81,16 @@ def _timed(work, calls: int = 1) -> float:
     return time.perf_counter() - start
 
 
+def median_secs(work, runs: int) -> float:
+    """The middle one of `runs` timings of `work`, in seconds: one slow run (the machine busy or hot) doesn't count."""
+    timings = []
+    for _ in range(runs):
+        start = time.perf_counter()
+        work()
+        timings.append(time.perf_counter() - start)
+    return statistics.median(timings)
+
+
 def measure() -> Parts:
     """Times the synthetic workload. Raises (ModelMissing, ImportError, OSError…) when the models can't run here."""
     from app.services.characters import faces, lips, voiceprint
@@ -95,10 +109,7 @@ def measure() -> Parts:
                 for k in range(DECODE_FRAMES)]
 
     faces.detect(pictures[0])
-    start = time.perf_counter()
-    for picture in pictures:
-        faces.detect(picture)
-    yunet = time.perf_counter() - start
+    yunet = median_secs(lambda: [faces.detect(picture) for picture in pictures], YUNET_RUNS)
 
     rng = np.random.default_rng(0)
     sound = rng.integers(-3000, 3000, ASD_FRAMES * voiceprint.RATE // 25, dtype=np.int16)
@@ -160,6 +171,11 @@ def face_step_enabled() -> bool:
     Blocks for a few seconds the first time per app version. Raises when the measuring itself can't run (the models
     can't load): the caller then does what it does for any failure of the models."""
     global _memo
+    if platform.machine() == "arm64":
+        if _memo is None:
+            logger.info("Face step: Apple Silicon, faces on")
+            _memo = {"app_version": settings.version, "faces": True}
+        return True
     version = settings.version
     with _LOCK:
         if _memo is not None and _memo["app_version"] == version:
