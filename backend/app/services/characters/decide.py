@@ -7,8 +7,11 @@ import numpy as np
 from app.services.characters.types import LinePrints
 
 SURE_VOICE_MARGIN = 0.10  # best minus second voice cosine, for a line with no speaking face
-UNKNOWN_VOICE_FLOOR = 0.35  # below this, no voice profile is the speaker (Task 14 tunes it)
-UNKNOWN_FACE_FLOOR = 0.363  # OpenCV's published SFace same-person cosine threshold (Task 14 tunes it)
+# Both floors were measured on the owner's project and kept: from 0.25 to 0.45 (voice) and 0.25 to 0.6 (face) they
+# moved at most 3 of 169 lines. A new actor's best voice cosine (0.42-0.58) sits among the known actors' (0.47 and
+# up on 95% of lines), so the voice floor only catches a voice far from everyone.
+UNKNOWN_VOICE_FLOOR = 0.35  # below this, no voice profile is the speaker
+UNKNOWN_FACE_FLOOR = 0.363  # OpenCV's published SFace same-person cosine threshold
 _TOLERANCE = 1e-9  # so a margin of "exactly" 0.10 isn't lost to float rounding
 
 

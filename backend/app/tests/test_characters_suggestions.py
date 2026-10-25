@@ -90,7 +90,7 @@ async def test_a_suggestion_carries_each_characters_lines_in_the_whole_project(c
 
 @pytest.mark.asyncio
 async def test_profiles_that_match_in_voice_and_face_are_suggested(client, db_sessionmaker):
-    assert (suggestions.SAME_VOICE, suggestions.SAME_FACE) == (0.75, 0.6)
+    assert (suggestions.SAME_VOICE, suggestions.SAME_FACE) == (0.75, 0.75)
     project_id, ids = await _cast(db_sessionmaker, [
         ("SPEAKER_00", None, False, voice(0), face(0)),
         ("SPEAKER_01", None, False, _near(0, 1, 0.9, 192), _near(0, 1, 0.8, 128)),
@@ -98,6 +98,17 @@ async def test_profiles_that_match_in_voice_and_face_are_suggested(client, db_se
     got = await _get(client, project_id)
     a, b = sorted([ids["SPEAKER_00"], ids["SPEAKER_01"]])
     assert got == [{"a": a, "b": b, "reason": "same voice and face", "a_lines": 1, "b_lines": 1}]
+
+
+@pytest.mark.parametrize("face_cosine, suggested", [(0.74, False), (0.76, True)])
+def test_a_face_as_close_as_two_actors_on_one_label_is_not_enough(face_cosine, suggested):
+    # On the owner's project, labels holding two actors came within 0.74 in face of another character
+    from app.services.characters.decide import Profile
+    speakers = [Speaker(id="a", label="SPEAKER_00"), Speaker(id="b", label="SPEAKER_01")]
+    profiles = {"a": Profile(voice(0), face(0), 5),
+                "b": Profile(_near(0, 1, 0.9, 192), _near(0, 1, face_cosine, 128), 5)}
+    got = suggestions.find(speakers, profiles, set())
+    assert [g["reason"] for g in got] == (["same voice and face"] if suggested else [])
 
 
 @pytest.mark.asyncio

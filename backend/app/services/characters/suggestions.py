@@ -15,8 +15,11 @@ from app.models.models import Segment, Speaker
 from app.services.characters.decide import Profile
 from app.services.characters.store import project_profiles
 
-SAME_VOICE = 0.75  # voice profiles' cosine at or above this (Task 14 tunes it)
-SAME_FACE = 0.6  # face profiles' cosine at or above this (Task 14 tunes it)
+# Measured on the owner's project after the upgrade: voice profiles of different actors reach 0.89, so the face
+# decides; pairs cast with different voices reached 0.74 in face (labels that hold two actors), one actor's two
+# labels 0.85. At 0.6 three of eleven suggestions were such mixed pairs, which a Merge would get wrong.
+SAME_VOICE = 0.75  # voice profiles' cosine at or above this
+SAME_FACE = 0.75  # face profiles' cosine at or above this (was 0.6)
 
 Pair = tuple[str, str]
 
