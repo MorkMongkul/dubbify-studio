@@ -36,3 +36,21 @@ def test_speaking_scores_gives_a_score_per_frame_the_sound_covers():
     scores = speaking_scores(audio, crops)
     # 3 s of sound make 299 MFCC frames; the demo keeps a multiple of 4 (296 = 2.96 s), so 74 of the 75 frames
     assert scores is not None and scores.shape == (74,) and np.isfinite(scores).all()
+
+
+def test_the_shipped_weights_judge_non_faces_as_not_speaking():
+    """Random weights score near 0 and swing either way; the trained model says "not speaking" firmly for input
+    that is no talking face (silence, noise, a speech-like tone against flat grey or noise pictures).
+    This guards against an export that kept randomly-initialised weights. It cannot show that real speech is
+    detected: that needs real footage, which the repo doesn't hold (measured on the owner's episodes in the spike)."""
+    rng = np.random.default_rng(0)
+    t = np.arange(32000) / 16000
+    sounds = [
+        np.zeros(32000, np.int16),
+        (rng.standard_normal(32000) * 3000).astype(np.int16),
+        (8000 * np.sin(2 * np.pi * 150 * t) * (0.5 + 0.5 * np.sin(2 * np.pi * 4 * t))).astype(np.int16),
+    ]
+    pictures = [rng.integers(0, 256, (50, 112, 112), dtype=np.uint8), np.full((50, 112, 112), 110, np.uint8)]
+    for sound in sounds:
+        for picture in pictures:
+            assert speaking_scores(sound, picture).mean() < -2

@@ -54,7 +54,11 @@ class LightASD(nn.Module):
 
 net = LightASD()
 state = torch.load(repo / "weight/pretrain_AVA_CVPR.model", map_location="cpu", weights_only=True)
-net.load_state_dict({k.replace("module.", ""): v for k, v in state.items() if not k.startswith("lossV")}, strict=False)
+# strict=False only because the checkpoint also holds lossV (the video-only head, unused here); every other key
+# must match, or the export would silently keep random weights for it.
+loaded = net.load_state_dict({k.replace("module.", ""): v for k, v in state.items()}, strict=False)
+unknown = [k for k in loaded.unexpected_keys if not k.startswith("lossV.")]
+assert not loaded.missing_keys and not unknown, f"checkpoint does not match the model: missing {loaded.missing_keys}, unexpected {unknown}"
 net.eval()
 reference_net = copy.deepcopy(net)  # untouched: the torch scores in the checks and fixture come from this
 

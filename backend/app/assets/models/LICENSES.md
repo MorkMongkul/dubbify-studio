@@ -32,3 +32,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+Training data: the weights are `pretrain_AVA_CVPR.model`, trained by the Light-ASD authors on the AVA-ActiveSpeaker
+dataset (https://research.google.com/ava/). Google publishes AVA's annotations under CC BY 4.0; the dataset's videos are
+third-party YouTube content and are not redistributed here. Whether the AVA terms place any condition on using
+weights trained on it in a commercial product: **to confirm** (not verified from the dataset's own terms page; Light-ASD
+itself carries only the MIT licence above).
