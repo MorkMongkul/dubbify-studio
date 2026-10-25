@@ -297,6 +297,9 @@ export interface CharacterSuggestion {
   a: string
   b: string
   reason: 'same voice' | 'same voice and face'
+  /** Lines each has in the whole project (every episode) */
+  a_lines: number
+  b_lines: number
 }
 
 /** POST /segments/{id}/character: the pick, and whether the line's Khmer was translated again for the new speaker. */
@@ -463,7 +466,7 @@ export const JOB_STATUS_CONFIG: Record<JobStatus, {
   stems_ready:  { label: 'Stems Ready',  color: 'green',  description: 'Audio split — click Analyze to detect speakers' },
   diarizing:    { label: 'Diarizing',    color: 'brand', description: 'Detecting speakers' },
   transcribing: { label: 'Transcribing', color: 'brand', description: 'AI speech recognition' },
-  recognizing:  { label: 'Recognising',  color: 'brand', description: 'Recognising characters' },
+  recognizing:  { label: 'Recognizing',  color: 'brand', description: 'Recognizing characters' },
   translating:  { label: 'Translating',  color: 'blue',   description: 'Translating dialogue' },
   synthesizing: { label: 'Synthesizing', color: 'brand', description: 'Generating AI voices' },
   mixing:       { label: 'Mixing',       color: 'blue',   description: 'Mixing dubbed audio' },

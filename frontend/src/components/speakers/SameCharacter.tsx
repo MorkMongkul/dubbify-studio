@@ -62,14 +62,28 @@ export function SameCharacter({
     if (was || !voicesUrl) return
     const line = sampleLine(speaker.id, segments)
     if (!line) return
-    const el = new Audio(voicesUrl)
-    audio = el
-    const done = () => { if (audio === el) { stopSample(); setPlaying(null) } }
-    el.addEventListener('timeupdate', () => { if (el.currentTime >= line.end) done() })
-    el.addEventListener('ended', done)
-    el.addEventListener('error', done)
-    el.currentTime = line.start
-    el.play().then(() => setPlaying(speaker.id)).catch(done)
+    // WebKit ignores a position set before the file's length is known, so it's set on loadedmetadata;
+    // the .wav stands in when the .m4a can't be played, as the preview's player does
+    const urls = [voicesUrl, voicesUrl.replace('/vocals.m4a?', '/vocals.wav?')]
+    const open = (k: number) => {
+      const el = new Audio()
+      audio = el
+      const done = () => { if (audio === el) { stopSample(); setPlaying(null) } }
+      el.addEventListener('timeupdate', () => { if (el.currentTime >= line.end) done() })
+      el.addEventListener('ended', done)
+      el.addEventListener('error', () => {
+        if (audio !== el) return
+        if (k + 1 < urls.length && urls[k + 1] !== urls[k]) { el.pause(); open(k + 1) } else done()
+      })
+      el.addEventListener('loadedmetadata', () => {
+        el.currentTime = line.start
+        el.play().then(() => { if (audio === el) setPlaying(speaker.id) }).catch(done)
+      }, { once: true })
+      el.preload = 'auto'
+      el.src = urls[k]
+      el.load()
+    }
+    open(0)
   }
 
   const who = (speaker: Speaker) => {
@@ -97,8 +111,8 @@ export function SameCharacter({
     <div className="p-2 rounded bg-ink-800/30 border border-amber-400/30 space-y-2">
       <p className="text-[10px] font-semibold text-amber-300/90">Same character?</p>
       {pairs.map(({ s, a, b }) => {
-        // The one with more lines stays (the first of the pair when they tie)
-        const keep = (b.segment_count ?? 0) > (a.segment_count ?? 0) ? b : a
+        // The one with more lines in the project stays (the first of the pair when they tie)
+        const keep = s.b_lines > s.a_lines ? b : a
         const other = keep === a ? b : a
         return (
           <div key={`${s.a}:${s.b}`} className="space-y-1.5 pt-1.5 border-t border-ink-800/60 first-of-type:border-t-0 first-of-type:pt-0">

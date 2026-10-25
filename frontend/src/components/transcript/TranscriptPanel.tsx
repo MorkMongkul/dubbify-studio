@@ -20,7 +20,7 @@ import { jobProgress } from '@/lib/jobProgress'
 import { recordSegmentChange, recordSegmentsChange, recordSegmentCreate } from '@/lib/historyHelpers'
 import { voiceUsers } from '@/lib/voiceTags'
 import { effectiveSpeed } from '@/lib/clipRules'
-import { characterChoices, characterName, guessChips, isToCheck, nextToCheck, toCheck } from '@/lib/whoCheck'
+import { characterChoices, characterName, guessChips, isToCheck, nextToCheck, toCheck, toCheckAmong } from '@/lib/whoCheck'
 import { useCharacterPicks, type PickFrom } from '@/hooks/useCharacterPicks'
 import { WhoIsThis } from './WhoIsThis'
 
@@ -428,7 +428,8 @@ export function TranscriptPanel({
   // Voices made for lines whose speaker is still a guess would be the wrong
   // voice if the guess is wrong: ask first, and go on only on OK.
   const [confirmUnchecked, setConfirmUnchecked] = useState(false)
-  const linesToCheck = toCheck(segments).length
+  // Only the lines the batch will voice count, not the whole episode
+  const linesToCheck = toCheckAmong(segments, selectedSegmentIds)
   const handleBatchSynthesize = () => {
     if (linesToCheck > 0) { setConfirmUnchecked(true); return }
     void startBatchSynthesize()

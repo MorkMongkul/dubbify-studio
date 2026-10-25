@@ -432,6 +432,9 @@ class CharacterSuggestion(BaseModel):
     a: str
     b: str
     reason: Literal["same voice", "same voice and face"]
+    # Lines each has in the whole project: Merge keeps the one with more
+    a_lines: int = 0
+    b_lines: int = 0
 
 
 class CharacterDismiss(BaseModel):

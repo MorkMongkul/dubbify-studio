@@ -67,7 +67,25 @@ async def test_two_characters_cast_with_one_voice_are_suggested(client, db_sessi
         ("SPEAKER_04", None, False, voice(9), None)])
     got = await _get(client, project_id)
     a, b = sorted([ids["SPEAKER_01"], ids["SPEAKER_03"]])
-    assert got == [{"a": a, "b": b, "reason": "same voice"}]
+    assert got == [{"a": a, "b": b, "reason": "same voice", "a_lines": 1, "b_lines": 1}]
+
+
+@pytest.mark.asyncio
+async def test_a_suggestion_carries_each_characters_lines_in_the_whole_project(client, db_sessionmaker):
+    kim = await _voice(db_sessionmaker)
+    project_id, ids = await _cast(db_sessionmaker, [
+        ("SPEAKER_01", kim, False, voice(0), None), ("SPEAKER_03", kim, False, voice(5), None)])
+    async with db_sessionmaker() as s:   # three more lines for SPEAKER_03, two of them in another episode
+        first = (await s.execute(select(Job).where(Job.project_id == project_id))).scalars().one()
+        other = Job(project_id=project_id, status=JobStatus.COMPLETED, progress=100, video_path="ep2.mp4")
+        s.add(other)
+        await s.flush()
+        for job_id, k in [(first.id, 30), (other.id, 0), (other.id, 3)]:
+            s.add(Segment(job_id=job_id, speaker_id=ids["SPEAKER_03"], start_time=k, end_time=k + 2.0))
+        await s.commit()
+    (got,) = await _get(client, project_id)
+    counts = {got["a"]: got["a_lines"], got["b"]: got["b_lines"]}
+    assert counts == {ids["SPEAKER_01"]: 1, ids["SPEAKER_03"]: 4}
 
 
 @pytest.mark.asyncio
@@ -79,7 +97,7 @@ async def test_profiles_that_match_in_voice_and_face_are_suggested(client, db_se
         ("SPEAKER_02", None, False, _near(0, 2, 0.9, 192), face(7))])   # voice alone is not enough
     got = await _get(client, project_id)
     a, b = sorted([ids["SPEAKER_00"], ids["SPEAKER_01"]])
-    assert got == [{"a": a, "b": b, "reason": "same voice and face"}]
+    assert got == [{"a": a, "b": b, "reason": "same voice and face", "a_lines": 1, "b_lines": 1}]
 
 
 @pytest.mark.asyncio

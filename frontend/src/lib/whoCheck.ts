@@ -33,6 +33,19 @@ export function toCheck<S extends Line>(segments: S[]): S[] {
 }
 
 /**
+ * How many of the lines `ids` are still to check — what a batch voicing warns about. The batch voices the lines
+ * without a voice yet, or, when every selected line has one, all of them again.
+ */
+export function toCheckAmong(
+  segments: (Line & { tts_audio_path?: string | null })[],
+  selectedIds: string[],
+): number {
+  const selected = selectedIds.map((id) => segments.find((s) => s.id === id)).filter((s): s is NonNullable<typeof s> => !!s)
+  const pending = selected.filter((s) => !s.tts_audio_path)
+  return (pending.length > 0 ? pending : selected).filter(isToCheck).length
+}
+
+/**
  * The line to check after `afterId` in time, wrapping to the first. With no
  * line being checked (or one that's gone), the first from `from` (the
  * playhead), else the first. Lines in `skip` (a pick on its way) are passed

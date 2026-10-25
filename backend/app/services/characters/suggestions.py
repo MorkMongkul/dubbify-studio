@@ -8,10 +8,10 @@ import json
 from itertools import combinations
 
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.models import Speaker
+from app.models.models import Segment, Speaker
 from app.services.characters.decide import Profile
 from app.services.characters.store import project_profiles
 
@@ -41,8 +41,9 @@ def _cosine(a: np.ndarray | None, b: np.ndarray | None) -> float | None:
     return None if a is None or b is None else float(np.dot(a, b))
 
 
-def find(speakers: list[Speaker], profiles: dict[str, Profile], dismissed: set[Pair]) -> list[dict]:
-    """[{a, b, reason}] with a < b: "same voice" first, then the voice cosine falling, then by pair."""
+def find(speakers: list[Speaker], profiles: dict[str, Profile], dismissed: set[Pair],
+         lines: dict[str, int] | None = None) -> list[dict]:
+    """[{a, b, reason, a_lines, b_lines}] with a < b (the lines each has in the whole project): "same voice" first, then the voice cosine falling, then by pair."""
     found: list[tuple[int, float, Pair, str]] = []
     for x, y in combinations(sorted(speakers, key=lambda s: s.id), 2):
         pair = (x.id, y.id)
@@ -56,10 +57,17 @@ def find(speakers: list[Speaker], profiles: dict[str, Profile], dismissed: set[P
         elif (x.voice_id and x.voice_id == y.voice_id and not x.voice_auto and not y.voice_auto):
             found.append((0, voice if voice is not None else 0.0, pair, "same voice"))
     found.sort(key=lambda f: (f[0], -f[1], f[2]))
-    return [{"a": pair[0], "b": pair[1], "reason": reason} for _, _, pair, reason in found]
+    lines = lines or {}
+    return [{"a": pair[0], "b": pair[1], "reason": reason, "a_lines": lines.get(pair[0], 0), "b_lines": lines.get(pair[1], 0)}
+            for _, _, pair, reason in found]
 
 
 async def suggest(db: AsyncSession, project_id: str, dismissed_raw: str | None) -> list[dict]:
     """Read only: nothing is written or merged here."""
     speakers = (await db.execute(select(Speaker).where(Speaker.project_id == project_id))).scalars().all()
-    return find(list(speakers), await project_profiles(db, project_id), dismissals_from(dismissed_raw))
+    # one grouped count for the whole project (every episode), not one query per character
+    counts = (await db.execute(
+        select(Segment.speaker_id, func.count(Segment.id)).where(Segment.speaker_id.in_([x.id for x in speakers]))
+        .group_by(Segment.speaker_id))).all()
+    return find(list(speakers), await project_profiles(db, project_id), dismissals_from(dismissed_raw),
+                {sid: n for sid, n in counts})

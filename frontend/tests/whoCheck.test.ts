@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  basisOf, characterChoices, guessChips, isToCheck, nextToCheck, pickUndoPatches, toCheck, unassignPatches,
+  basisOf, characterChoices, guessChips, isToCheck, nextToCheck, pickUndoPatches, toCheck, toCheckAmong, unassignPatches,
 } from '../src/lib/whoCheck.ts'
 import type { CharacterPicked, Segment, Speaker, WhoGuess } from '../src/types/index.ts'
 
@@ -177,4 +177,23 @@ test('unassigning keeps the check; its undo puts the speaker back without confir
     before: { speaker_id: 'a', who_check: [guess('a')], who_confirmed: false },
     after: { speaker_id: null },
   })
+})
+
+test('a batch voicing warns only about the lines it will voice', () => {
+  const voiced = { tts_audio_path: 'a.wav' }
+  const segs = [
+    line('1', 0, { who_check: [] }),                          // to check, no voice
+    line('2', 1, { who_check: [guess('b')], ...voiced }),     // to check, has a voice
+    line('3', 2),                                              // sure, no voice
+    line('4', 3, { who_check: [], who_confirmed: true }),     // confirmed
+    line('5', 9, { who_check: [] }),                          // to check, not selected
+  ]
+  // Mixed selection: only the lines without a voice are voiced
+  assert.equal(toCheckAmong(segs, ['1', '2', '3']), 1)
+  assert.equal(toCheckAmong(segs, ['2', '3']), 0)
+  // Every selected line has a voice: they are all made again
+  assert.equal(toCheckAmong(segs, ['2']), 1)
+  assert.equal(toCheckAmong(segs, ['2', '4']), 0)   // mixed: only 4 is voiced
+  assert.equal(toCheckAmong(segs, ['3', '4']), 0)
+  assert.equal(toCheckAmong(segs, []), 0)
 })
