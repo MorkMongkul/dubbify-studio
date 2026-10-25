@@ -36,7 +36,7 @@ Timing ("who speaks *when*") was tested separately and is **out of scope** here 
 1. **Characters, not SPEAKER labels.** The Speakers panel lists characters: the actor's face (cut from an episode) and the Khmer voice they're cast with. A character is recognised by the actor's voice and face — never by the Khmer voice — so two characters *may* share a Khmer voice (minor parts) and recasting a character doesn't break recognition. Character names stay editable as today (`display_name`).
 2. **After analysis, every line already has a character.** About 6 in 10 are marked sure. The rest show an amber **"Who is this?"** in the transcript with Movelo's two best guesses (face thumbnail, name, and what the guess rests on: "voice + face", "face", "voice"), one click or the keys **1** / **2**, plus **Someone else…** (the existing speaker picker / new-speaker box). The transcript header shows **"N to check"** and **Next to check ▸**. (Layout: option A of `.superpowers/brainstorm/28939-1792911008/content/who-check.html`.)
 3. **Every confirmation teaches the profile**, so later episodes need fewer clicks.
-4. **Existing projects**: profiles are built from the episodes already checked. **Lines whose Khmer voice was changed one by one become characters** (owner, 2026-10-25: such a change always meant *another actor* was speaking and no label existed for them — e.g. ForbiddenMountain's Tan Sophea, 30 lines; Meng Piseth, 14; Kong Sokunthea, 10). See *Upgrading existing projects*. Labels that look like one character get a one-click **"Same character?"** suggestion (the existing *Same person as…* merge does the work): suggested when two characters share a Khmer voice, or when their voice and face profiles are near each other. **Movelo never merges by itself** — every merge is the user's click, so it stays one undo step and never re-voices lines by surprise.
+4. **Existing projects**: profiles are built from the episodes already checked. **Lines whose Khmer voice was changed one by one become characters** (owner, 2026-10-25: such a change always meant *another actor* was speaking and no label existed for them — e.g. ForbiddenMountain's Tan Sophea, 30 lines; Meng Piseth, 14; Kong Sokunthea, 10). See *Upgrading existing projects*. Labels that look like one character get a one-click **"Same character?"** suggestion (the existing *Same person as…* merge does the work): suggested when two characters share a Khmer voice, or when their voice and face profiles are near each other. **Movelo never merges by itself** — every merge is the user's click, so it stays one undo step and never re-voices lines by surprise. A suggestion also has **Not the same**, which dismisses it for good (it never comes back for that pair).
 5. **Picking another character re-translates that line** for the new speaker (Khmer politeness and pronouns depend on who speaks: បាទ for a man, ចាស for a woman, លោក/បង/អូន…) — one Gemini call for that line, with the same WHO IS SPEAKING cast and Story notes as translation — **unless the user has edited that line's Khmer**; one undo step restores the previous Khmer. (My call, offered to the owner, who was unsure; see the calls list.)
 6. **Detect speakers** re-checks an episode's lines against the profiles — local, no Gemini call — without touching text, timing, or any line the user already confirmed.
 
@@ -93,6 +93,7 @@ Once per project (at start-up, like `timeline.convert_old_jobs`, marked so it ne
 - **`segments.who_confirmed`** (BOOLEAN, nullable/false) if the builder needs it to tell a user's pick from Movelo's (the confirmed-line rule). Same migration rule.
 - **`speakers.face_crop_path`** (TEXT, nullable): the card's thumbnail (best-scoring face crop among its confirmed lines, refreshed when it changes). Same migration rule. Crops live under the job's uploads folder; paths go through `PATH_COLUMNS` (`app/core/data_folder.py`) like other media paths.
 - Re-translating one line needs to know whether the user edited its Khmer: keep the machine draft or an edited flag (builder's choice; `Translate missing lines` today only fills empty lines, so nothing records an edit yet). Column rule as above.
+- Dismissed "Same character?" pairs are kept per project (a small table or JSON on the project — builder's choice) so they never come back.
 - Routes: `POST /jobs/{id}/identify` (Detect speakers' new engine), the existing segment PATCH clears `who_check` and marks the pick confirmed when `speaker_id` changes, `GET /projects/{id}/character-suggestions` (pairs to merge, with the reason), the existing merge/unmerge routes do the merge. Routes keep `Depends(get_db, scope="function")`; no DB session open while models run (SQLite has one writer).
 
 ## Constraints
@@ -120,7 +121,7 @@ Once per project (at start-up, like `timeline.convert_old_jobs`, marked so it ne
 
 ## Acceptance
 
-- `scripts/measure-characters.py <data-folder-copy> <project>`: runs the **shipped engine** on a read-only copy (`sqlite3 -readonly .backup`, media read in place) after the upgrade, truth = each line's character after the upgrade (= its final Khmer voice in ForbiddenMountain), "as it happens": overall right ≥ 68%, sure-rule coverage ≥ 50% at ≥ 83% right on ForbiddenMountain episodes 1–10 (the owner's checked episodes; ep11 once they finish it). Run it before release; the owner's data never goes into the repo or CI.
+- `scripts/measure-characters.py <data-folder-copy> <project>`: runs the **shipped engine** on a read-only copy (`sqlite3 -readonly .backup`, media read in place) after the upgrade, truth = each line's character after the upgrade (= its final Khmer voice in ForbiddenMountain), "as it happens": overall right ≥ 68%, sure-rule coverage ≥ 50% at ≥ 83% right on ForbiddenMountain episodes 1–10 (the owner's checked episodes; ep11 once they finish it). Run it before release; the owner's data never goes into the repo or CI. It takes an optional corrections file (line → character) for answer-key mistakes the owner points out: on 2026-10-25, while practising, the owner heard ep10's line at 1:26.3 (尊上，要不咱们找点乐子？) as **Meng Piseth's** actor, though their saved ep10 still voices it with Ly Visal — Movelo's face guess was right there, so the measured numbers are, if anything, conservative.
 - Unit tests for the decision rule (sure/check, margins, unknown people, confirmed lines untouched), the profile rule (confirmed lines only), migrations on an old desktop DB, deletes with segment/job/project.
 - End to end in WebKit: a new episode of a project with checked episodes → "N to check", chips, 1/2 keys, "Next to check", undo.
 
@@ -132,6 +133,10 @@ Once per project (at start-up, like `timeline.convert_old_jobs`, marked so it ne
 4. Intel: voice only if the face step can't stay ≤ ~3 min per episode.
 5. Picking another character re-translates that line unless its Khmer was edited (owner unsure — recommended).
 6. The per-line voice picker becomes casting only; the upgrade turns past one-line voice changes into characters (owner confirmed the meaning).
+
+## Ideas noticed, not in this build
+
+- Where face and voice strongly point at another character on a line the user already confirmed or voiced, ask "Sounds like Meng Piseth?" — it would have caught the ep10 slip above.
 
 ## Left to the builder
 
