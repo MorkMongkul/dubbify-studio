@@ -53,9 +53,10 @@ def self_test() -> str:
         session = onnxruntime.InferenceSession(str(path(name)), options, providers=["CPUExecutionProvider"])
         return session.run(None, {session.get_inputs()[0].name: np.zeros(shape, np.float32)})
 
-    # YuNet takes a fixed 640x640 picture and answers per anchor (8/16/32 px strides: 6400 + 1600 + 400 of them).
-    detections = run("yunet", (1, 3, 640, 640))
-    if len(detections) != 12 or detections[0].shape != (1, 6400, 1) or detections[11].shape != (1, 400, 10):
+    # YuNet takes a picture of any size padded to multiples of 32 (here 384x256) and answers per anchor
+    # (8/16/32 px strides: 48x32 + 24x16 + 12x8 of them).
+    detections = run("yunet", (1, 3, 256, 384))
+    if len(detections) != 12 or detections[0].shape != (1, 1536, 1) or detections[11].shape != (1, 96, 10):
         raise RuntimeError("the face detection model gave unexpected outputs")
     # SFace takes an aligned 112x112 face and gives a 128-number face print.
     face_print = run("sface", (1, 3, 112, 112))

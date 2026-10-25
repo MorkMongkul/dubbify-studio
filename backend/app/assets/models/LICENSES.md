@@ -60,9 +60,11 @@ Face print: a vector that says whose face a picture is. Fetched by `scripts/fetc
 - Licence: Apache License 2.0. Verified from that folder's `README.md` ("All files in this directory are licensed under
   Apache 2.0 License") and its `LICENSE` file.
 
-## YuNet (`face_detection_yunet_2023mar.onnx`)
+## YuNet (`face_detection_yunet_2023mar_dynamic.onnx`)
 
-Face detection: where the faces in a picture are. Stored in git.
+Face detection: where the faces in a picture are. Stored in git. It is opencv_zoo's `face_detection_yunet_2023mar.onnx`
+with the same weights, rewritten by `scripts/export-yunet.py` to take a picture of any size (the original declares a
+fixed 640x640 input).
 
 - Source: https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet
 - Licence: MIT, Copyright (c) 2020 Shiqi Yu. Verified from that folder's `README.md` ("All files in this directory are

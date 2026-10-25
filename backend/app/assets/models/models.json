@@ -17,10 +17,10 @@
   },
   {
     "name": "yunet",
-    "file": "face_detection_yunet_2023mar.onnx",
+    "file": "face_detection_yunet_2023mar_dynamic.onnx",
     "url": "",
-    "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
-    "bytes": 232589,
+    "sha256": "85260e29ac9c2546c0f4dcb9f98ad5b754e986f76592473013aa6cfd8c0e446b",
+    "bytes": 229770,
     "licence": "MIT"
   },
   {
