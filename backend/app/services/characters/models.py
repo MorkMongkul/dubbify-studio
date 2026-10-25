@@ -4,8 +4,9 @@
 (YuNet, Light-ASD); the other two are too big for git and are fetched by scripts/fetch-models.sh, which the release
 workflow runs before the backend is built. `app/assets` is bundled whole, so the files land in the packaged app.
 
-This module imports no runtime library: path() works on a Mac that can't load onnxruntime, cv2 or sherpa_onnx. Only
-self_test() and the loaders that use those libraries import them."""
+This module imports no runtime library: path() works on a Mac that can't load onnxruntime or sherpa_onnx. Only
+self_test() and the loaders that use those libraries import them. There is no OpenCV in the app (its macOS wheel
+bundles a GPL FFmpeg): the two face models run as plain onnxruntime sessions."""
 import json
 from pathlib import Path
 
@@ -32,8 +33,8 @@ def path(name: str) -> Path:
 
 def self_test() -> str:
     """Loads all four models and runs one tiny input through each. Returns "Character models: ok"."""
-    import cv2
     import numpy as np
+    import onnxruntime
     import sherpa_onnx
 
     from app.services.characters import lips
@@ -46,10 +47,19 @@ def self_test() -> str:
     if not extractor.is_ready(stream) or len(extractor.compute(stream)) != extractor.dim:
         raise RuntimeError("the voice model gave no voice print")
 
-    detector = cv2.FaceDetectorYN.create(str(path("yunet")), "", (320, 320), 0.7)
-    detector.detect(np.zeros((320, 320, 3), np.uint8))  # no face in a blank picture: None, but the model ran
-    recogniser = cv2.FaceRecognizerSF.create(str(path("sface")), "")
-    if recogniser.feature(np.zeros((112, 112, 3), np.uint8)).size != 128:
+    def run(name: str, shape: tuple) -> list:
+        options = onnxruntime.SessionOptions()
+        options.log_severity_level = 3
+        session = onnxruntime.InferenceSession(str(path(name)), options, providers=["CPUExecutionProvider"])
+        return session.run(None, {session.get_inputs()[0].name: np.zeros(shape, np.float32)})
+
+    # YuNet takes a fixed 640x640 picture and answers per anchor (8/16/32 px strides: 6400 + 1600 + 400 of them).
+    detections = run("yunet", (1, 3, 640, 640))
+    if len(detections) != 12 or detections[0].shape != (1, 6400, 1) or detections[11].shape != (1, 400, 10):
+        raise RuntimeError("the face detection model gave unexpected outputs")
+    # SFace takes an aligned 112x112 face and gives a 128-number face print.
+    face_print = run("sface", (1, 3, 112, 112))
+    if face_print[0].shape != (1, 128):
         raise RuntimeError("the face model gave no face print")
 
     frames = 25

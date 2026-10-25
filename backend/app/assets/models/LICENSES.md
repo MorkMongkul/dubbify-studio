@@ -70,7 +70,12 @@ Face detection: where the faces in a picture are. Stored in git.
 
 ## Libraries that run the models
 
-`sherpa-onnx` (Apache-2.0, https://github.com/k2-fsa/sherpa-onnx), `onnxruntime` (MIT) and `opencv-python-headless`
-(Apache-2.0 for OpenCV 4.5+ and its Python wrapper; the wheel also bundles FFmpeg and other libraries under their own
-LGPL/BSD licences, which the wheel's own `LICENSE-3RD-PARTY.txt` lists). Licences of these three libraries were not
-re-verified for this file: **to confirm** before the release notes name them.
+The app contains no OpenCV: its macOS wheel bundles a whole FFmpeg with GPL libraries (x264, x265, and others), and the
+app ships only an LGPL ffmpeg. `backend/build_sidecar.sh` stops if such a library gets into the build.
+
+- `onnxruntime` 1.23.2 (runs YuNet, SFace and Light-ASD): MIT, Copyright (c) Microsoft Corporation.
+  https://github.com/microsoft/onnxruntime/blob/main/LICENSE
+- `sherpa-onnx` 2.0.0 and `sherpa-onnx-core` 2.0.0 (runs ERes2NetV2): Apache License 2.0.
+  https://github.com/k2-fsa/sherpa-onnx/blob/master/LICENSE (PyPI lists sherpa-onnx-core as Apache-2.0 too).
+  sherpa-onnx carries its own copy of `libonnxruntime.dylib` (in `sherpa_onnx/lib`), separate from the `onnxruntime`
+  package's; both are in the build.
