@@ -29,6 +29,11 @@ def test_fewer_than_five_frames_give_no_scores():
     assert speaking_scores(np.zeros(16000, np.int16), np.zeros((4, 112, 112), np.uint8)) is None
 
 
+def test_no_sound_gives_no_scores():
+    """A face followed past the end of the vocals has no sound to judge (mfcc needs at least one sample)."""
+    assert speaking_scores(np.zeros(0, np.int16), np.zeros((25, 112, 112), np.uint8)) is None
+
+
 def test_speaking_scores_gives_a_score_per_frame_the_sound_covers():
     rng = np.random.default_rng(1)
     audio = (rng.standard_normal(16000 * 3) * 3000).astype(np.int16)

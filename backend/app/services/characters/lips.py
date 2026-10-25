@@ -32,7 +32,10 @@ def run_onnx(audio: np.ndarray, video: np.ndarray) -> np.ndarray:
 def speaking_scores(audio_int16: np.ndarray, crops: np.ndarray) -> np.ndarray | None:
     """Per-frame lip-sync scores for one face over one stretch of sound (16 kHz mono int16), or None for under 5 frames.
 
-    `crops` is (T, 112, 112) uint8 at 25 fps, the first frame at the sound's first sample."""
+    `crops` is (T, 112, 112) uint8 at 25 fps, the first frame at the sound's first sample. No sound (a face followed
+    past the end of the vocals) gives None too."""
+    if len(audio_int16) == 0:
+        return None
     features = mfcc(audio_int16, 16000)
     video = np.asarray(crops)
     length = min((features.shape[0] - features.shape[0] % 4) / MFCC_PER_SECOND, video.shape[0] / VIDEO_FPS)

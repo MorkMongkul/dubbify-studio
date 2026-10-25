@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dev-only: YuNet (face detection) for any picture size, and the OpenCV fixtures the app's face code is checked against.
+"""Dev-only: YuNet (face detection) for any picture size, and the OpenCV fixtures the app's face code is tested with.
 
 opencv_zoo's face_detection_yunet_2023mar.onnx declares a fixed [1, 3, 640, 640] input, which onnxruntime enforces.
 OpenCV's FaceDetectorYN runs it at the video's own size (padded bottom/right to a multiple of 32); its graph only
@@ -77,7 +77,8 @@ for a, b in zip(original.run(None, {"input": blob}), rewritten.run(None, {"input
 for h, w in ((1280, 736), (736, 1280), (352, 512)):
     outputs = rewritten.run(None, {"input": rng.uniform(0, 255, (1, 3, h, w)).astype(np.float32)})
     for out, meta in zip(outputs, rewritten.get_outputs()):
-        stride, width = int(meta.name.split("_")[1]), {"cls": 1, "obj": 1, "bbox": 4, "kps": 10}[meta.name.split("_")[0]]
+        kind, stride = meta.name.split("_")
+        stride, width = int(stride), {"cls": 1, "obj": 1, "bbox": 4, "kps": 10}[kind]
         assert out.shape == (1, (h // stride) * (w // stride), width), (meta.name, out.shape, h, w)
 print(f"{target.name}: {target.stat().st_size} bytes, sha256 {hashlib.sha256(target.read_bytes()).hexdigest()}")
 
@@ -93,7 +94,8 @@ def draw_face(img, cx, cy, s, skin):
         cv2.circle(img, (ex, ey), int(0.07 * s), (40, 30, 20), -1)
         cv2.ellipse(img, (ex, ey - int(0.17 * s)), (int(0.2 * s), int(0.05 * s)), 0, 180, 360, (40, 40, 50),
                     int(max(2, 0.05 * s)))
-    cv2.line(img, (cx, cy - int(0.05 * s)), (cx - int(0.06 * s), cy + int(0.25 * s)), (100, 120, 170), max(2, int(0.04 * s)))
+    cv2.line(img, (cx, cy - int(0.05 * s)), (cx - int(0.06 * s), cy + int(0.25 * s)), (100, 120, 170),
+             max(2, int(0.04 * s)))
     cv2.ellipse(img, (cx, cy + int(0.45 * s)), (int(0.25 * s), int(0.08 * s)), 0, 0, 360, (80, 60, 170), -1)
 
 
