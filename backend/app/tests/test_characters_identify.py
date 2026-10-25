@@ -1,0 +1,195 @@
+"""
+Detect speakers (0.5.0) checks an episode's lines against the project's characters, locally: no Gemini call, and
+no text, timing or confirmed line is touched. Without characters yet (a project's first episode), or when the
+models can't run, it is the Gemini re-detection it was — which now also leaves confirmed lines alone.
+
+Gemini and the prints are replaced at the service boundary (pipeline.transcribe_audio,
+characters.prints.prints_for_spans); the profiles come from real stored prints, as in test_characters_pipeline.
+"""
+import json
+
+import numpy as np
+import pytest
+from sqlalchemy import select
+
+from app.models.models import Job, JobStatus, LinePrint, Segment, Speaker
+from app.services import pipeline
+from app.services.characters import models, store
+from app.services.characters.types import LinePrints
+from app.tests.test_characters_pipeline import (  # noqa: F401  (fixtures)
+    _episode, _line_prints, _lines, _old_confirmed_line, _prints, _project, _store_warnings, _transcribe, _vocals,
+    background_db, face, uploads, voice,
+)
+
+
+def _p(k: int | None, with_face: bool = True) -> LinePrints:
+    """Prints that match character k exactly (k=None: a voice nobody has)."""
+    return LinePrints(voice(5 if k is None else k), face(k) if with_face and k is not None else None,
+                      0.9 if with_face and k is not None else None, None)
+
+
+async def _detect_setup(background_db, uploads, lines, vocals=True):
+    """The project's characters plus a finished second episode with `lines`: (start, end, fields)."""
+    project_id, ids = await _project(background_db)
+    job_id = await _episode(background_db, project_id, status=JobStatus.COMPLETED)
+    async with background_db() as s:
+        rows = []
+        for k, (start, end, fields) in enumerate(lines):
+            rows.append(Segment(job_id=job_id, start_time=start, end_time=end, source_start=start, source_end=end,
+                                source_text=f"旧{k}", khmer_text=f"km{k}", **fields))
+        s.add_all(rows)
+        await s.commit()
+        segment_ids = [r.id for r in rows]
+    if vocals:
+        _vocals(uploads, project_id, job_id)
+    return project_id, job_id, ids, segment_ids
+
+
+async def _detect(client, job_id):
+    resp = await client.post(f"/api/v1/jobs/{job_id}/detect-speakers")
+    assert resp.status_code == 202
+
+
+def _no_gemini(monkeypatch):
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("Gemini was called")
+    monkeypatch.setattr(pipeline, "transcribe_audio", forbidden)
+
+
+async def _store_row(background_db, job_id, segment_id, k, version=None):
+    async with background_db() as s:
+        s.add(LinePrint(segment_id=segment_id, job_id=job_id, voice_print=voice(k).tobytes(),
+                        face_print=face(k).tobytes(), speaking_score=0.9,
+                        model_version=version or store.MODEL_VERSION))
+        await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_detect_speakers_never_calls_gemini(client, monkeypatch, uploads, background_db):
+    project_id, job_id, ids, _ = await _detect_setup(background_db, uploads, [(0.0, 2.0, {}), (3.0, 5.0, {})])
+    _no_gemini(monkeypatch)
+    _prints(monkeypatch, [_p(1), _p(0)])
+    await _detect(client, job_id)
+
+    lines = await _lines(background_db, job_id)
+    assert [label for _, label in lines] == ["SPEAKER_01", "SPEAKER_00"]
+    assert [seg.who_check for seg, _ in lines] == [None, None]
+    assert [(seg.source_text, seg.khmer_text, seg.start_time) for seg, _ in lines] == [
+        ("旧0", "km0", 0.0), ("旧1", "km1", 3.0)]
+    job = await store_job(background_db, job_id)
+    assert job.status == JobStatus.COMPLETED and job.progress == 100 and not job.error_msg
+    assert len(await _line_prints(background_db, job_id)) == 2   # kept for the next episode
+
+
+async def store_job(background_db, job_id) -> Job:
+    async with background_db() as s:
+        return await s.get(Job, job_id)
+
+
+@pytest.mark.asyncio
+async def test_detect_speakers_never_changes_a_confirmed_line(client, monkeypatch, uploads, background_db):
+    project_id, job_id, ids, _ = await _detect_setup(background_db, uploads, [
+        (0.0, 2.0, {"who_confirmed": True}), (3.0, 5.0, {"tts_audio_path": "tts/a.wav"}), (6.0, 8.0, {})])
+    uncle = await _old_confirmed_line(background_db, project_id, job_id)
+    async with background_db() as s:   # the confirmed and the voiced line stand on Uncle Wang, the open one on nobody
+        for seg in (await s.execute(select(Segment).where(Segment.job_id == job_id,
+                                                          Segment.source_text.in_(["旧0", "旧1"])))).scalars():
+            seg.speaker_id = uncle
+        await s.commit()
+    _no_gemini(monkeypatch)
+    calls = []
+    _prints(monkeypatch, [_p(0)], calls)
+    await _detect(client, job_id)
+
+    lines = {seg.source_text: (label, seg.who_check) for seg, label in await _lines(background_db, job_id)}
+    assert lines["旧0"] == ("SPEAKER_02", None) and lines["旧1"] == ("SPEAKER_02", None)
+    assert lines["旧2"] == ("SPEAKER_00", None)
+    assert calls == [[(6.0, 8.0)]]   # the models heard only the open line
+
+
+@pytest.mark.asyncio
+async def test_detect_speakers_marks_uncertain_lines(client, monkeypatch, uploads, background_db):
+    project_id, job_id, ids, _ = await _detect_setup(background_db, uploads, [(0.0, 2.0, {})])
+    _no_gemini(monkeypatch)
+    between = (voice(0) + voice(1)) / np.sqrt(2)
+    _prints(monkeypatch, [LinePrints(between.astype(np.float32), None, None, None)])
+    await _detect(client, job_id)
+
+    [(seg, label)] = await _lines(background_db, job_id)
+    guesses = json.loads(seg.who_check)
+    assert {g["speaker_id"] for g in guesses} == set(ids.values()) and {g["basis"] for g in guesses} == {"voice"}
+    assert label in ids   # the better guess, to be checked by the user
+
+
+@pytest.mark.asyncio
+async def test_detect_speakers_keeps_a_nobody_line_on_its_speaker(client, monkeypatch, uploads, background_db):
+    project_id, job_id, ids, _ = await _detect_setup(background_db, uploads, [(0.0, 2.0, {})])
+    uncle = await _old_confirmed_line(background_db, project_id, job_id)
+    async with background_db() as s:
+        (await s.execute(select(Segment).where(Segment.source_text == "旧0"))).scalar_one().speaker_id = uncle
+        await s.commit()
+    _no_gemini(monkeypatch)
+    _prints(monkeypatch, [_p(None)])
+    await _detect(client, job_id)
+
+    lines = {seg.source_text: (label, seg.who_check) for seg, label in await _lines(background_db, job_id)}
+    label, check = lines["旧0"]
+    assert label == "SPEAKER_02" and check is not None   # still Uncle Wang, now marked to check
+
+
+@pytest.mark.asyncio
+async def test_detect_speakers_computes_only_missing_prints(client, monkeypatch, uploads, background_db):
+    project_id, job_id, ids, seg_ids = await _detect_setup(
+        background_db, uploads, [(0.0, 2.0, {}), (3.0, 5.0, {}), (6.0, 8.0, {})])
+    await _store_row(background_db, job_id, seg_ids[1], 1)   # the middle line has today's prints
+    _no_gemini(monkeypatch)
+    calls = []
+    _prints(monkeypatch, [_p(0), _p(0)], calls)
+    await _detect(client, job_id)
+
+    assert calls == [[(0.0, 2.0), (6.0, 8.0)]]
+    assert [label for _, label in await _lines(background_db, job_id)] == ["SPEAKER_00", "SPEAKER_01", "SPEAKER_00"]
+    assert set(await _line_prints(background_db, job_id)) == set(seg_ids)
+
+
+@pytest.mark.asyncio
+async def test_detect_speakers_recomputes_stale_prints(client, monkeypatch, uploads, background_db):
+    project_id, job_id, ids, seg_ids = await _detect_setup(background_db, uploads, [(0.0, 2.0, {})])
+    await _store_row(background_db, job_id, seg_ids[0], 1, version="older-models")
+    _no_gemini(monkeypatch)
+    calls = []
+    _prints(monkeypatch, [_p(0)], calls)
+    await _detect(client, job_id)
+
+    assert calls == [[(0.0, 2.0)]]
+    row = (await _line_prints(background_db, job_id))[seg_ids[0]]
+    assert row.model_version == store.MODEL_VERSION
+    assert np.array_equal(np.frombuffer(row.voice_print, np.float32), voice(0))
+    assert [label for _, label in await _lines(background_db, job_id)] == ["SPEAKER_00"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("why", ["no vocals", "models missing", "prints fail"])
+async def test_detect_speakers_without_vocals_uses_gemini_and_keeps_confirmed_lines(
+        client, monkeypatch, uploads, background_db, caplog, why):
+    project_id, job_id, ids, _ = await _detect_setup(
+        background_db, uploads, [(0.0, 2.0, {"who_confirmed": True}), (3.0, 5.0, {})], vocals=why != "no vocals")
+    if why == "no vocals":   # the extracted audio is all there is
+        audio = uploads / "audio.wav"
+        audio.write_bytes(b"RIFFfake")
+        async with background_db() as s:
+            (await s.get(Job, job_id)).audio_path = str(audio)
+            await s.commit()
+    elif why == "models missing":
+        _prints(monkeypatch, models.ModelMissing("no models"))
+    else:
+        _prints(monkeypatch, OSError("ffmpeg missing"))
+    _transcribe(monkeypatch, [("SPEAKER_09", 0.0, 2.0, "旧0"), ("SPEAKER_09", 3.0, 5.0, "旧1")])
+    with caplog.at_level("WARNING", logger="app.services.characters.store"):
+        await _detect(client, job_id)
+
+    lines = {seg.source_text: label for seg, label in await _lines(background_db, job_id)}
+    assert lines["旧0"] is None   # confirmed: Gemini's label doesn't relabel it
+    assert lines["旧1"] == "SPEAKER_09"
+    assert _store_warnings(caplog)
+    assert (await store_job(background_db, job_id)).status == JobStatus.COMPLETED

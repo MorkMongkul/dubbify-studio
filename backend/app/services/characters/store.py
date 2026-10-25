@@ -187,6 +187,38 @@ def _one_at_a_time(work, *args):
         return work(*args)
 
 
+def _vocals_of(job: Job) -> Path | None:
+    """The job's separated vocals, or None (logged): without them no print can be made."""
+    vocals = Path(settings.UPLOAD_DIR) / job.project_id / job.id / "vocals.wav"
+    if not vocals.exists():
+        logger.warning(f"Job {job.id[:8]}: no vocals.wav, so characters weren't recognised — Gemini's speakers kept")
+        return None
+    return vocals
+
+
+async def _find_prints(db: AsyncSession, job: Job, spans: list[tuple[float, float]],
+                       vocals: Path) -> list[LinePrints] | None:
+    """The prints of `spans` (where the actor spoke), or None (logged) when they can't be made — the callers then
+    keep Gemini's speakers. Commits first, so the models run with no connection held: the dev SQLite engine has one."""
+    video = resolve_media_path(job.video_path)
+    await db.commit()
+    try:
+        from app.services.characters import prints
+        found = await asyncio.to_thread(_one_at_a_time, prints.prints_for_spans, video, str(vocals), spans)
+    except (ImportError, models.ModelMissing) as e:
+        # a Mac below macOS 13.4 (onnxruntime), or a dev checkout without scripts/fetch-models.sh
+        logger.warning(f"Job {job.id[:8]}: characters weren't recognised, the models can't run here: {e}",
+                       exc_info=True)
+        return None
+    except Exception as e:   # OSError too: ffmpeg missing, too many open files, vocals.wav unreadable
+        logger.exception(f"Job {job.id[:8]}: recognising characters failed, Gemini's speakers kept: {e}")
+        return None
+    if len(found) != len(spans):
+        logger.warning(f"Job {job.id[:8]}: {len(found)} prints for {len(spans)} lines — Gemini's speakers kept")
+        return None
+    return found
+
+
 async def recognise(
     db: AsyncSession, job: Job, spans: list[tuple[float, float]], gemini_labels: list[str],
     kept: list[str | None] | None = None,
@@ -203,29 +235,15 @@ async def recognise(
     unchecked: list[list[dict] | None] = [None] * len(spans)
     if not spans:
         return labels, unchecked, []
-    vocals = Path(settings.UPLOAD_DIR) / job.project_id / job.id / "vocals.wav"
-    if not vocals.exists():
-        logger.warning(f"Job {job.id[:8]}: no vocals.wav, so characters weren't recognised — Gemini's speakers kept")
+    vocals = _vocals_of(job)
+    if vocals is None:
         return labels, unchecked, []
 
     profiles = await project_profiles(db, job.project_id, exclude_job_id=job.id)
     names = dict((await db.execute(select(Speaker.id, Speaker.label).where(Speaker.id.in_(list(profiles))))).all()) \
         if profiles else {}
-    video = resolve_media_path(job.video_path)
-    await db.commit()   # release the connection before minutes of models: the dev SQLite engine has one
-    try:
-        from app.services.characters import prints
-        found = await asyncio.to_thread(_one_at_a_time, prints.prints_for_spans, video, str(vocals), spans)
-    except (ImportError, models.ModelMissing) as e:
-        # a Mac below macOS 13.4 (onnxruntime), or a dev checkout without scripts/fetch-models.sh
-        logger.warning(f"Job {job.id[:8]}: characters weren't recognised, the models can't run here: {e}",
-                       exc_info=True)
-        return labels, unchecked, []
-    except Exception as e:   # OSError too: ffmpeg missing, too many open files, vocals.wav unreadable
-        logger.exception(f"Job {job.id[:8]}: recognising characters failed, Gemini's speakers kept: {e}")
-        return labels, unchecked, []
-    if len(found) != len(spans):
-        logger.warning(f"Job {job.id[:8]}: {len(found)} prints for {len(spans)} lines — Gemini's speakers kept")
+    found = await _find_prints(db, job, spans, vocals)
+    if found is None:
         return labels, unchecked, []
     if not profiles:   # the project's first episode: Gemini's speakers as before; its prints teach the next ones
         return labels, unchecked, found
@@ -243,6 +261,58 @@ async def recognise(
     logger.info(f"Job {job.id[:8]}: characters recognised — {checks.count(None)} sure or kept, "
                 f"{len(checks) - checks.count(None)} to check")
     return labels, checks, found
+
+
+async def identify(db: AsyncSession, job: Job, segments: list[Segment]) -> bool:
+    """Detect speakers without Gemini: every line that isn't confirmed is checked against the project's characters.
+    A known character takes the line (who_check None when sure, else its guesses); a voice nobody has leaves the line
+    on its speaker, marked to check. Text, timing and confirmed lines are never touched. Prints are made only for
+    lines without today's, in one run of the models, and kept.
+
+    Returns False — nothing changed — when it can't run: the project has no characters yet, there are no vocals, or
+    the models can't run (logged), and the caller falls back to Gemini. Commits before the models run; the lines
+    are read again afterwards (the user may have edited or deleted some). Flushes; the caller commits."""
+    profiles = await project_profiles(db, job.project_id, exclude_job_id=job.id)
+    if not profiles:
+        return False
+    open_ids = [s.id for s in segments if not is_confirmed(s, job)]
+    if not open_ids:
+        return True
+    vocals = _vocals_of(job)
+    if vocals is None:
+        return False
+    stored = {row.segment_id: row for row in
+              (await db.execute(select(LinePrint).where(LinePrint.segment_id.in_(open_ids)))).scalars()}
+    todo = [s for s in segments if s.id in open_ids
+            and (s.id not in stored or stored[s.id].model_version != model_version())]
+    computed: dict[str, LinePrints] = {}
+    if todo:
+        found = await _find_prints(db, job, [actor_span(s) for s in todo], vocals)
+        if found is None:
+            return False
+        computed = {s.id: p for s, p in zip(todo, found)}
+
+    # the user may have deleted, edited or confirmed lines while the models ran
+    current = {s.id: s for s in (await db.execute(select(Segment).where(Segment.id.in_(open_ids)))).scalars()}
+    await db.refresh(job)
+    still_open = [sid for sid in open_ids if sid in current and not is_confirmed(current[sid], job)]
+    await save_prints(db, job.id, [sid for sid in computed if sid in current],
+                      [computed[sid] for sid in computed if sid in current], faces_dir(job))
+    alive = set((await db.execute(select(Speaker.id).where(Speaker.id.in_(list(profiles))))).scalars())
+    profiles = {sid: p for sid, p in profiles.items() if sid in alive}
+    for sid in still_open:
+        row = stored.get(sid)
+        p = computed.get(sid) or LinePrints(_vector(row.voice_print, VOICE_SIZE), _vector(row.face_print, FACE_SIZE),
+                                            row.speaking_score, None)
+        decision = decide(p, profiles)
+        guesses = [{"speaker_id": g, "basis": basis} for g, basis in decision.guesses]
+        if decision.speaker_id is not None:
+            current[sid].speaker_id = decision.speaker_id
+        current[sid].who_check = who_check_json(None if decision.sure else guesses)
+    await db.flush()
+    logger.info(f"Job {job.id[:8]}: {len(still_open)} lines checked against {len(profiles)} characters, "
+                f"{len(computed)} prints made")
+    return True
 
 
 def heard_by_label(labels: list[str], gemini_labels: list[str], who_checks: list[list[dict] | None],

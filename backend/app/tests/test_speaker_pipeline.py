@@ -301,9 +301,10 @@ async def test_detect_speakers_relabels_without_touching_text_or_audio(client, m
     project_id, job_id = await _seed(
         background_db,
         speakers=[("SPEAKER_00", "SPEAKER_00", False)],
-        segments=[(0.0, 2.0, "老板说", "km1", "SPEAKER_00", "/tts/a.wav"),
-                  (3.0, 5.0, "员工说", "km2", "SPEAKER_00", "/tts/b.wav"),
-                  (6.0, 8.0, "老板又说", "km3", "SPEAKER_00", "")],
+        segments=[(0.0, 2.0, "老板说", "km1", "SPEAKER_00", ""),
+                  (3.0, 5.0, "员工说", "km2", "SPEAKER_00", ""),
+                  (6.0, 8.0, "老板又说", "km3", "SPEAKER_00", ""),
+                  (9.0, 11.0, "已配音", "km4", "SPEAKER_00", "/tts/d.wav")],   # voiced = confirmed: not relabelled
     )
     _vocals(uploads, project_id, job_id)
     seen = {}
@@ -320,11 +321,11 @@ async def test_detect_speakers_relabels_without_touching_text_or_audio(client, m
 
     assert "SPEAKER_00" in seen["taken_labels"]
     rows = await _segments(background_db, job_id)
-    assert [label for _, label in rows] == ["SPEAKER_01", "SPEAKER_02", "SPEAKER_01"]
+    assert [label for _, label in rows] == ["SPEAKER_01", "SPEAKER_02", "SPEAKER_01", "SPEAKER_00"]
     assert [(seg.source_text, seg.khmer_text, seg.tts_audio_path) for seg, _ in rows] == [
-        ("老板说", "km1", "/tts/a.wav"), ("员工说", "km2", "/tts/b.wav"), ("老板又说", "km3", ""),
+        ("老板说", "km1", ""), ("员工说", "km2", ""), ("老板又说", "km3", ""), ("已配音", "km4", "/tts/d.wav"),
     ]
-    assert await _speaker_labels(background_db, project_id) == ["SPEAKER_01", "SPEAKER_02"]
+    assert await _speaker_labels(background_db, project_id) == ["SPEAKER_00", "SPEAKER_01", "SPEAKER_02"]
     assert (await _job(background_db, job_id)).status == JobStatus.COMPLETED
 
 

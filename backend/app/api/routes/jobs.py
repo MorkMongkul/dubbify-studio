@@ -455,16 +455,18 @@ async def detect_speakers(
     if not has_segments:
         raise HTTPException(status_code=400, detail="This session has no segments yet — run Analyze first.")
     _require_audio(job)
-    if not settings.GEMINI_API_KEY:
+    from app.services.characters import store   # here, so the backend starts without the characters package
+    # With characters to check against, no Gemini is needed (it is the fallback if the models can't run)
+    if not settings.GEMINI_API_KEY and not await store.project_profiles(db, job.project_id, exclude_job_id=job.id):
         raise HTTPException(
             status_code=400,
             detail="Speaker detection uses Gemini — add GEMINI_API_KEY to backend/.env and restart the backend.",
         )
 
-    job.status, job.progress, job.error_msg = JobStatus.DIARIZING, 35, ""
+    job.status, job.progress, job.error_msg = JobStatus.RECOGNIZING, 35, ""
     await db.commit()
     background_tasks.add_task(run_speaker_detection, job_id)
-    return {"message": "Speaker detection started", "job_id": job_id, "status": JobStatus.DIARIZING.value}
+    return {"message": "Speaker detection started", "job_id": job_id, "status": JobStatus.RECOGNIZING.value}
 
 
 @router.patch("/{job_id}/title", response_model=JobResponse)

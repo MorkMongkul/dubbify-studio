@@ -351,6 +351,7 @@ async def run_speaker_detection(job_id: str) -> None:
     existed, or whose speakers came out wrong.
     """
     from app.core.database import AsyncSessionLocal
+    from app.services.characters import store
 
     async with AsyncSessionLocal() as db:
         job, project = await _load_job_and_project(db, job_id)
@@ -365,9 +366,21 @@ async def run_speaker_detection(job_id: str) -> None:
                 raise RuntimeError("This session has no segments yet — run Analyze first.")
             if not vocals_path:
                 raise RuntimeError("No extracted audio found for this session.")
+            # Characters first: lines are checked against the project's characters, locally, no Gemini
+            if await store.identify(db, job, segments):
+                await remove_unused_auto_speakers(db, project.id)
+                await _update_job(db, job, JobStatus.COMPLETED, 100, "")
+                logger.info(f"Speaker detection done for job {job_id[:8]} — checked against the characters")
+                return
+
+            # Lines the user confirmed are never relabelled
+            segments = [s for s in segments if not store.is_confirmed(s, job)]
             segment_ids = [s.id for s in segments]
             # Where the actor spoke, not where the (perhaps moved) clip is
             spans = [actor_span(s) for s in segments]
+            if not segments:
+                await _update_job(db, job, JobStatus.COMPLETED, 100, "")
+                return
 
             taken_labels = await project_speaker_labels(db, project.id)
             with tempfile.TemporaryDirectory(prefix="speaker_refs_") as ref_dir:
