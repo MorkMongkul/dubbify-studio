@@ -1139,3 +1139,143 @@ async def test_a_project_is_converted_before_its_prints_are_made(monkeypatch, up
 
     assert order[-1] == ("prints", []) and set(order[:-1]) == {"voices"}
     assert (await _seg(db, line)).speaker_id == mei
+
+
+# ── Ruling AQ: the conversion merges the characters a person cast with the same voice ────────────────────────────
+# One voice is one actor, so labels cast with one voice are one character (the owner: "You can merge, and I'll check
+# and re-assign if it still has issues"). Only in the one-time conversion, with Same person as…'s own merge.
+
+async def _same_voice_cast(db, project_id, job_id, voice_id, story=True) -> dict:
+    """Uncle Wang under three labels cast with one voice by a person — SPEAKER_02 (1 line), SPEAKER_03 (3 lines),
+    SPEAKER_04 (2 lines) — and SPEAKER_05, which "Choose for me" gave that voice (1 line); a Story character linked
+    to SPEAKER_02. Returns {label: speaker id}."""
+    from app.services import story_notes
+    ids = {}
+    async with db() as s:
+        for label, auto in (("SPEAKER_02", False), ("SPEAKER_03", False), ("SPEAKER_04", None), ("SPEAKER_05", True)):
+            sp = Speaker(project_id=project_id, label=label, voice_id=voice_id, voice_auto=auto)
+            s.add(sp)
+            await s.flush()
+            ids[label] = sp.id
+        if story:
+            project = await s.get(Project, project_id)
+            project.story_notes = story_notes.normalize(
+                {"characters": [{"id": "c_uncle", "zh": "王叔", "km": "ពូវ៉ាង", "speaker": "SPEAKER_02"}]})
+        await s.commit()
+    await _add_lines(db, job_id, [(ids[label], None, {}) for label in [
+        "SPEAKER_02", "SPEAKER_03", "SPEAKER_03", "SPEAKER_03", "SPEAKER_04", "SPEAKER_04", "SPEAKER_05"]])
+    return ids
+
+
+async def _lines_of(db, speaker_id) -> int:
+    async with db() as s:
+        return len((await s.execute(select(Segment).where(Segment.speaker_id == speaker_id))).scalars().all())
+
+
+@pytest.mark.asyncio
+async def test_labels_a_person_cast_with_one_voice_become_one_character(monkeypatch, uploads, background_db, caplog):
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v = await _voices(db)
+    uncle = await _same_voice_cast(db, project_id, job_id, v[2])
+    _hear(monkeypatch, {})
+
+    with caplog.at_level(logging.INFO, logger=upgrade.__name__):
+        await upgrade.upgrade_projects(db)
+
+    labels = {sp.label: sp for sp in await _project_speakers(db, project_id)}
+    assert set(labels) == {"SPEAKER_00", "SPEAKER_01", "SPEAKER_03", "SPEAKER_05"}   # the most lines stays
+    assert await _lines_of(db, uncle["SPEAKER_03"]) == 6
+    assert (labels["SPEAKER_05"].voice_auto, await _lines_of(db, uncle["SPEAKER_05"])) == (True, 1)   # app-picked
+    async with db() as s:
+        notes = (await s.get(Project, project_id)).story_notes
+    assert [c["speaker"] for c in notes["characters"]] == ["SPEAKER_03"]   # the Story character follows
+    assert any("merged 2 label(s) cast with the same voice" in r.getMessage() for r in caplog.records)
+    assert await _version(db, project_id) == 2
+
+
+@pytest.mark.asyncio
+async def test_on_a_tie_the_lower_label_stays(monkeypatch, uploads, background_db):
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v = await _voices(db)
+    await _cast_voices(db, {ids["SPEAKER_00"]: v[2], ids["SPEAKER_01"]: v[2]})   # one line each
+
+    await upgrade.upgrade_projects(db)
+
+    assert [sp.label for sp in await _project_speakers(db, project_id)] == ["SPEAKER_00"]
+    assert await _lines_of(db, ids["SPEAKER_00"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_label_re_cast_after_the_start_up_is_not_merged(monkeypatch, uploads, background_db):
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v = await _voices(db)
+    uncle = await _same_voice_cast(db, project_id, job_id, v[2], story=False)
+    await _cast_voices(db, {uncle["SPEAKER_04"]: v[1]})
+    await upgrade.queue_backfill(db)              # the start-up
+    await _cast_voices(db, {uncle["SPEAKER_04"]: v[2]})   # the user casts SPEAKER_04 with Uncle Wang's voice
+    _hear(monkeypatch, {})
+
+    await upgrade.finish_upgrade(db)
+
+    labels = {sp.label for sp in await _project_speakers(db, project_id)}
+    assert labels == {"SPEAKER_00", "SPEAKER_01", "SPEAKER_03", "SPEAKER_04", "SPEAKER_05"}
+    assert (await _lines_of(db, uncle["SPEAKER_03"]), await _lines_of(db, uncle["SPEAKER_04"])) == (4, 2)
+
+
+@pytest.mark.asyncio
+async def test_lines_moved_to_a_voice_and_its_labels_end_on_one_character(monkeypatch, uploads, background_db):
+    """The moves and the merges together: a line made with Uncle Wang's voice on Lin Dong's label ends on the one
+    Uncle Wang, whatever label it was moved to first."""
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    uncle = await _same_voice_cast(db, project_id, job_id, v[2], story=False)
+    hand_set, by_ear = await _voiced(db, uploads, project_id, job_id, [(lin, v[2], {}), (lin, None, {})])
+    tts = uploads / project_id / job_id / "tts"
+    _hear(monkeypatch, {**clips, str(tts / "seg_1.wav"): _heard((2, 1.0))})
+
+    assert await upgrade.convert_project(db, project_id) == 2
+
+    assert ((await _seg(db, hand_set)).speaker_id, (await _seg(db, by_ear)).speaker_id) == (
+        uncle["SPEAKER_03"], uncle["SPEAKER_03"])
+    assert await _lines_of(db, uncle["SPEAKER_03"]) == 8
+
+
+@pytest.mark.asyncio
+async def test_a_second_conversion_merges_nothing(monkeypatch, uploads, background_db, caplog):
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v = await _voices(db)
+    await _same_voice_cast(db, project_id, job_id, v[2])
+    _hear(monkeypatch, {})
+    await upgrade.upgrade_projects(db)
+    after_first = {sp.id for sp in await _project_speakers(db, project_id)}
+    async with db() as s:
+        (await s.get(Project, project_id)).characters_version = 1
+        await s.commit()
+    caplog.clear()
+
+    with caplog.at_level(logging.INFO, logger=upgrade.__name__):
+        await upgrade.upgrade_projects(db)
+
+    assert {sp.id for sp in await _project_speakers(db, project_id)} == after_first
+    assert not any("merged" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_project_made_with_characters_never_merges(client, monkeypatch, uploads, background_db):
+    """After the one-time conversion Movelo never merges by itself: "Same character?" only suggests."""
+    db = background_db
+    project_id = (await client.post("/api/v1/projects/", json={"name": "New series"})).json()["id"]
+    job_id = await _episode(db, project_id, status=JobStatus.COMPLETED)
+    v = await _voices(db)
+    await _same_voice_cast(db, project_id, job_id, v[2])
+
+    await upgrade.upgrade_projects(db)
+
+    assert len(await _project_speakers(db, project_id)) == 4

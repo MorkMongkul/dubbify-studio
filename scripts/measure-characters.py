@@ -25,10 +25,10 @@ JSON {segment id: speaker label}, for answer-key mistakes the owner pointed out.
 character has a profile (so never in the first episode). --episodes N measures only the first N episodes (the ones
 the owner checked); later ones are neither measured nor learned from, but still get their prints.
 
-The upgrade leaves one actor under several labels where Gemini gave them several (each its own profile), and asks
-the owner about them with "Same character?". So it is measured twice: as the upgrade leaves the characters, and with
-the pairs "Same character?" offers for a shared voice merged (suggestions.find's rule, as Merge would: the one with
-more lines stays). Prints the overall right %, how many lines are "sure" and how often those are right, and a table
+Gemini can give one actor several labels (each its own profile). The upgrade merges the labels a person cast with one
+voice (Ruling AQ); "Same character?" offers the rest. So it is measured twice: as the upgrade leaves the characters,
+and with the pairs "Same character?" offers for a shared voice merged (suggestions.find's rule, as Merge would: the
+one with more lines stays) — the same, once the upgrade has merged them. Prints the overall right %, how many lines are "sure" and how often those are right, and a table
 per episode. Exits 1 below 68% right, or sure on fewer than 50% of lines, or sure lines right below 83% — judged as
 the upgrade leaves the characters, or after those merges with --after-merges."""
 import argparse

@@ -5,7 +5,7 @@ re-used one and changed its voice, or gave a single line its own voice. So a lab
 an older line; the voice its Khmer audio was made with does — one voice is one actor for the whole series.
 `convert_project` puts each line of a project from before (`projects.characters_version` below CHARACTERS_VERSION) on
 the character of that voice, once: the line's own voice when it has one, else the voice its audio clearly sounds like
-(Ruling AN). Hearing the audio needs the voice model, so it runs in the start-up's background, per project, before
+(Ruling AN); then the labels a person cast with one voice become one character (Ruling AQ). Hearing the audio needs the voice model, so it runs in the start-up's background, per project, before
 that project's prints; until it has, the project's episodes stay queued and none of its lines is sure. The rest runs
 at every start-up and can resume: the prints of lines that have none (or stale ones), the sweep of face crops no print
 names, and each character's thumbnail. Nothing here fails the start-up."""
@@ -28,6 +28,7 @@ from app.core.paths import resolve_media_path
 from app.models.models import (
     CHARACTERS_VERSION, AgeGroup, Gender, Job, LinePrint, Project, Segment, Speaker, Voice,
 )
+from app.services import speaker_merge
 from app.services.characters import models, store
 from app.services.diarizer import build_voice_design_prompt
 from app.services.timeline import actor_span
@@ -171,6 +172,31 @@ async def _move_lines(db: AsyncSession, project_id: str, heard: dict[str, str], 
     return moves
 
 
+async def _merge_same_voice(db: AsyncSession, project_id: str, snapshot: _Snapshot) -> int:
+    """Ruling AQ: one voice is one actor, so the characters a person cast with one voice become one — the one with
+    the most lines, the lowest label on a tie — through Same person as…'s own merge (its lines, its Story characters'
+    links; the others removed). A voice "Choose for me" picked says nothing, and a character whose voice isn't the
+    one the start-up found was re-cast by the user since: both are left out. Only the one-time conversion does this;
+    after it Movelo never merges by itself. Flushes; the caller commits. Returns how many labels went."""
+    speakers = (await db.execute(select(Speaker).where(Speaker.project_id == project_id)
+                                 .execution_options(populate_existing=True))).scalars().all()
+    counts = dict((await db.execute(
+        select(Segment.speaker_id, func.count(Segment.id)).where(Segment.speaker_id.in_([sp.id for sp in speakers]))
+        .group_by(Segment.speaker_id))).all())
+    by_voice: dict[str, list[Speaker]] = {}
+    for sp in speakers:
+        if sp.voice_id and not sp.voice_auto and sp.id in snapshot.voices and snapshot.voices[sp.id] == sp.voice_id:
+            by_voice.setdefault(sp.voice_id, []).append(sp)
+    merged = 0
+    for voice_id in sorted(by_voice):
+        cast = sorted(by_voice[voice_id], key=lambda sp: (-counts.get(sp.id, 0), sp.label))
+        for other in cast[1:]:
+            await speaker_merge.merge_into(db, other, cast[0])
+            merged += 1
+    await db.flush()
+    return merged
+
+
 async def convert_voice_overrides(db: AsyncSession, project_id: str, heard: dict[str, str] | None = None) -> int:
     """_move_lines with the project as it is now: `heard` {segment id: voice id} names the voice the audio of lines
     without their own was made with (none: only lines with their own voice move, the rule of version 1). Returns how
@@ -293,6 +319,7 @@ async def convert_project(sessionmaker, project_id: str, with_models: bool = Tru
             if _converted(project):
                 return 0
             moved = await _move_lines(db, project_id, heard, snapshot)
+            merged = await _merge_same_voice(db, project_id, snapshot)
             project.characters_version = CHARACTERS_VERSION
             await db.commit()
     except Exception:  # noqa: BLE001 — not fatal: the project stays as it was and the next start-up tries again
@@ -305,6 +332,8 @@ async def convert_project(sessionmaker, project_id: str, with_models: bool = Tru
         logger.info(f"Project {project_id[:8]}: {len(moved)} line(s) moved to the character of the voice they were "
                     f"made with — {len(moved) - by_ear} by their own voice, {by_ear} by ear ({len(to_hear)} voiced "
                     f"line(s) heard, {len(heard)} clearly)")
+    if merged:
+        logger.info(f"Project {project_id[:8]}: merged {merged} label(s) cast with the same voice")
     return len(moved)
 
 
