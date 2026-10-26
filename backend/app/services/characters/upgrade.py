@@ -1,30 +1,45 @@
 """Existing projects meet characters (0.5.0).
 
-Before characters, the owner fixed a line whose voice sounded like another actor by giving the line its own Khmer
-voice. `convert_voice_overrides` turns those voices into characters, once per project (`projects.characters_version`),
-so recognition can learn them. Everything else about the upgrade runs at every start-up and can resume: the prints of
-lines that have none (or stale ones), the sweep of face crops no print names, and each character's thumbnail.
-Nothing here fails the start-up."""
+Before characters, labels came only from what Gemini found in each episode: when an actor had no label, the owner
+re-used one and changed its voice, or gave a single line its own voice. So a label's voice today doesn't say who spoke
+an older line; the voice its Khmer audio was made with does — one voice is one actor for the whole series.
+`convert_project` puts each line of a project from before (`projects.characters_version` below CHARACTERS_VERSION) on
+the character of that voice, once: the line's own voice when it has one, else the voice its audio clearly sounds like
+(Ruling AN). Hearing the audio needs the voice model, so it runs in the start-up's background, per project, before
+that project's prints; until it has, the project's episodes stay queued and none of its lines is sure. The rest runs
+at every start-up and can resume: the prints of lines that have none (or stale ones), the sweep of face crops no print
+names, and each character's thumbnail. Nothing here fails the start-up."""
 import asyncio
 import logging
+import os
+import platform
 import re
 from collections import Counter
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import func, select
+import numpy as np
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.paths import resolve_media_path
-from app.models.models import AgeGroup, Gender, Job, LinePrint, Project, Segment, Speaker
-from app.services.characters import store
+from app.models.models import (
+    CHARACTERS_VERSION, AgeGroup, Gender, Job, LinePrint, Project, Segment, Speaker, Voice,
+)
+from app.services.characters import models, store
 from app.services.diarizer import build_voice_design_prompt
 from app.services.timeline import actor_span
 
 logger = logging.getLogger(__name__)
 
-CHARACTERS_VERSION = 1
+__all__ = ["CHARACTERS_VERSION", "VOICE_MARGIN", "convert_project", "finish_upgrade", "queue_backfill"]
+
+# A line's audio names the voice it was made with only when it sounds like that voice's reference clip by at least
+# this much more than like any other (cosine of ERes2NetV2 prints). Measured on the owner's project: right on 15 of
+# 15 lines with a hand-set voice; the median lead was 0.128, and 22 of 301 lines led by less than this.
+VOICE_MARGIN = 0.05
 
 
 def _next_label(taken: set[str]) -> str:
@@ -37,26 +52,39 @@ def _next_label(taken: set[str]) -> str:
     return f"SPEAKER_{n:02d}"
 
 
-async def convert_voice_overrides(db: AsyncSession, project_id: str) -> int:
-    """Every line whose own voice differs from its speaker's (or that has no speaker) moves to the character a person
-    cast with that voice — the one with the most lines when several, the lowest label on a tie — or to a new
-    character for a voice no person gave anyone (one per voice, no name). A voice "Choose for me" picked
-    (voice_auto) says nothing about who the actor is: it repeats on unrelated characters. The line's own voice is
-    cleared and the line counts as confirmed: it was the owner's hand fix. Text, timing and audio are untouched.
-    Flushes; the caller commits. Returns how many lines moved."""
-    speakers = (await db.execute(select(Speaker).where(Speaker.project_id == project_id))).scalars().all()
+def _below_version():
+    return or_(Project.characters_version.is_(None), Project.characters_version < CHARACTERS_VERSION)
+
+
+def _converted(project: Project | None) -> bool:
+    """Gone, or already brought up to today's rules."""
+    return project is None or (project.characters_version or 0) >= CHARACTERS_VERSION
+
+
+async def _move_lines(db: AsyncSession, project_id: str, heard: dict[str, str]) -> list[Segment]:
+    """Every line whose voice — its own when it has one, else the one `heard` says its audio was made with — differs
+    from its character's (or that has no character) moves to the character a person cast with that voice: the one
+    with the most lines when several, the lowest label on a tie — or to a new character for a voice no person gave
+    anyone (one per voice, no name). A voice "Choose for me" picked (voice_auto) says nothing about who the actor is:
+    it repeats on unrelated characters. The line's own voice is cleared (its character carries it now) and the line
+    counts as confirmed. Text, timing and audio are untouched; a label left with no line stays. Flushes; the caller
+    commits. Returns the lines moved."""
+    speakers = (await db.execute(select(Speaker).where(Speaker.project_id == project_id)
+                                 .execution_options(populate_existing=True))).scalars().all()
     by_id = {sp.id: sp for sp in speakers}
     lines = (await db.execute(
         select(Segment).join(Job, Job.id == Segment.job_id).where(Job.project_id == project_id)
+        .execution_options(populate_existing=True)
     )).scalars().all()
-    overrides = [s for s in lines if s.voice_id and s.voice_id != (by_id[s.speaker_id].voice_id
-                                                                   if s.speaker_id in by_id else None)]
-    if not overrides:
-        return 0
+    made_with = {s.id: s.voice_id or heard.get(s.id) for s in lines}
+    moves = [s for s in lines if made_with[s.id] and made_with[s.id] != (by_id[s.speaker_id].voice_id
+                                                                         if s.speaker_id in by_id else None)]
+    if not moves:
+        return []
     counts = Counter(s.speaker_id for s in lines)
     taken = {sp.label for sp in speakers}
     target_of: dict[str, Speaker] = {}
-    for voice_id in sorted({s.voice_id for s in overrides}):
+    for voice_id in sorted({made_with[s.id] for s in moves}):
         cast = [sp for sp in speakers if sp.voice_id == voice_id and not sp.voice_auto]
         if cast:
             target_of[voice_id] = min(cast, key=lambda sp: (-counts[sp.id], sp.label))
@@ -69,35 +97,182 @@ async def convert_voice_overrides(db: AsyncSession, project_id: str) -> int:
         db.add(target)
         target_of[voice_id] = target
     await db.flush()
-    for line in overrides:
-        line.speaker_id = target_of[line.voice_id].id
+    for line in moves:
+        line.speaker_id = target_of[made_with[line.id]].id
         line.voice_id = None
         line.who_confirmed, line.who_check = True, None
     await db.flush()
-    return len(overrides)
+    return moves
 
 
-async def convert_projects(sessionmaker) -> int:
-    """Convert each project not yet upgraded (characters_version NULL), one commit per project, so a restart
-    part-way never converts one twice. Quick database work: the lifespan awaits it. Returns lines moved."""
-    async with sessionmaker() as db:
-        project_ids = (await db.execute(select(Project.id).where(Project.characters_version.is_(None)))).scalars().all()
-    total = 0
-    for project_id in project_ids:
+async def convert_voice_overrides(db: AsyncSession, project_id: str, heard: dict[str, str] | None = None) -> int:
+    """_move_lines: `heard` {segment id: voice id} names the voice the audio of lines without their own was made
+    with (none: only lines with their own voice move, the rule of version 1). Returns how many lines moved."""
+    return len(await _move_lines(db, project_id, heard or {}))
+
+
+@dataclass(frozen=True)
+class _Heard:
+    """A voiced line as it was when its audio was heard: if any of this changed meanwhile (the user picked its
+    character, gave it a voice of its own or a new voice), what was heard no longer says anything about it."""
+    path: str
+    speaker_id: str | None
+    confirmed: bool
+    stored: str
+    made: int | None
+
+
+def _made_at(path: str) -> int | None:
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return None
+
+
+async def _voiced_lines(db: AsyncSession, project_id: str) -> dict[str, _Heard]:
+    """The project's lines without a voice of their own whose Khmer voice file exists."""
+    found = {}
+    for seg in (await db.execute(
+        select(Segment).join(Job, Job.id == Segment.job_id)
+        .where(Job.project_id == project_id, Segment.voice_id.is_(None), Segment.tts_audio_path.is_not(None),
+               Segment.tts_audio_path != "").order_by(Segment.id)
+    )).scalars():
+        path = resolve_media_path(seg.tts_audio_path)
+        if Path(path).is_file():
+            found[seg.id] = _Heard(path, seg.speaker_id, bool(seg.who_confirmed), seg.tts_audio_path, _made_at(path))
+    return found
+
+
+async def _reference_clips(db: AsyncSession) -> dict[str, str]:
+    """{voice id: its reference clip} for every voice whose clip is there — built-in and the user's own, used in
+    this project or not (the actor of a character who died in episode 1 has no character's voice today)."""
+    clips = {}
+    for voice_id, stored in (await db.execute(
+        select(Voice.id, Voice.reference_audio_path).where(Voice.reference_audio_path.is_not(None),
+                                                           Voice.reference_audio_path != "").order_by(Voice.id)
+    )).all():
+        path = resolve_media_path(stored)
+        if Path(path).is_file():
+            clips[voice_id] = path
+    return clips
+
+
+def _still_as_heard(seg: Segment, heard: _Heard) -> bool:
+    return (seg.voice_id is None and seg.speaker_id == heard.speaker_id and bool(seg.who_confirmed) == heard.confirmed
+            and seg.tts_audio_path == heard.stored and _made_at(heard.path) == heard.made)
+
+
+def _voices_made_with(reference_clips: dict[str, str], line_audio: dict[str, str],
+                      reference_prints: dict) -> dict[str, str]:
+    """Worker thread, through store's one-at-a-time lock: {segment id: the voice its audio was made with}, for the
+    lines whose audio (`line_audio`, {segment id: file}) sounds like one voice's reference clip (`reference_clips`,
+    {voice id: file}) by at least VOICE_MARGIN more than like any other — ERes2NetV2 prints of the whole files,
+    16 kHz mono, as the line prints are made. `reference_prints` keeps the clips' prints for the start-up's run
+    ({(file, modified): print}). A line or reference clip that can't be read is left out (logged once); raises
+    CANT_RUN when the models can't run here (below macOS 13.4 before anything imports them), and the first error when
+    no reference clip could be read."""
+    if not models.runtime_supported():
+        raise ImportError(f"character recognition needs macOS {'.'.join(map(str, models.MIN_MACOS))} or later "
+                          f"(this Mac has {platform.mac_ver()[0]})")
+    from app.services.characters import voiceprint
+
+    prints, failed = {}, []
+    for voice_id, path in reference_clips.items():
+        key = (path, _made_at(path))
+        if key not in reference_prints:
+            try:
+                reference_prints[key] = voiceprint.file_print(path)
+            except store.CANT_RUN:
+                raise
+            except Exception as e:  # noqa: BLE001 — that voice is left out
+                failed.append(e)
+                continue
+        if reference_prints[key] is not None:
+            prints[voice_id] = reference_prints[key]
+    if failed and not prints:
+        raise failed[0]
+    if failed:
+        logger.warning(f"{len(failed)} voice(s)' reference clips couldn't be heard, so no line goes to them: "
+                       f"{failed[0]}")
+    if len(prints) < 2:   # with one voice there is nothing to tell it from
+        return {}
+    ids = list(prints)
+    voices = np.stack([prints[voice_id] for voice_id in ids])
+    found, unreadable = {}, []
+    for segment_id, path in line_audio.items():
         try:
-            async with sessionmaker() as db:
-                project = await db.get(Project, project_id)
-                if project is None or project.characters_version is not None:
-                    continue
-                moved = await convert_voice_overrides(db, project_id)
-                project.characters_version = CHARACTERS_VERSION
-                await db.commit()
-                total += moved
-                if moved:
-                    logger.info(f"Project {project_id[:8]}: {moved} line(s) with their own voice moved to characters")
-        except Exception:  # noqa: BLE001 — not fatal: the project stays unconverted and the next launch retries
-            logger.exception(f"Couldn't turn project {project_id[:8]}'s one-line voices into characters")
-    return total
+            heard = voiceprint.file_print(path)
+        except store.CANT_RUN:
+            raise
+        except Exception as e:  # noqa: BLE001 — that line stays where it is
+            unreadable.append(e)
+            continue
+        if heard is None:
+            continue
+        cosines = voices @ heard
+        second, best = np.argsort(cosines)[-2:]
+        if cosines[best] - cosines[second] >= VOICE_MARGIN:
+            found[segment_id] = ids[best]
+    if unreadable:
+        logger.warning(f"{len(unreadable)} line(s)' Khmer voices couldn't be heard, they stay where they are: "
+                       f"{unreadable[0]}")
+    return found
+
+
+def _cannot_hear(project_id: str, why) -> None:
+    logger.warning(f"Project {project_id[:8]}: the voices its lines were made with couldn't be heard ({why}), so only "
+                   f"lines with their own voice moved to characters")
+
+
+async def convert_project(sessionmaker, project_id: str, with_models: bool = True,
+                          reference_prints: dict | None = None) -> int:
+    """Puts each line of a project below CHARACTERS_VERSION on the character of the voice it was made with
+    (_move_lines): its own voice, else the voice its audio was clearly made with — heard with the voice model, in a
+    thread through store's one-at-a-time lock, with no connection held — and marks the project done, in one commit.
+    A line changed while the audio was heard is left as it is now. When the voices can't be heard (`with_models`
+    False: the models can't run here; or they fail) only lines with their own voice move, the project is still marked
+    done (never retried at every start-up), and one line is logged. `reference_prints` keeps the voices' reference
+    clip prints for the start-up's run. Never raises (an error leaves the project for the next start-up, logged); the project leaves
+    store's conversion queue either way. Returns how many lines moved."""
+    reference_prints = {} if reference_prints is None else reference_prints
+    try:
+        async with sessionmaker() as db:
+            if _converted(await db.get(Project, project_id)):
+                return 0
+            voiced = await _voiced_lines(db, project_id)
+            reference_clips = await _reference_clips(db) if voiced else {}
+            await db.commit()   # nothing held while the voices are heard (the dev SQLite engine has one connection)
+            heard: dict[str, str] = {}
+            if voiced and not with_models:
+                _cannot_hear(project_id, "the models can't run here")
+            elif voiced:
+                try:
+                    heard = await asyncio.to_thread(store._one_at_a_time, _voices_made_with, reference_clips,
+                                                    {sid: h.path for sid, h in voiced.items()}, reference_prints)
+                except Exception as e:  # noqa: BLE001 — CANT_RUN, or the model failed: degrade to version 1's rule
+                    _cannot_hear(project_id, e)
+            # the user may have picked, re-voiced, edited or deleted lines while the audio was heard
+            current = {s.id: s for s in (await db.execute(
+                select(Segment).where(Segment.id.in_(list(heard))).execution_options(populate_existing=True)
+            )).scalars()} if heard else {}
+            heard = {sid: v for sid, v in heard.items() if sid in current and _still_as_heard(current[sid], voiced[sid])}
+            project = await db.get(Project, project_id, populate_existing=True)
+            if _converted(project):
+                return 0
+            moved = await _move_lines(db, project_id, heard)
+            project.characters_version = CHARACTERS_VERSION
+            await db.commit()
+    except Exception:  # noqa: BLE001 — not fatal: the project stays as it was and the next start-up tries again
+        logger.exception(f"Couldn't move project {project_id[:8]}'s lines to the characters of their voices")
+        return 0
+    finally:
+        store.conversion_done(project_id)
+    by_ear = sum(1 for s in moved if s.id in heard)
+    if moved or voiced:
+        logger.info(f"Project {project_id[:8]}: {len(moved)} line(s) moved to the character of the voice they were "
+                    f"made with — {len(moved) - by_ear} by their own voice, {by_ear} by ear ({len(voiced)} voiced "
+                    f"line(s) heard, {len(heard)} clearly)")
+    return len(moved)
 
 
 def _crop_names(paths) -> set[str]:
@@ -170,29 +345,34 @@ async def refresh_faces_safely(db: AsyncSession, project_id: str) -> None:
             await db.rollback()
 
 
-async def _jobs_needing_prints(db: AsyncSession) -> list[str]:
-    """Jobs with a line that has no print from today's models: the project worked on most recently first (by its
-    newest episode; until its profiles are complete, no line of its next episode can be sure), each project's
-    newest episodes first."""
+async def _jobs_to_queue(db: AsyncSession, converting: list[str]) -> list[str]:
+    """Jobs with a line that has no print from today's models, and every job of a project whose characters the
+    upgrade will convert: the project worked on most recently first (by its newest episode; until its profiles are
+    complete, no line of its next episode can be sure), each project's newest episodes first."""
     newest = (select(Job.project_id, func.max(Job.created_at).label("newest"))
               .group_by(Job.project_id).subquery())
     waiting = (select(Segment.job_id).outerjoin(LinePrint, LinePrint.segment_id == Segment.id)
                .where((LinePrint.segment_id.is_(None)) | (LinePrint.model_version != store.model_version())))
     return (await db.execute(
-        select(Job.id).join(newest, newest.c.project_id == Job.project_id).where(Job.id.in_(waiting))
+        select(Job.id).join(newest, newest.c.project_id == Job.project_id)
+        .where(Job.id.in_(waiting) | Job.project_id.in_(converting))
         .order_by(newest.c.newest.desc(), Job.project_id, Job.created_at.desc(), Job.id)
     )).scalars().all()
 
 
 async def queue_backfill(sessionmaker) -> int:
-    """The jobs the backfill will give prints — those with separated vocals (the others never get prints) — queued
-    in store (Ruling AL), so their confirmed lines wait: no line of their projects is sure before they have them.
-    The lifespan awaits it before starting the backfill, so no analysis sees stale prints as complete. Quick
-    database work. Returns how many jobs were queued."""
+    """What the start-up's background will do, queued in store before it starts (the lifespan awaits this, so no
+    analysis can come in first): the projects whose characters it will convert (Ruling AN) with every one of their
+    episodes, and the jobs it will give prints — those with separated vocals (the others never get prints) — so the
+    confirmed lines of those episodes wait: no line of their projects is sure before they have their prints and
+    their project's characters are converted (Ruling AL). Quick database work. Returns how many jobs were queued."""
     async with sessionmaker() as db:
-        ids = await _jobs_needing_prints(db)
+        converting = (await db.execute(select(Project.id).where(_below_version()).order_by(Project.id))).scalars().all()
+        ids = await _jobs_to_queue(db, converting)
         jobs = {job.id: job for job in (await db.execute(select(Job).where(Job.id.in_(ids)))).scalars()}
-    queued = [job_id for job_id in ids if store.vocals_path(jobs[job_id]).exists()]
+    queued = [job_id for job_id in ids
+              if jobs[job_id].project_id in converting or store.vocals_path(jobs[job_id]).exists()]
+    store.queue_for_conversion(converting)
     store.queue_for_backfill(queued)
     return len(queued)
 
@@ -201,14 +381,18 @@ def _next_queued(tried: set[str]) -> str | None:
     return next((job_id for job_id in store.backfill_pending() if job_id not in tried), None)
 
 
-async def backfill_prints(sessionmaker) -> bool:
-    """Prints for the queued jobs' lines with none (or made by other models), job by job through the one-at-a-time
-    lock, queuing them first when nothing is queued. The models run with no connection held (`store.make_prints`
-    commits first). A job leaves the queue once its prints are saved or their making failed: a failing episode is
-    logged and skipped, so it never keeps the others from theirs nor holds its project back. Returns False when the
-    models can't run here (logged once): nothing waits on prints this session won't make."""
-    if not store.backfill_pending():
+async def backfill_prints(sessionmaker, reference_prints: dict | None = None) -> bool:
+    """The queued jobs one by one: first, at a project's first job, its characters' conversion when it waits for
+    one (convert_project); then prints for the job's lines with none (or made by other models), through the
+    one-at-a-time lock, queuing everything first when nothing is queued. The models run with no connection held
+    (`store.make_prints` commits first). A job leaves the queue once its prints are saved or their making failed: a
+    failing episode is logged and skipped, so it never keeps the others from theirs nor holds its project back.
+    Returns False when the models can't run here (logged once): no more prints are tried, and the projects still to
+    convert get version 1's rule only."""
+    if not store.backfill_pending() and not store.conversions_pending():
         await queue_backfill(sessionmaker)
+    reference_prints = {} if reference_prints is None else reference_prints
+    models_run = True
     tried: set[str] = set()
     # until the queue is empty: a job queued while this runs gets its turn too
     while (job_id := _next_queued(tried)) is not None:
@@ -216,8 +400,16 @@ async def backfill_prints(sessionmaker) -> bool:
         try:
             async with sessionmaker() as db:
                 job = await db.get(Job, job_id)
-                vocals = store._vocals_of(job) if job else None
-                if vocals is None:
+            if job is None:
+                continue
+            if store.converting(job.project_id):   # its characters before its prints (Ruling AN)
+                await convert_project(sessionmaker, job.project_id, models_run, reference_prints)
+            vocals = store.vocals_path(job)
+            if not models_run or not vocals.exists():
+                continue
+            async with sessionmaker() as db:
+                job = await db.get(Job, job_id)
+                if job is None:
                     continue
                 todo = (await db.execute(
                     select(Segment).outerjoin(LinePrint, LinePrint.segment_id == Segment.id)
@@ -231,8 +423,8 @@ async def backfill_prints(sessionmaker) -> bool:
                     found = await store.make_prints(db, job, spans, vocals)
                 except store.CANT_RUN as e:
                     logger.warning(f"Older lines' prints weren't made, the models can't run here: {e}")
-                    store.clear_backfill()
-                    return False
+                    models_run = False
+                    continue
                 # lines the user deleted while the models ran keep no print
                 alive = set((await db.execute(select(Segment.id).where(Segment.id.in_(ids)))).scalars())
                 keep = [(sid, p) for sid, p in zip(ids, found) if sid in alive]
@@ -244,19 +436,22 @@ async def backfill_prints(sessionmaker) -> bool:
             logger.exception(f"Couldn't make the prints of job {job_id[:8]}'s older lines: {e}")
         finally:
             store.backfill_done(job_id)
-    return True
+    return models_run
 
 
 async def finish_upgrade(sessionmaker) -> None:
-    """The background part of the upgrade, at every start-up: sweep stray crops, make missing prints, then each
-    project's thumbnails. Never raises, and leaves nothing queued: whatever happened, no line waits on prints this
-    session won't make."""
+    """The background part of the upgrade, at every start-up: sweep stray crops; convert the projects that wait for
+    it, each before its prints are made; make missing prints; then each project's thumbnails. Never raises, and
+    leaves nothing queued: whatever happened, no line waits on work this session won't do."""
     try:
         await sweep_orphan_crops(sessionmaker)
     except Exception:  # noqa: BLE001 — not fatal: the next launch tries again
         logger.exception("Couldn't sweep the face crops no line uses")
     try:
-        await backfill_prints(sessionmaker)
+        reference_prints: dict = {}   # the voices' reference clip prints, made once for the whole run
+        models_run = await backfill_prints(sessionmaker, reference_prints)
+        for project_id in store.conversions_pending():   # a project with no episode: no queued job reached it
+            await convert_project(sessionmaker, project_id, models_run, reference_prints)
         async with sessionmaker() as db:
             project_ids = (await db.execute(select(Project.id))).scalars().all()
         for project_id in project_ids:
@@ -269,6 +464,6 @@ async def finish_upgrade(sessionmaker) -> None:
 
 
 async def upgrade_projects(sessionmaker) -> None:
-    """Both parts in order (the lifespan awaits the first and runs the second in the background)."""
-    await convert_projects(sessionmaker)
+    """The start-up's order: queue (the lifespan awaits it), then the background part."""
+    await queue_backfill(sessionmaker)
     await finish_upgrade(sessionmaker)

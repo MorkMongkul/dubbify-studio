@@ -112,6 +112,11 @@ class Voice(Base):
 
 
 # ── Project ───────────────────────────────────────────────────
+# The characters upgrade's rules version (characters.upgrade): 1 moved the lines with their own voice; 2 also moves
+# each voiced line to the character of the voice its Khmer audio was made with. A new project starts here.
+CHARACTERS_VERSION = 2
+
+
 class Project(Base):
     __tablename__ = "projects"
 
@@ -139,11 +144,12 @@ class Project(Base):
     story_notes = Column(JSON, nullable=True)
 
     # Characters (0.5.0): the rules version the project was last brought up to
-    # (NULL = made before 0.5.0, converted once at startup by
-    # characters.upgrade.convert_projects; new projects get 1 — no DB default,
-    # so existing rows stay NULL), and the pairs of speakers the user said are
-    # not the same person (JSON text: a list of [a, b] speaker ids, each pair sorted).
-    characters_version    = Column(Integer, nullable=True, default=1)
+    # (NULL = made before 0.5.0; NULL or below CHARACTERS_VERSION is converted
+    # once by characters.upgrade.convert_project, in the start-up's background;
+    # new projects start at CHARACTERS_VERSION — no DB default, so existing
+    # rows stay NULL), and the pairs of speakers the user said are not the same
+    # person (JSON text: a list of [a, b] speaker ids, each pair sorted).
+    characters_version    = Column(Integer, nullable=True, default=CHARACTERS_VERSION)
     character_dismissals  = Column(Text, nullable=True)
 
     jobs     = relationship("Job", back_populates="project", cascade="all, delete")

@@ -62,16 +62,14 @@ async def lifespan(app: FastAPI):
         # Not fatal: an episode not converted yet still plays the same in the
         # preview and the export; the next launch retries.
         logger.exception("Couldn't convert older episodes to the new timeline")
-    # Lines the owner gave their own voice become characters (once per project; quick database work)
+    # Characters (0.5.0): the projects whose lines move to the characters of the voices they were made with, and
+    # the episodes whose prints the backfill will make, queued before it starts — until then no line of their
+    # projects is sure (an analysis can't come in before the lifespan yields). Quick database work.
     try:
         from app.services.characters import upgrade
-        moved = await upgrade.convert_projects(core_db.AsyncSessionLocal)
-        if moved:
-            logger.info(f"Moved {moved} line(s) with their own voice to characters.")
-        # the episodes whose prints the backfill will make, queued before it starts: until it has, no line of
-        # their projects is sure (an analysis can't come in before the lifespan yields)
         await upgrade.queue_backfill(core_db.AsyncSessionLocal)
-        # then, in the background and at every start: stray face crops swept, missing prints made, thumbnails set
+        # then, in the background (the voice model hears each line's audio) and at every start: stray face crops
+        # swept, each project converted once before its prints, missing prints made, thumbnails set
         task = asyncio.create_task(upgrade.finish_upgrade(core_db.AsyncSessionLocal))
         _background.add(task)
         task.add_done_callback(_background.discard)

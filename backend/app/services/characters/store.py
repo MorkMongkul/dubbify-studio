@@ -51,6 +51,10 @@ PRINTS_VERSION = 1
 # lifespan fills it, awaited, before the backfill starts; the backfill drains it (a job leaves once its prints are
 # saved or their making failed). Only the event loop touches it, and never across an await, so it needs no lock.
 _backfill: dict[str, None] = {}
+# Ruling AN: the projects whose characters the upgrade hasn't converted yet (project id -> None). Every episode of
+# theirs is queued above too, and every confirmed line of a queued episode waits while its project is here — its
+# characters may still hold several actors. Filled and drained like the jobs.
+_converting: dict[str, None] = {}
 
 
 def queue_for_backfill(job_ids) -> None:
@@ -66,8 +70,26 @@ def backfill_done(job_id: str) -> None:
     _backfill.pop(job_id, None)
 
 
+def queue_for_conversion(project_ids) -> None:
+    for project_id in project_ids:
+        _converting.setdefault(project_id, None)
+
+
+def conversions_pending() -> list[str]:
+    return list(_converting)
+
+
+def converting(project_id: str) -> bool:
+    return project_id in _converting
+
+
+def conversion_done(project_id: str) -> None:
+    _converting.pop(project_id, None)
+
+
 def clear_backfill() -> None:
     _backfill.clear()
+    _converting.clear()
 
 
 @lru_cache(maxsize=1)
@@ -149,9 +171,9 @@ def _removed_on_rollback(db: AsyncSession, files: list[Path]) -> None:
 @dataclass
 class Known:
     """What a project's checked lines teach: each character's profile, how many confirmed lines have today's prints
-    or wait for them, and how many wait — their job is queued for the start-up backfill, which hasn't reached it. A
-    project with none is at its first episode; while lines wait, the profiles are incomplete and no line may be
-    sure."""
+    or wait, and how many wait — their job is queued for the start-up backfill, which hasn't reached it, and they
+    have no print from today's models or their project's characters aren't converted yet. A project with none is at
+    its first episode; while lines wait, the profiles are incomplete and no line may be sure."""
     profiles: dict[str, Profile]
     confirmed: int
     waiting: int
@@ -167,8 +189,9 @@ class Known:
 
 async def known_characters(db: AsyncSession, project_id: str, exclude_job_id: str | None = None) -> Known:
     """The profiles from the stored prints of each character's confirmed lines (made by today's models; characters
-    with no such print are left out), and the confirmed lines still waiting for those prints in a job the start-up
-    backfill queued. Any other confirmed line without a print neither waits nor counts."""
+    with no such print are left out), and the confirmed lines that wait in a job the start-up backfill queued: for
+    those prints, or — every one of them — for the upgrade to convert their project's characters (Ruling AN). Any
+    other confirmed line without a print neither waits nor counts."""
     query = (
         select(Segment, Job, LinePrint)
         .join(Job, Job.id == Segment.job_id)
@@ -181,20 +204,23 @@ async def known_characters(db: AsyncSession, project_id: str, exclude_job_id: st
     if exclude_job_id:
         query = query.where(Job.id != exclude_job_id)
     by_speaker: dict[str, list[LinePrints]] = {}
-    printed, unprinted = 0, Counter()
+    counted = waiting = 0
+    unconverted = converting(project_id)
     for seg, job, row in (await db.execute(query)).all():
         if not is_confirmed(seg, job):
             continue
-        if row is None or row.model_version != model_version():
-            unprinted[job] += 1
+        printed = row is not None and row.model_version == model_version()
+        waits = job.id in _backfill and (unconverted or not printed)
+        if not (printed or waits):
             continue
-        printed += 1
-        by_speaker.setdefault(seg.speaker_id, []).append(LinePrints(
-            _vector(row.voice_print, VOICE_SIZE), _vector(row.face_print, FACE_SIZE), row.speaking_score, None))
+        counted += 1
+        waiting += waits
+        if printed:
+            by_speaker.setdefault(seg.speaker_id, []).append(LinePrints(
+                _vector(row.voice_print, VOICE_SIZE), _vector(row.face_print, FACE_SIZE), row.speaking_score, None))
     profiles = {speaker_id: profile_from(prints) for speaker_id, prints in by_speaker.items()}
-    waiting = sum(n for job, n in unprinted.items() if job.id in _backfill)
     return Known({sid: p for sid, p in profiles.items() if p.voice is not None or p.face is not None},
-                 printed + waiting, waiting)
+                 counted, waiting)
 
 
 async def project_profiles(db: AsyncSession, project_id: str, exclude_job_id: str | None = None) -> dict[str, Profile]:
@@ -392,7 +418,8 @@ async def recognise(
                       [{"speaker_id": sid, "basis": basis} for sid, basis in decision.guesses])
     logger.info(f"Job {job.id[:8]}: characters recognised — {checks.count(None)} sure or kept, "
                 f"{len(checks) - checks.count(None)} to check"
-                + ("" if known.complete else f" ({known.waiting} checked line(s) still wait for their prints)"))
+                + ("" if known.complete else f" ({known.waiting} checked line(s) still wait for their prints or "
+                                             f"the upgrade)"))
     return labels, checks, found
 
 

@@ -9,7 +9,9 @@ app's own folder), and uploads/<project id>/ cloned from the app's (`/bin/cp -Rc
 so it refuses the app's own folder.
 
 It runs the shipped engine in the app's order:
-  1. the upgrade: lines with their own Khmer voice become characters (upgrade.convert_projects; once per project);
+  1. the upgrade (upgrade.convert_project, once per project, as the app's start-up does before the project's prints):
+     each line goes to the character of the voice it was made with — its own voice, else the voice its Khmer audio
+     clearly sounds like (the voice model hears it; a few minutes on a big project);
   2. prints for every line of the project that has none from today's models (prints.prints_for_spans), saved into
      the copy's database, so a later run, or a backend started on the copy, reuses them (about a minute per episode
      with faces on an M1);
@@ -17,8 +19,8 @@ It runs the shipped engine in the app's order:
      their confirmed lines (store.is_confirmed, decide.profile_from) and each line of N gets decide(), told as the
      app tells it whether another line of N is spoken over it (decide.overlapping).
 
-Truth: the Khmer voice of each line's character after the upgrade (in a project the owner checked, one voice is one
-actor, so a guess of another label cast with the same voice is right), or the character a corrections file names:
+Truth: the Khmer voice of each line's character after the upgrade — the voice the line was made with (one voice is
+one actor for the whole series, so a guess of another label cast with the same voice is right), or the character a corrections file names:
 JSON {segment id: speaker label}, for answer-key mistakes the owner pointed out. A line counts once its true
 character has a profile (so never in the first episode). --episodes N measures only the first N episodes (the ones
 the owner checked); later ones are neither measured nor learned from, but still get their prints.
@@ -82,11 +84,13 @@ async def _upgrade(project_id: str) -> str:
         project = await db.get(Project, project_id)
         if project is None:
             raise SystemExit(f"No project {project_id} in the copy")
-        done = project.characters_version is not None
-    if done:
-        return "already upgraded"
-    moved = await upgrade.convert_projects(database.AsyncSessionLocal)
-    return f"{moved} line(s) with their own voice moved to characters"
+        version = project.characters_version
+    if version is not None and version >= upgrade.CHARACTERS_VERSION:
+        return f"already upgraded (version {version})"
+    began = time.monotonic()
+    moved = await upgrade.convert_project(database.AsyncSessionLocal, project_id)
+    return (f"version {version} -> {upgrade.CHARACTERS_VERSION}: {moved} line(s) moved to the character of the voice "
+            f"they were made with, in {time.monotonic() - began:.0f} s")
 
 
 async def _jobs(db, project_id: str):
@@ -322,6 +326,7 @@ def main() -> int:
         return 2
     corrections = json.loads(args.corrections.read_text()) if args.corrections else {}
     logging.basicConfig(level=logging.INFO if args.verbose else logging.ERROR, format="%(levelname)s %(message)s")
+    logging.getLogger("app.services.characters.upgrade").setLevel(logging.INFO)   # what the upgrade moved, and why
     _setup(copy)
     return 0 if asyncio.run(run(args.project, args.episodes, corrections, args.after_merges)) else 1
 

@@ -11,13 +11,15 @@ RATE = 16000
 MIN_SECONDS = 0.3
 
 
-def read_audio(path: str, start: float, end: float) -> np.ndarray:
-    """The sound from `start` to `end` s, 16 kHz mono int16 (the scale Light-ASD's MFCCs expect).
+def read_audio(path: str, start: float = 0.0, end: float | None = None) -> np.ndarray:
+    """The sound from `start` to `end` s (the whole file without them), 16 kHz mono int16 (the scale Light-ASD's
+    MFCCs expect).
 
     Asked for as 16-bit, ffmpeg makes stereo mono as (L + R) / 2, as the spike did; asked for as float it would add
     them at -3 dB each, louder than either channel."""
+    span = ["-ss", f"{start:.6f}"] + (["-to", f"{end:.6f}"] if end is not None else [])
     result = subprocess.run(
-        [ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{start:.6f}", "-to", f"{end:.6f}",
+        [ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", *span,
          "-i", path, "-map", "0:a:0", "-ac", "1", "-ar", str(RATE), "-f", "s16le", "-"],
         capture_output=True)
     if result.returncode != 0:
@@ -46,3 +48,8 @@ def voice_print(audio: np.ndarray) -> np.ndarray | None:
     vector = np.array(extractor.compute(stream), np.float32)
     norm = np.linalg.norm(vector)
     return vector / norm if norm > 0 else None
+
+
+def file_print(path: str) -> np.ndarray | None:
+    """The voice print of a whole sound file (a voice's reference clip, a line's Khmer voice), or None under 0.3 s."""
+    return voice_print(read_audio(path))

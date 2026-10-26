@@ -1,10 +1,13 @@
 """
-Existing projects become characters (0.5.0). Before characters, the owner fixed a line whose voice sounded like
-another actor by changing the line's own Khmer voice; the upgrade turns those voices into characters, once per
-project, and computes the prints of every older line in the background so profiles exist when it ends.
+Existing projects become characters (0.5.0). Before characters, the owner re-used a label for another actor by
+changing its voice, or changed one line's own Khmer voice; the upgrade puts each older line on the character of the
+voice it was made with (its own, else the one its audio sounds like), once per project, in the background before that
+project's prints, and computes the prints of every older line so profiles exist when it ends.
 
-The models are replaced at the service boundary (characters.prints.prints_for_spans), as in test_characters_pipeline.
+The models are replaced at the service boundary (characters.prints.prints_for_spans, characters.voiceprint.file_print),
+as in test_characters_pipeline.
 """
+import asyncio
 import logging
 import os
 import platform
@@ -12,6 +15,7 @@ import subprocess
 import sys
 from datetime import datetime
 
+import numpy as np
 import pytest
 from sqlalchemy import select
 
@@ -227,7 +231,7 @@ async def test_upgrade_runs_once_and_resumes_prints(monkeypatch, uploads, backgr
     await upgrade.upgrade_projects(db)
 
     async with db() as s:
-        assert (await s.get(Project, project_id)).characters_version == 1
+        assert (await s.get(Project, project_id)).characters_version == upgrade.CHARACTERS_VERSION
     assert calls == [[(3.0, 5.0), (6.0, 8.0)]]   # only the two lines without a row
     assert set(await _line_prints(db, job_id)) == {done, missing_a, missing_b}
     assert (await _seg(db, done)).voice_id is None   # converted (new character: nobody had that voice)
@@ -243,21 +247,26 @@ async def test_upgrade_runs_once_and_resumes_prints(monkeypatch, uploads, backgr
 
 
 @pytest.mark.asyncio
-async def test_a_project_made_with_characters_is_never_converted(client, db_sessionmaker):
+async def test_a_project_made_with_characters_is_never_converted(client, monkeypatch, uploads, background_db):
     """A project created from 0.5.0 on has characters from its first episode: a line's own voice there is casting
-    only (a flashback), so the next start-up's conversion must leave it on its character."""
+    only (a flashback), so the next start-up's conversion must leave it on its character, and never listens to its
+    voices."""
+    db = background_db
     project_id = (await client.post("/api/v1/projects/", json={"name": "New series"})).json()["id"]
-    job_id = await _episode(db_sessionmaker, project_id, status=JobStatus.COMPLETED)
-    v = await _voices(db_sessionmaker)
-    lin = await _speaker(db_sessionmaker, project_id, "SPEAKER_00", v[0], "Lin Dong")
-    (flashback,) = await _add_lines(db_sessionmaker, job_id, [(lin, v[1], {})])
+    assert await _version(db, project_id) == upgrade.CHARACTERS_VERSION
+    job_id = await _episode(db, project_id, status=JobStatus.COMPLETED)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin = await _speaker(db, project_id, "SPEAKER_00", v[0], "Lin Dong")
+    flashback, plain = await _voiced(db, uploads, project_id, job_id, [(lin, v[1], {}), (lin, None, {})])
+    calls = []
+    _hear(monkeypatch, {**clips, str(uploads / project_id / job_id / "tts" / "seg_1.wav"): _heard((2, 1.0))}, calls)
 
-    assert await upgrade.convert_projects(db_sessionmaker) == 0
+    await upgrade.upgrade_projects(db)
 
-    seg = await _seg(db_sessionmaker, flashback)
+    seg = await _seg(db, flashback)
     assert (seg.speaker_id, seg.voice_id, seg.who_confirmed) == (lin, v[1], False)
-    async with db_sessionmaker() as s:
-        assert len((await s.execute(select(Speaker).where(Speaker.project_id == project_id))).scalars().all()) == 1
+    assert ((await _seg(db, plain)).speaker_id, calls) == (lin, [])
+    assert len(await _project_speakers(db, project_id)) == 1
 
 
 @pytest.mark.asyncio
@@ -527,3 +536,447 @@ async def test_unmerge_restores_the_thumbnail(client, tmp_path, db_sessionmaker)
                              json={"removed": body["removed"], "moved": body["moved"], "relinked": body["relinked"]})
     assert resp.status_code == 200
     assert await thumbs() == crops
+
+
+# ── Ruling AN: each old line goes to the character of the voice it was made with ────────────────────────────────
+# Before 0.5.0 the owner re-used a label for another actor by changing its voice, so a label's voice today doesn't
+# say who spoke its older lines; the voice the line's Khmer audio was made with does (one voice = one actor). The
+# voice prints are replaced where the upgrade looks them up (voiceprint.file_print): reference clip of voice k = unit
+# vector k; a line's audio = mostly the voice it was made with.
+
+def _heard(*weights: tuple[int, float]) -> np.ndarray:
+    """A voice print close to voices k (weight w each), normalised."""
+    v = np.zeros(192, np.float32)
+    for k, w in weights:
+        v[k] = w
+    return v / np.linalg.norm(v)
+
+
+def _hear(monkeypatch, prints: dict, calls: list | None = None):
+    """voiceprint.file_print answers from `prints` {file path: vector or exception}."""
+    from app.services.characters import voiceprint
+
+    def fake(path):
+        if calls is not None:
+            calls.append(str(path))
+        found = prints[str(path)]
+        if isinstance(found, Exception):
+            raise found
+        return found
+    monkeypatch.setattr(voiceprint, "file_print", fake)
+
+
+async def _voices_with_clips(db, uploads, n=4) -> tuple[list[str], dict]:
+    """n voices with a reference clip each (voice k's print: unit vector k). Returns (ids, {clip path: print})."""
+    folder = uploads / "voices"
+    folder.mkdir(parents=True, exist_ok=True)
+    async with db() as s:
+        rows = []
+        for k in range(n):
+            clip = folder / f"ref{k}.flac"
+            clip.write_bytes(b"fLaC")
+            rows.append(Voice(name=f"Voice {k}", mode="ultimate", reference_audio_path=str(clip)))
+        s.add_all(rows)
+        await s.commit()
+        return [r.id for r in rows], {r.reference_audio_path: voice(k) for k, r in enumerate(rows)}
+
+
+async def _voiced(db, uploads, project_id, job_id, lines) -> list[str]:
+    """lines: (speaker id, own voice id or None, extra fields); each gets a voice file tts/seg_<k>.wav unless
+    "tts_audio_path" is given. Returns the ids."""
+    tts = uploads / project_id / job_id / "tts"
+    tts.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for k, (speaker_id, voice_id, fields) in enumerate(lines):
+        if "tts_audio_path" not in fields:
+            (tts / f"seg_{k}.wav").write_bytes(b"RIFF")
+            fields = {**fields, "tts_audio_path": str(tts / f"seg_{k}.wav")}
+        rows.append((speaker_id, voice_id, fields))
+    return await _add_lines(db, job_id, rows)
+
+
+async def _speaker_row(db, speaker_id) -> Speaker:
+    async with db() as s:
+        return await s.get(Speaker, speaker_id)
+
+
+async def _project_speakers(db, project_id) -> list[Speaker]:
+    async with db() as s:
+        return (await s.execute(select(Speaker).where(Speaker.project_id == project_id))).scalars().all()
+
+
+async def _version(db, project_id) -> int | None:
+    async with db() as s:
+        return (await s.get(Project, project_id)).characters_version
+
+
+async def _cast_voices(db, casting: dict) -> None:
+    """casting: {speaker id: voice id} chosen by a person."""
+    async with db() as s:
+        for speaker_id, voice_id in casting.items():
+            sp = await s.get(Speaker, speaker_id)
+            sp.voice_id, sp.voice_auto = voice_id, False
+        await s.commit()
+
+
+def test_the_upgrade_is_version_2_and_new_projects_start_there():
+    assert upgrade.CHARACTERS_VERSION == 2 and upgrade.VOICE_MARGIN == 0.05
+    assert Project.__table__.c.characters_version.default.arg == upgrade.CHARACTERS_VERSION
+
+
+@pytest.mark.asyncio
+async def test_a_label_reused_for_another_actor_gives_each_line_the_character_of_its_voice(
+        monkeypatch, uploads, background_db):
+    """SPEAKER_00's voice is A today, but the owner re-used the label for another actor by changing its voice: its
+    lines made with B go to B's character, those made with A stay."""
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    made_with_a, made_with_b = await _voiced(db, uploads, project_id, job_id, [(lin, None, {}), (lin, None, {})])
+    tts = uploads / project_id / job_id / "tts"
+    _hear(monkeypatch, {**clips, str(tts / "seg_0.wav"): _heard((0, 1.0), (3, 0.3)),
+                        str(tts / "seg_1.wav"): _heard((1, 1.0), (2, 0.3))})
+
+    assert await upgrade.convert_project(db, project_id) == 1
+
+    stays, moved = await _seg(db, made_with_a), await _seg(db, made_with_b)
+    assert (stays.speaker_id, stays.who_confirmed, stays.who_check) == (lin, False, None)
+    assert (moved.speaker_id, moved.voice_id, moved.who_confirmed, moved.who_check) == (mei, None, True, None)
+    assert await _version(db, project_id) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_voice_no_character_has_gets_one_new_character_for_all_its_lines(monkeypatch, uploads, background_db):
+    """The actor voiced with Yim Thearith's voice in ep01 died there: no speaker has that voice today."""
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    first, second = await _voiced(db, uploads, project_id, job_id, [(lin, None, {}), (mei, None, {})])
+    tts = uploads / project_id / job_id / "tts"
+    _hear(monkeypatch, {**clips, str(tts / "seg_0.wav"): _heard((3, 1.0)), str(tts / "seg_1.wav"): _heard((3, 1.0))})
+
+    assert await upgrade.convert_project(db, project_id) == 2
+
+    new = [sp for sp in await _project_speakers(db, project_id) if sp.id not in ids.values()]
+    assert [(sp.label, sp.voice_id, bool(sp.voice_auto), sp.display_name) for sp in new] == [
+        ("SPEAKER_02", v[3], False, "")]
+    for line in (first, second):
+        seg = await _seg(db, line)
+        assert (seg.speaker_id, seg.voice_id, seg.who_confirmed) == (new[0].id, None, True)
+
+
+@pytest.mark.asyncio
+async def test_a_line_whose_voice_is_not_clear_stays(monkeypatch, uploads, background_db):
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    close, clear = await _voiced(db, uploads, project_id, job_id, [(lin, None, {}), (lin, None, {})])
+    tts = uploads / project_id / job_id / "tts"
+    # Mei's voice by 0.04 and by 0.06 over Lin Dong's
+    _hear(monkeypatch, {**clips, str(tts / "seg_0.wav"): _heard((1, 0.74), (0, 0.70), (2, 0.2)),
+                        str(tts / "seg_1.wav"): _heard((1, 0.76), (0, 0.70), (2, 0.2))})
+
+    assert await upgrade.convert_project(db, project_id) == 1
+
+    assert ((await _seg(db, close)).speaker_id, (await _seg(db, close)).who_confirmed) == (lin, False)
+    assert (await _seg(db, clear)).speaker_id == mei
+
+
+@pytest.mark.asyncio
+async def test_a_hand_set_voice_wins_over_what_its_audio_sounds_like(monkeypatch, uploads, background_db):
+    """A line with its own voice moves to the character cast with that voice, as in v1; its audio isn't even heard."""
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    (line,) = await _voiced(db, uploads, project_id, job_id, [(lin, v[1], {})])
+    calls = []
+    _hear(monkeypatch, {**clips, str(uploads / project_id / job_id / "tts" / "seg_0.wav"): _heard((2, 1.0))}, calls)
+
+    assert await upgrade.convert_project(db, project_id) == 1
+
+    seg = await _seg(db, line)
+    assert (seg.speaker_id, seg.voice_id, seg.who_confirmed) == (mei, None, True)
+    assert not any("seg_0" in c for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_a_line_with_no_voice_or_a_missing_voice_file_stays(monkeypatch, uploads, background_db):
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    gone = str(uploads / project_id / job_id / "tts" / "seg_gone.wav")
+    unvoiced, missing = await _voiced(db, uploads, project_id, job_id, [
+        (lin, None, {"tts_audio_path": ""}), (lin, None, {"tts_audio_path": gone})])
+    calls = []
+    _hear(monkeypatch, {**clips, gone: _heard((1, 1.0))}, calls)
+
+    assert await upgrade.convert_project(db, project_id) == 0
+
+    for line in (unvoiced, missing):
+        seg = await _seg(db, line)
+        assert (seg.speaker_id, seg.who_confirmed) == (lin, False)
+    assert gone not in calls
+    assert await _version(db, project_id) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_line_whose_audio_cannot_be_read_is_skipped(monkeypatch, uploads, background_db):
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    broken, fine = await _voiced(db, uploads, project_id, job_id, [(lin, None, {}), (lin, None, {})])
+    tts = uploads / project_id / job_id / "tts"
+    _hear(monkeypatch, {**clips, str(tts / "seg_0.wav"): RuntimeError("ffmpeg could not read seg_0.wav"),
+                        str(tts / "seg_1.wav"): _heard((1, 1.0))})
+
+    assert await upgrade.convert_project(db, project_id) == 1
+
+    assert (await _seg(db, broken)).speaker_id == lin and (await _seg(db, fine)).speaker_id == mei
+
+
+@pytest.mark.asyncio
+async def test_nothing_but_the_character_changes_on_a_moved_line(monkeypatch, uploads, background_db):
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    (line,) = await _voiced(db, uploads, project_id, job_id, [(lin, None, {
+        "volume_db": -3.0, "fit_rate": 1.2, "voice_text": "km0", "voice_offset": 0.25, "fade_in_secs": 0.1,
+        "fade_out_secs": 0.2, "tts_duration_secs": 1.75, "voice_speed": 1.1, "voice_filter": "radio",
+        "level_gain_db": 2.5, "is_approved": True, "notes": "n", "lane_index": 2, "khmer_machine": "km0"})])
+    _hear(monkeypatch, {**clips, str(uploads / project_id / job_id / "tts" / "seg_0.wav"): _heard((1, 1.0))})
+    columns = [c.name for c in Segment.__table__.columns if c.name not in ("speaker_id", "who_confirmed", "who_check")]
+    before = await _seg(db, line)
+    keep = {c: getattr(before, c) for c in columns}
+
+    assert await upgrade.convert_project(db, project_id) == 1
+
+    after = await _seg(db, line)
+    assert after.speaker_id == mei and {c: getattr(after, c) for c in columns} == keep
+    speakers = {sp.id: (sp.label, sp.display_name, sp.voice_id) for sp in await _project_speakers(db, project_id)}
+    assert speakers == {lin: ("SPEAKER_00", "Lin Dong", v[0]), mei: ("SPEAKER_01", "Mei", v[1])}
+
+
+@pytest.mark.asyncio
+async def test_a_label_left_without_lines_stays(monkeypatch, uploads, background_db):
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    async with db() as s:   # _project's first-episode lines: Mei's moves to Lin Dong, Lin Dong's is unvoiced
+        for seg in (await s.execute(select(Segment).where(Segment.speaker_id == mei))).scalars():
+            seg.tts_audio_path = str(uploads / "mei.wav")
+        await s.commit()
+    (uploads / "mei.wav").write_bytes(b"RIFF")
+    _hear(monkeypatch, {**clips, str(uploads / "mei.wav"): _heard((0, 1.0))})
+
+    assert await upgrade.convert_project(db, project_id) == 1
+
+    assert {sp.id for sp in await _project_speakers(db, project_id)} == {lin, mei}
+
+
+@pytest.mark.asyncio
+async def test_the_character_a_line_moves_to_is_one_a_person_cast_with_the_most_lines(monkeypatch, uploads,
+                                                                                    background_db):
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin = ids["SPEAKER_00"]
+    await _cast_voices(db, {lin: v[0]})
+    async with db() as s:
+        app_picked = Speaker(project_id=project_id, label="SPEAKER_02", voice_id=v[2], voice_auto=True)
+        few = Speaker(project_id=project_id, label="SPEAKER_03", voice_id=v[2], voice_auto=False)
+        many = Speaker(project_id=project_id, label="SPEAKER_04", voice_id=v[2], voice_auto=None)
+        s.add_all([app_picked, few, many])
+        await s.commit()
+        app_picked, few, many = app_picked.id, few.id, many.id
+    line, *_ = await _voiced(db, uploads, project_id, job_id, [
+        (lin, None, {}), (app_picked, None, {"tts_audio_path": ""}), (app_picked, None, {"tts_audio_path": ""}),
+        (app_picked, None, {"tts_audio_path": ""}), (few, None, {"tts_audio_path": ""}),
+        (many, None, {"tts_audio_path": ""}), (many, None, {"tts_audio_path": ""})])
+    _hear(monkeypatch, {**clips, str(uploads / project_id / job_id / "tts" / "seg_0.wav"): _heard((2, 1.0))})
+
+    assert await upgrade.convert_project(db, project_id) == 1
+
+    assert (await _seg(db, line)).speaker_id == many
+
+
+@pytest.mark.asyncio
+async def test_a_line_confirmed_while_the_voices_are_heard_is_left_alone(monkeypatch, uploads, background_db):
+    """The audio is heard with no session open (minutes on a big project); a line the user picks meanwhile keeps the
+    character they picked."""
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    (line,) = await _voiced(db, uploads, project_id, job_id, [(lin, None, {})])
+    loop = asyncio.get_running_loop()
+    from app.services.characters import voiceprint
+    heard = {**clips, str(uploads / project_id / job_id / "tts" / "seg_0.wav"): _heard((1, 1.0))}
+
+    def fake(path):
+        if path.endswith("seg_0.wav"):
+            async def user_confirms():
+                async with db() as s:
+                    (await s.get(Segment, line)).who_confirmed = True
+                    await s.commit()
+            asyncio.run_coroutine_threadsafe(user_confirms(), loop).result(timeout=10)
+        return heard[path]
+    monkeypatch.setattr(voiceprint, "file_print", fake)
+
+    assert await upgrade.convert_project(db, project_id) == 0
+
+    assert (await _seg(db, line)).speaker_id == lin
+
+
+@pytest.mark.parametrize("cannot", [
+    ImportError("No module named 'sherpa_onnx'"),
+    "models.ModelMissing",
+    "old macOS",
+    RuntimeError("the voice model crashed"),
+])
+@pytest.mark.asyncio
+async def test_when_the_voices_cannot_be_heard_only_hand_set_voices_move(cannot, monkeypatch, uploads, background_db,
+                                                                       caplog):
+    """The models can't run here (or failed): v1's conversion only, the project still marked done (never retried
+    at every start-up), one log line."""
+    from app.services.characters import models
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    hand_set, heard = await _voiced(db, uploads, project_id, job_id, [(lin, v[1], {}), (lin, None, {})])
+    calls = []
+    if cannot == "old macOS":   # stops before anything could import the models' libraries
+        monkeypatch.setattr(platform, "mac_ver", lambda: ("13.3.1", ("", "", ""), "arm64"))
+        _hear(monkeypatch, {}, calls)
+    else:
+        error = models.ModelMissing("eres2netv2.onnx is missing") if cannot == "models.ModelMissing" else cannot
+        _hear(monkeypatch, {path: error for path in clips}, calls)
+
+    with caplog.at_level(logging.WARNING):
+        assert await upgrade.convert_project(db, project_id) == 1
+
+    assert ((await _seg(db, hand_set)).speaker_id, (await _seg(db, heard)).speaker_id) == (mei, lin)
+    assert (calls == []) is (cannot == "old macOS")
+    assert await _version(db, project_id) == 2
+    said = [r for r in caplog.records if r.name == upgrade.__name__ and r.levelno >= logging.WARNING]
+    assert len(said) == 1 and "only lines with their own voice" in said[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_a_project_upgraded_by_version_1_is_converted_again_once(monkeypatch, uploads, background_db):
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    async with db() as s:
+        (await s.get(Project, project_id)).characters_version = 1   # the owner's test copy of 0.5.0
+        await s.commit()
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    (line,) = await _voiced(db, uploads, project_id, job_id, [(lin, None, {})])
+    calls = []
+    _hear(monkeypatch, {**clips, str(uploads / project_id / job_id / "tts" / "seg_0.wav"): _heard((1, 1.0))}, calls)
+
+    await upgrade.upgrade_projects(db)
+
+    assert (await _seg(db, line)).speaker_id == mei and await _version(db, project_id) == 2
+    heard_once = list(calls)
+    await upgrade.upgrade_projects(db)   # the next start-up: done
+    assert calls == heard_once
+
+
+@pytest.mark.asyncio
+async def test_the_rules_move_nothing_a_second_time(monkeypatch, uploads, background_db):
+    """A start-up that quits mid-conversion redoes the project at the next one: a line already on the character of
+    its voice doesn't move."""
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    await _voiced(db, uploads, project_id, job_id, [(lin, None, {}), (lin, v[3], {})])
+    tts = uploads / project_id / job_id / "tts"
+    _hear(monkeypatch, {**clips, str(tts / "seg_0.wav"): _heard((1, 1.0)), str(tts / "seg_1.wav"): _heard((3, 1.0))})
+    assert await upgrade.convert_project(db, project_id) == 2
+    speakers = len(await _project_speakers(db, project_id))
+    async with db() as s:
+        (await s.get(Project, project_id)).characters_version = None
+        await s.commit()
+
+    assert await upgrade.convert_project(db, project_id) == 0
+    assert len(await _project_speakers(db, project_id)) == speakers
+
+
+@pytest.mark.asyncio
+async def test_while_a_project_waits_for_its_conversion_no_line_of_it_is_sure(monkeypatch, uploads, background_db):
+    """Its characters may still hold several actors: the start-up queues the project's episodes, awaited, before the
+    background starts, so an analysis or Detect speakers can't mark lines sure from them — even when every line
+    already has today's prints (the owner's test copy at version 1)."""
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    async with db() as s:   # _project's first episode: its confirmed lines have today's prints
+        first = (await s.execute(select(Job.id).where(Job.project_id == project_id, Job.id != job_id))).scalar_one()
+    _vocals(uploads, project_id, first)
+    other_project = await _new_project(db, "Another series")   # made with characters: nothing to convert
+
+    await upgrade.queue_backfill(db)
+
+    assert set(store.backfill_pending()) == {first, job_id}
+    assert store.conversions_pending() == [project_id]
+    async with db() as s:
+        known = await store.known_characters(s, project_id)
+        assert (known.complete, known.first_episode) == (False, False)
+        assert (await store.known_characters(s, other_project)).complete
+
+    _hear(monkeypatch, {})
+    await upgrade.finish_upgrade(db)
+
+    assert store.backfill_pending() == [] and store.conversions_pending() == []
+    async with db() as s:
+        assert (await store.known_characters(s, project_id)).complete
+    assert await _version(db, project_id) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_project_is_converted_before_its_prints_are_made(monkeypatch, uploads, background_db):
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    _vocals(uploads, project_id, job_id)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    (line,) = await _voiced(db, uploads, project_id, job_id, [(lin, None, {})])
+    order = []
+
+    def file_print(path):
+        order.append("voices")
+        return {**clips, str(uploads / project_id / job_id / "tts" / "seg_0.wav"): _heard((1, 1.0))}[path]
+    from app.services.characters import voiceprint
+    monkeypatch.setattr(voiceprint, "file_print", file_print)
+
+    def prints(video_path, vocals_path, spans, with_faces=True):
+        order.append(("prints", [k for k in store.conversions_pending()]))
+        return [LinePrints(voice(5), None, None, None) for _ in spans]
+    monkeypatch.setattr(prints_module, "prints_for_spans", prints)
+
+    await upgrade.upgrade_projects(db)
+
+    assert order[-1] == ("prints", []) and set(order[:-1]) == {"voices"}
+    assert (await _seg(db, line)).speaker_id == mei
