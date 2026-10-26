@@ -293,6 +293,13 @@ export interface SegmentUpdate {
 }
 
 /** GET /projects/{id}/character-suggestions: two characters (a < b) that may be one. Only the user's click merges. */
+/** A stretch of an episode's original voices to hear (▶ in Same character?). */
+export interface SampleLine {
+  url: string
+  start: number
+  end: number
+}
+
 export interface CharacterSuggestion {
   a: string
   b: string
@@ -300,6 +307,9 @@ export interface CharacterSuggestion {
   /** Lines each has in the whole project (every episode) */
   a_lines: number
   b_lines: number
+  /** A line of each to hear, from any episode; null when they speak in no episode whose voices were separated */
+  a_sample?: SampleLine | null
+  b_sample?: SampleLine | null
 }
 
 /** POST /segments/{id}/character: the pick, and whether the line's Khmer was translated again for the new speaker. */

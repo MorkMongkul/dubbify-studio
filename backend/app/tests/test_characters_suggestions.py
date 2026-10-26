@@ -67,7 +67,7 @@ async def test_two_characters_cast_with_one_voice_are_suggested(client, db_sessi
         ("SPEAKER_04", None, False, voice(9), None)])
     got = await _get(client, project_id)
     a, b = sorted([ids["SPEAKER_01"], ids["SPEAKER_03"]])
-    assert got == [{"a": a, "b": b, "reason": "same voice", "a_lines": 1, "b_lines": 1}]
+    assert got == [{"a": a, "b": b, "reason": "same voice", "a_lines": 1, "b_lines": 1, "a_sample": None, "b_sample": None}]
 
 
 @pytest.mark.asyncio
@@ -97,7 +97,7 @@ async def test_profiles_that_match_in_voice_and_face_are_suggested(client, db_se
         ("SPEAKER_02", None, False, _near(0, 2, 0.9, 192), face(7))])   # voice alone is not enough
     got = await _get(client, project_id)
     a, b = sorted([ids["SPEAKER_00"], ids["SPEAKER_01"]])
-    assert got == [{"a": a, "b": b, "reason": "same voice and face", "a_lines": 1, "b_lines": 1}]
+    assert got == [{"a": a, "b": b, "reason": "same voice and face", "a_lines": 1, "b_lines": 1, "a_sample": None, "b_sample": None}]
 
 
 @pytest.mark.parametrize("face_cosine, suggested", [(0.74, False), (0.76, True)])
@@ -199,3 +199,63 @@ async def test_suggestions_are_ordered_same_voice_first_then_voice_cosine(client
     assert all(g["reason"] == "same voice and face" for g in got[1:])
     p0, p2 = ids["SPEAKER_00"], ids["SPEAKER_02"]
     assert rest[0] == tuple(sorted([p0, p2]))
+
+
+async def _second_episode(db_sessionmaker, project_id, files=("vocals.wav",)) -> str:
+    """Another episode of the project, with its separated vocals on disk (any bytes: only their place matters)."""
+    from pathlib import Path
+    from app.core.config import settings
+    async with db_sessionmaker() as s:
+        job = Job(project_id=project_id, status=JobStatus.COMPLETED, progress=100, video_path="ep2.mp4")
+        s.add(job)
+        await s.commit()
+    folder = Path(settings.UPLOAD_DIR) / project_id / job.id
+    folder.mkdir(parents=True, exist_ok=True)
+    for name in files:
+        (folder / name).write_bytes(b"RIFF")
+    return job.id
+
+
+async def _line(db_sessionmaker, job_id, speaker_id, clip, actor, score):
+    async with db_sessionmaker() as s:
+        line = Segment(job_id=job_id, speaker_id=speaker_id, start_time=clip[0], end_time=clip[1],
+                       source_start=actor[0], source_end=actor[1], who_confirmed=True)
+        s.add(line)
+        await s.flush()
+        s.add(LinePrint(segment_id=line.id, job_id=job_id, speaking_score=score, model_version=store.MODEL_VERSION))
+        await s.commit()
+
+
+def _side(got, speaker_id):
+    [pair] = got
+    return pair["a_sample"] if pair["a"] == speaker_id else pair["b_sample"]
+
+
+@pytest.mark.asyncio
+async def test_a_suggestion_offers_a_line_of_each_character_from_any_episode(client, db_sessionmaker):
+    """▶ must be able to play both characters wherever they speak, not only in the episode that's open; the line
+    where their face was seen speaking it best is the one to hear, from where the actor spoke."""
+    kim = await _voice(db_sessionmaker)
+    project_id, ids = await _cast(db_sessionmaker, [
+        ("SPEAKER_01", kim, False, voice(0), None), ("SPEAKER_03", kim, False, voice(5), None)])
+    other = await _second_episode(db_sessionmaker, project_id)
+    await _line(db_sessionmaker, other, ids["SPEAKER_03"], clip=(40.0, 43.0), actor=(10.0, 13.0), score=2.5)
+    await _line(db_sessionmaker, other, ids["SPEAKER_03"], clip=(50.0, 55.0), actor=(20.0, 25.0), score=0.2)
+    got = await _get(client, project_id)
+    sample = _side(got, ids["SPEAKER_03"])
+    assert sample["url"].startswith(f"/uploads/{project_id}/{other}/vocals.wav")
+    assert (sample["start"], sample["end"]) == (10.0, 13.0)
+    # SPEAKER_01 speaks only in an episode whose voices weren't separated: nothing to play
+    assert _side(got, ids["SPEAKER_01"]) is None
+
+
+@pytest.mark.asyncio
+async def test_a_sample_is_at_most_six_seconds_from_the_previews_own_file(client, db_sessionmaker):
+    kim = await _voice(db_sessionmaker)
+    project_id, ids = await _cast(db_sessionmaker, [
+        ("SPEAKER_01", kim, False, voice(0), None), ("SPEAKER_03", kim, False, voice(5), None)])
+    other = await _second_episode(db_sessionmaker, project_id, files=("vocals.wav", "vocals.m4a"))
+    await _line(db_sessionmaker, other, ids["SPEAKER_03"], clip=(0.0, 12.0), actor=(30.0, 42.0), score=1.0)
+    sample = _side(await _get(client, project_id), ids["SPEAKER_03"])
+    assert sample["url"].startswith(f"/uploads/{project_id}/{other}/vocals.m4a")
+    assert (sample["start"], sample["end"]) == (30.0, 36.0)

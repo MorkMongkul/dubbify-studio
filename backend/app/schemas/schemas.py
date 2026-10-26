@@ -427,6 +427,13 @@ class CharacterPicked(BaseModel):
     previous_khmer: str         # the Khmer before the pick, given even when nothing changed (undo puts it back)
 
 
+class SampleLine(BaseModel):
+    """A stretch of an episode's original voices to hear (▶ in Same character?)."""
+    url: str
+    start: float
+    end: float
+
+
 class CharacterSuggestion(BaseModel):
     """Two characters that may be one (a < b): the user decides, with Same person as… or Not the same."""
     a: str
@@ -435,6 +442,9 @@ class CharacterSuggestion(BaseModel):
     # Lines each has in the whole project: Merge keeps the one with more
     a_lines: int = 0
     b_lines: int = 0
+    # A line of each to hear, from any episode (None: no line in an episode whose voices were separated)
+    a_sample: Optional[SampleLine] = None
+    b_sample: Optional[SampleLine] = None
 
 
 class CharacterDismiss(BaseModel):

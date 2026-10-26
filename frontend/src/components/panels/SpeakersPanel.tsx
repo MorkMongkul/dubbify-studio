@@ -96,10 +96,6 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
     toast.success(`${nameOf(source)} merged into ${nameOf(into)}`)
   }
 
-  // ▶ in "Same character?" plays a line from the episode's original voices
-  const voicesUrl = jobId && projectId && job?.stems_separated
-    ? `/uploads/${projectId}/${jobId}/vocals.m4a?v=${job.bgm_volume_db ?? 0}-${job.stems_version ?? 0}`
-    : null
   const colorOf = (speaker: Speaker) => speaker.color ?? getSpeakerColor(Math.max(0, spks.findIndex((sp) => sp.id === speaker.id)))
 
   const runDetectSpeakers = () => {
@@ -189,8 +185,6 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
         <SameCharacter
           suggestions={suggestions}
           speakers={spks}
-          segments={segs}
-          voicesUrl={voicesUrl}
           disabled={busy}
           nameOf={nameOf}
           colorOf={colorOf}
