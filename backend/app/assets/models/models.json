@@ -10,7 +10,7 @@
   {
     "name": "sface",
     "file": "face_recognition_sface_2021dec.onnx",
-    "url": "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
+    "url": "https://media.githubusercontent.com/media/opencv/opencv_zoo/ba91a3b91d00d76e86540d4013f944bd6b514e39/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
     "sha256": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
     "bytes": 38696353,
     "licence": "Apache-2.0"

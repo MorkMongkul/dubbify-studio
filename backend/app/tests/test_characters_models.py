@@ -1,6 +1,7 @@
 """The four character models ship with the app: right files, right bytes, and they load and run."""
 import hashlib
 import json
+import re
 
 import pytest
 
@@ -22,6 +23,14 @@ def test_every_model_matches_its_manifest():
             pytest.skip(NEEDS_FETCH)
         assert file.stat().st_size == entry["bytes"], entry["name"]
         assert hashlib.sha256(file.read_bytes()).hexdigest() == entry["sha256"], entry["name"]
+
+
+def test_every_fetched_model_comes_from_a_fixed_version():
+    """A branch (opencv_zoo's main) can change under the build, and the SHA-256 would then stop the release; a commit
+    or a release's asset names one file for good."""
+    for entry in _manifest():
+        if entry["url"]:   # an empty URL: committed to the repository
+            assert re.search(r"/[0-9a-f]{40}/", entry["url"]) or "/releases/download/" in entry["url"], entry["name"]
 
 
 def test_a_missing_model_says_how_to_get_it(monkeypatch, tmp_path):

@@ -8,9 +8,12 @@ import asyncio
 import hashlib
 import json
 import logging
+import platform
+import sys
 import threading
 from collections import Counter
 from contextlib import suppress
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -22,7 +25,7 @@ from app.core.config import settings
 from app.core.paths import resolve_media_path
 from app.models.models import Job, LinePrint, Segment, Speaker
 from app.services.characters import models
-from app.services.characters.decide import Profile, decide, profile_from
+from app.services.characters.decide import Profile, decide, overlapping, profile_from
 from app.services.characters.types import LinePrints
 from app.services.timeline import actor_span
 
@@ -32,6 +35,12 @@ VOICE_SIZE = 192
 FACE_SIZE = 128
 # One episode's models at a time: they share their sessions (lru_cache) and took 1.5 GB at peak in the spike
 _ONE_AT_A_TIME = threading.Lock()
+_COUNTING = threading.Lock()
+_runs = 0   # runs waiting for the models or running them: the last one out releases them
+# The models' cached loaders, by module: about 0.5 GB while loaded
+_LOADERS = (("faces", "_session"), ("lips", "_session"), ("voiceprint", "_extractor"))
+# The models can't run here: a Mac below macOS 13.4 (onnxruntime), or a dev checkout without scripts/fetch-models.sh
+CANT_RUN = (ImportError, models.ModelMissing)
 
 
 @lru_cache(maxsize=1)
@@ -107,26 +116,60 @@ def _removed_on_rollback(db: AsyncSession, files: list[Path]) -> None:
     event.listen(db.sync_session, "after_rollback", rolled_back, once=True)
 
 
-async def project_profiles(db: AsyncSession, project_id: str, exclude_job_id: str | None = None) -> dict[str, Profile]:
-    """{speaker id: profile} from the stored prints of each character's confirmed lines (made by today's models).
-    Characters with no such print are left out."""
+@dataclass
+class Known:
+    """What a project's checked lines teach: each character's profile, how many confirmed lines have or can get
+    prints, and how many of those still wait for prints from today's models (the start-up backfill, or a model
+    change, hasn't reached them). A project with none is at its first episode; while lines wait, the profiles are
+    incomplete and no line may be sure."""
+    profiles: dict[str, Profile]
+    confirmed: int
+    waiting: int
+
+    @property
+    def first_episode(self) -> bool:
+        return self.confirmed == 0
+
+    @property
+    def complete(self) -> bool:
+        return self.waiting == 0
+
+
+async def known_characters(db: AsyncSession, project_id: str, exclude_job_id: str | None = None) -> Known:
+    """The profiles from the stored prints of each character's confirmed lines (made by today's models; characters
+    with no such print are left out), and the confirmed lines still waiting for those prints. A line whose episode
+    has no separated vocals never gets prints: it neither waits nor counts."""
     query = (
         select(Segment, Job, LinePrint)
         .join(Job, Job.id == Segment.job_id)
-        .join(LinePrint, LinePrint.segment_id == Segment.id)
         .join(Speaker, Speaker.id == Segment.speaker_id)
-        .where(Job.project_id == project_id, Speaker.project_id == project_id,
-               LinePrint.model_version == model_version())
+        .outerjoin(LinePrint, LinePrint.segment_id == Segment.id)
+        .where(Job.project_id == project_id, Speaker.project_id == project_id)
+        # the lines may have changed since this session last read them (a pick, the backfill's prints)
+        .execution_options(populate_existing=True)
     )
     if exclude_job_id:
         query = query.where(Job.id != exclude_job_id)
     by_speaker: dict[str, list[LinePrints]] = {}
+    printed, unprinted = 0, Counter()
     for seg, job, row in (await db.execute(query)).all():
-        if is_confirmed(seg, job):
-            by_speaker.setdefault(seg.speaker_id, []).append(LinePrints(
-                _vector(row.voice_print, VOICE_SIZE), _vector(row.face_print, FACE_SIZE), row.speaking_score, None))
+        if not is_confirmed(seg, job):
+            continue
+        if row is None or row.model_version != model_version():
+            unprinted[job] += 1
+            continue
+        printed += 1
+        by_speaker.setdefault(seg.speaker_id, []).append(LinePrints(
+            _vector(row.voice_print, VOICE_SIZE), _vector(row.face_print, FACE_SIZE), row.speaking_score, None))
     profiles = {speaker_id: profile_from(prints) for speaker_id, prints in by_speaker.items()}
-    return {sid: p for sid, p in profiles.items() if p.voice is not None or p.face is not None}
+    waiting = sum(n for job, n in unprinted.items() if vocals_path(job).exists())
+    return Known({sid: p for sid, p in profiles.items() if p.voice is not None or p.face is not None},
+                 printed + waiting, waiting)
+
+
+async def project_profiles(db: AsyncSession, project_id: str, exclude_job_id: str | None = None) -> dict[str, Profile]:
+    """{speaker id: profile} from the stored prints of each character's confirmed lines (see known_characters)."""
+    return (await known_characters(db, project_id, exclude_job_id)).profiles
 
 
 async def save_prints(db: AsyncSession, job_id: str, segment_ids: list[str], prints: list[LinePrints],
@@ -185,47 +228,82 @@ async def kept_characters(db: AsyncSession, job: Job, spans: list[tuple[float, f
 
 
 def _one_at_a_time(work, *args):
-    """Runs in the worker thread: a second analysis waits here, never while holding a database session."""
+    """Runs in the worker thread: a second analysis waits here, never while holding a database session. The last run
+    out releases the models (about 0.5 GB on an 8 GB Mac for the backend's life otherwise); the next run loads them
+    again, in about a second."""
+    global _runs
+    with _COUNTING:
+        _runs += 1
     with _ONE_AT_A_TIME:
-        return work(*args)
+        try:
+            return work(*args)
+        finally:
+            with _COUNTING:
+                _runs -= 1
+                last = _runs == 0
+            if last:
+                release_models()
+
+
+def release_models() -> None:
+    """Drop the models' loaded sessions. Only while holding _ONE_AT_A_TIME: no run is using them then. A module never
+    imported has none."""
+    for module_name, loader in _LOADERS:
+        module = sys.modules.get(f"app.services.characters.{module_name}")
+        if module is not None:
+            getattr(module, loader).cache_clear()
 
 
 def _prints_of(video: Path, vocals: str, spans: list[tuple[float, float]]) -> list[LinePrints]:
     """Worker thread, one analysis at a time: whether this Mac can afford the faces is decided here, because the first
-    time it runs the models for a few seconds."""
+    time it runs the models for a few seconds. Below macOS 13.4 it stops before anything imports the models'
+    libraries (onnxruntime's wheels need 13.4)."""
+    if not models.runtime_supported():
+        raise ImportError(f"character recognition needs macOS {'.'.join(map(str, models.MIN_MACOS))} or later "
+                          f"(this Mac has {platform.mac_ver()[0]})")
     from app.services.characters import prints, speed
     return prints.prints_for_spans(video, vocals, spans, with_faces=speed.face_step_enabled())
 
 
+def vocals_path(job: Job) -> Path:
+    """Where the job's separated vocals are (whether or not they are there)."""
+    return Path(settings.UPLOAD_DIR) / job.project_id / job.id / "vocals.wav"
+
+
 def _vocals_of(job: Job) -> Path | None:
     """The job's separated vocals, or None (logged): without them no print can be made."""
-    vocals = Path(settings.UPLOAD_DIR) / job.project_id / job.id / "vocals.wav"
+    vocals = vocals_path(job)
     if not vocals.exists():
         logger.warning(f"Job {job.id[:8]}: no vocals.wav, so characters weren't recognised — Gemini's speakers kept")
         return None
     return vocals
 
 
-async def _find_prints(db: AsyncSession, job: Job, spans: list[tuple[float, float]],
-                       vocals: Path) -> list[LinePrints] | None:
-    """The prints of `spans` (where the actor spoke), or None (logged) when they can't be made — the callers then
-    keep Gemini's speakers. Commits first, so the models run with no connection held: the dev SQLite engine has one."""
+async def make_prints(db: AsyncSession, job: Job, spans: list[tuple[float, float]],
+                      vocals: Path) -> list[LinePrints]:
+    """The prints of `spans` (where the actor spoke), through the one-at-a-time lock. Commits first, so the models
+    run with no connection held: the dev SQLite engine has one. Raises CANT_RUN when the models can't run here, and
+    whatever else went wrong with this episode."""
     video = resolve_media_path(job.video_path)
     await db.commit()
+    found = await asyncio.to_thread(_one_at_a_time, _prints_of, video, str(vocals), spans)
+    if len(found) != len(spans):
+        raise RuntimeError(f"{len(found)} prints for {len(spans)} lines")
+    return found
+
+
+async def _find_prints(db: AsyncSession, job: Job, spans: list[tuple[float, float]],
+                       vocals: Path) -> list[LinePrints] | None:
+    """make_prints, or None (logged) when the prints can't be made — the callers then keep Gemini's speakers."""
     try:
-        found = await asyncio.to_thread(_one_at_a_time, _prints_of, video, str(vocals), spans)
-    except (ImportError, models.ModelMissing) as e:
-        # a Mac below macOS 13.4 (onnxruntime), or a dev checkout without scripts/fetch-models.sh
+        return await make_prints(db, job, spans, vocals)
+    except CANT_RUN as e:
         logger.warning(f"Job {job.id[:8]}: characters weren't recognised, the models can't run here: {e}",
                        exc_info=True)
         return None
     except Exception as e:   # OSError too: ffmpeg missing, too many open files, vocals.wav unreadable
         logger.exception(f"Job {job.id[:8]}: recognising characters failed, Gemini's speakers kept: {e}")
         return None
-    if len(found) != len(spans):
-        logger.warning(f"Job {job.id[:8]}: {len(found)} prints for {len(spans)} lines — Gemini's speakers kept")
-        return None
-    return found
 
 
 async def recognise(
@@ -235,6 +313,10 @@ async def recognise(
     """Who speaks each line (spans: where the actor spoke). Per line: the label to use — `kept`'s when given (a
     confirmed character), else a known character's when the prints match one, else Gemini's — its who_check
     (None = sure; else the guesses, possibly none), and the prints ([] when they couldn't be made).
+
+    The project's first episode (no confirmed line in its other episodes) keeps Gemini's labels, nothing to check.
+    While confirmed lines wait for their prints (the start-up backfill, a model change), no line is sure. The
+    characters are read after the models ran, which may have meant waiting for another episode's (the backfill's).
 
     Commits before the models run. Never fails: without vocals, or when the models can't run, Gemini's labels stand
     and nothing is marked to check, as before characters existed.
@@ -252,9 +334,6 @@ async def recognise(
     if vocals is None:
         return labels, unchecked, []
 
-    profiles = await project_profiles(db, job.project_id, exclude_job_id=job.id)
-    names = dict((await db.execute(select(Speaker.id, Speaker.label).where(Speaker.id.in_(list(profiles))))).all()) \
-        if profiles else {}
     found = await _find_prints(db, job, spans, vocals)
     if refresh_kept is not None:   # a line confirmed while the models ran is a confirmed character's now
         kept = list(await refresh_kept())
@@ -263,21 +342,27 @@ async def recognise(
         labels = [k or label for k, label in zip(kept, gemini_labels)]
     if found is None:
         return labels, unchecked, []
-    if not profiles:   # the project's first episode: Gemini's speakers as before; its prints teach the next ones
+    known = await known_characters(db, job.project_id, exclude_job_id=job.id)
+    if known.first_episode:   # Gemini's speakers as before; its prints teach the next ones
         return labels, unchecked, found
+    profiles = known.profiles
+    names = dict((await db.execute(select(Speaker.id, Speaker.label).where(Speaker.id.in_(list(profiles))))).all()) \
+        if profiles else {}
 
     checks: list[list[dict] | None] = []
+    mixed = overlapping(spans)
     for i, p in enumerate(found):
         if kept[i]:
             checks.append(None)
             continue
-        decision = decide(p, profiles)
+        decision = decide(p, profiles, mixed_voice=mixed[i], may_be_sure=known.complete)
         if decision.speaker_id is not None:
             labels[i] = names[decision.speaker_id]
         checks.append(None if decision.sure else
                       [{"speaker_id": sid, "basis": basis} for sid, basis in decision.guesses])
     logger.info(f"Job {job.id[:8]}: characters recognised — {checks.count(None)} sure or kept, "
-                f"{len(checks) - checks.count(None)} to check")
+                f"{len(checks) - checks.count(None)} to check"
+                + ("" if known.complete else f" ({known.waiting} checked line(s) still wait for their prints)"))
     return labels, checks, found
 
 
@@ -287,15 +372,20 @@ async def identify(db: AsyncSession, job: Job, segments: list[Segment]) -> str:
     on its speaker, marked to check. Text, timing and confirmed lines are never touched. Prints are made only for
     lines without today's, in one run of the models, and kept.
 
+    While confirmed lines in other episodes wait for their prints (the start-up backfill, a model change), no line
+    is sure. The characters are read again after the models ran.
+
     Returns "done", or — nothing changed, the caller falls back to Gemini — why it couldn't run: "no_profiles" (the
-    project has no characters yet), "no_vocals", or "cant_run" (the models can't run; logged). Commits before the models run; the lines
-    are read again afterwards (the user may have edited or deleted some). Flushes; the caller commits."""
-    profiles = await project_profiles(db, job.project_id, exclude_job_id=job.id)
-    if not profiles:
+    project has no characters yet), "no_vocals", or "cant_run" (the models can't run; logged). Commits before the
+    models run; the lines are read again afterwards (the user may have edited or deleted some). Flushes; the
+    caller commits."""
+    if not await project_profiles(db, job.project_id, exclude_job_id=job.id):
         return "no_profiles"
     open_ids = [s.id for s in segments if not is_confirmed(s, job)]
     if not open_ids:
         return "done"
+    # a line spoken over another of the episode (confirmed or not) has a mixed voice print
+    mixed = dict(zip([s.id for s in segments], overlapping([actor_span(s) for s in segments])))
     vocals = _vocals_of(job)
     if vocals is None:
         return "no_vocals"
@@ -318,13 +408,13 @@ async def identify(db: AsyncSession, job: Job, segments: list[Segment]) -> str:
     still_open = [sid for sid in open_ids if sid in current and not is_confirmed(current[sid], job)]
     await save_prints(db, job.id, [sid for sid in computed if sid in current],
                       [computed[sid] for sid in computed if sid in current], faces_dir(job))
-    alive = set((await db.execute(select(Speaker.id).where(Speaker.id.in_(list(profiles))))).scalars())
-    profiles = {sid: p for sid, p in profiles.items() if sid in alive}
+    known = await known_characters(db, job.project_id, exclude_job_id=job.id)   # after the models: complete now?
+    profiles = known.profiles
     for sid in still_open:
         row = stored.get(sid)
         p = computed.get(sid) or LinePrints(_vector(row.voice_print, VOICE_SIZE), _vector(row.face_print, FACE_SIZE),
                                             row.speaking_score, None)
-        decision = decide(p, profiles)
+        decision = decide(p, profiles, mixed_voice=mixed[sid], may_be_sure=known.complete)
         guesses = [{"speaker_id": g, "basis": basis} for g, basis in decision.guesses]
         if decision.speaker_id is not None:
             current[sid].speaker_id = decision.speaker_id

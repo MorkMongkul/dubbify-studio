@@ -39,7 +39,7 @@ FACE_FRAMES = int(SPEECH_FRAMES * FACE_SHARE * FACES_ON_SCREEN)   # 1462: what L
 FEATURES = FACE_FRAMES // 6   # 375: SFace describes every 6th frame of a face (faces.FEATURE_EVERY)
 
 CALIBRATION = 1.6             # real frames cost more than the synthetic ones (no faces: no crops or NMS; YuNet 35 ms vs 50 ms): M1 ep10 took 153 s, the bench said 92-101 s
-SIZE = (720, 1280)            # the synthetic picture: a vertical episode, which costs the most
+SIZE = (720, 1280)            # the synthetic picture: the biggest faces.frames reads (long side faces.MAX_SIDE)
 DECODE_FRAMES = 25
 YUNET_RUNS = 3                # YuNet is the noisy part: the median of this many timings
 ASD_FRAMES = 50

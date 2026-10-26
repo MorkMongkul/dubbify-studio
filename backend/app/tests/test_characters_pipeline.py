@@ -11,13 +11,14 @@ characters.prints.prints_for_spans); the profiles come from real stored prints
 import asyncio
 import json
 import logging
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 import app.core.database as core_db
 from app.models.models import Gender, Job, JobStatus, LinePrint, Project, Segment, Speaker
@@ -166,6 +167,23 @@ async def _old_confirmed_line(db_sessionmaker, project_id: str, job_id: str) -> 
         return uncle.id
 
 
+async def _waiting_line(db_sessionmaker, uploads: Path, project_id: str, speaker_id: str, version=None) -> str:
+    """Another checked episode (with its vocals) whose confirmed line has no prints from today's models yet — the
+    start-up backfill, or a model change, hasn't reached it. version: the models an older print was made by.
+    Returns the episode's id."""
+    job_id = await _episode(db_sessionmaker, project_id, status=JobStatus.COMPLETED)
+    async with db_sessionmaker() as s:
+        line = Segment(job_id=job_id, speaker_id=speaker_id, start_time=0.0, end_time=2.0, source_start=0.0,
+                       source_end=2.0, source_text="旧", khmer_text="km", who_confirmed=True)
+        s.add(line)
+        await s.flush()
+        if version:
+            s.add(LinePrint(segment_id=line.id, job_id=job_id, voice_print=voice(9).tobytes(), model_version=version))
+        await s.commit()
+    _vocals(uploads, project_id, job_id)
+    return job_id
+
+
 async def _job(db_sessionmaker, job_id: str) -> Job:
     async with db_sessionmaker() as s:
         return await s.get(Job, job_id)
@@ -281,6 +299,27 @@ async def test_known_characters_get_their_lines_before_translation(monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_lines_spoken_over_each_other_are_never_sure_by_voice(monkeypatch, uploads, background_db):
+    """Two actors speaking at once leave one voice print of both on each line: never sure by the voice alone."""
+    project_id, ids = await _project(background_db)
+    job_id = await _episode(background_db, project_id)
+    _vocals(uploads, project_id, job_id)
+    _transcribe(monkeypatch, [("SPEAKER_07", 0.0, 2.0, "你好"), ("SPEAKER_07", 1.5, 3.0, "等等"),
+                              ("SPEAKER_07", 4.0, 5.0, "再见")])
+    _prints(monkeypatch, [LinePrints(voice(0), None, None, None)] * 3)   # each sounds like Lin Dong, nobody on screen
+    _translate(monkeypatch, pipeline)
+    await pipeline.run_analysis_pipeline(job_id)
+
+    rows = await _lines(background_db, job_id)
+    assert [label for _, label in rows] == ["SPEAKER_00"] * 3
+    by_text = {seg.source_text: seg.who_check for seg, _ in rows}
+    assert by_text["再见"] is None                                       # alone: sure
+    for text in ("你好", "等等"):                                        # over each other: to check
+        assert json.loads(by_text[text]) == [{"speaker_id": ids["SPEAKER_00"], "basis": "voice"},
+                                             {"speaker_id": ids["SPEAKER_01"], "basis": "voice"}]
+
+
+@pytest.mark.asyncio
 async def test_the_first_episode_keeps_gemini_speakers_and_gets_prints(monkeypatch, uploads, background_db):
     project_id, job_id = await _first_episode(background_db)
     _vocals(uploads, project_id, job_id)
@@ -305,6 +344,113 @@ async def test_the_first_episode_keeps_gemini_speakers_and_gets_prints(monkeypat
     assert Path(first.face_crop_path).read_bytes() == b"\xff\xd8a face"
     assert second.face_print is None and second.face_crop_path is None
     assert len(store.MODEL_VERSION) == 12
+
+
+@pytest.mark.parametrize("waiting", ["no print", "older models"])
+@pytest.mark.asyncio
+async def test_while_confirmed_lines_wait_for_their_prints_no_line_is_sure(waiting, monkeypatch, uploads,
+                                                                           background_db):
+    """The start-up backfill (or a model change) hasn't made every confirmed line's prints yet: the profiles are
+    incomplete, so nothing is sure — each line is to check, with the guesses the profiles there are give."""
+    project_id, ids = await _project(background_db)
+    await _waiting_line(background_db, uploads, project_id, ids["SPEAKER_01"],
+                        version="older" if waiting == "older models" else None)
+    job_id = await _episode(background_db, project_id)
+    _vocals(uploads, project_id, job_id)
+    _transcribe(monkeypatch, [("SPEAKER_07", 0.0, 1.0, "你好"), ("SPEAKER_08", 2.0, 3.0, "再见")])
+    _prints(monkeypatch, [LinePrints(voice(0), None, None, None),          # Lin Dong's voice, nobody on screen
+                          LinePrints(voice(0), face(0), 0.8, None)])       # Lin Dong's voice and face
+    _translate(monkeypatch, pipeline)
+    await pipeline.run_analysis_pipeline(job_id)
+
+    (first, first_label), (second, second_label) = await _lines(background_db, job_id)
+    assert (first_label, second_label) == ("SPEAKER_00", "SPEAKER_00")    # the best guess still takes the line
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    assert json.loads(first.who_check) == [{"speaker_id": lin, "basis": "voice"}, {"speaker_id": mei, "basis": "voice"}]
+    assert json.loads(second.who_check) == [{"speaker_id": lin, "basis": "voice + face"},
+                                            {"speaker_id": mei, "basis": "voice"}]
+
+
+@pytest.mark.asyncio
+async def test_before_any_print_is_made_a_new_episode_is_to_check_not_a_first_episode(monkeypatch, uploads,
+                                                                                       background_db):
+    """Right after the update, a checked project's lines have no prints yet: no profile, but not a first episode."""
+    project_id, job_id = await _first_episode(background_db)
+    async with background_db() as s:
+        lin = Speaker(project_id=project_id, label="SPEAKER_00", display_name="Lin Dong")
+        s.add(lin)
+        await s.commit()
+    await _waiting_line(background_db, uploads, project_id, lin.id)
+    _vocals(uploads, project_id, job_id)
+    _transcribe(monkeypatch, [("SPEAKER_07", 0.0, 1.0, "你好")])
+    _prints(monkeypatch, [LinePrints(voice(0), None, None, None)])
+    _translate(monkeypatch, pipeline)
+    await pipeline.run_analysis_pipeline(job_id)
+
+    [(line, label)] = await _lines(background_db, job_id)
+    assert (label, line.who_check) == ("SPEAKER_07", "[]")
+
+
+@pytest.mark.parametrize("others", ["none", "drafts only", "no vocals to print"])
+@pytest.mark.asyncio
+async def test_with_no_confirmed_line_to_wait_for_it_is_a_first_episode(others, monkeypatch, uploads, background_db):
+    """No confirmed line in the other episodes (or only ones whose episode has no vocals to print them from, which
+    no backfill can ever do): a first episode, Gemini's speakers as before."""
+    project_id, job_id = await _first_episode(background_db)
+    if others != "none":
+        async with background_db() as s:
+            lin = Speaker(project_id=project_id, label="SPEAKER_00", display_name="Lin Dong")
+            s.add(lin)
+            await s.commit()
+        other = await _waiting_line(background_db, uploads, project_id, lin.id)
+        async with background_db() as s:
+            line = (await s.execute(select(Segment).where(Segment.job_id == other))).scalar_one()
+            if others == "drafts only":
+                line.who_confirmed, line.who_check = False, "[]"
+            await s.commit()
+        if others == "no vocals to print":
+            (uploads / project_id / other / "vocals.wav").unlink()
+    _vocals(uploads, project_id, job_id)
+    _transcribe(monkeypatch, [("SPEAKER_07", 0.0, 1.0, "你好")])
+    _prints(monkeypatch, [LinePrints(voice(0), None, None, None)])
+    _translate(monkeypatch, pipeline)
+    await pipeline.run_analysis_pipeline(job_id)
+
+    [(line, label)] = await _lines(background_db, job_id)
+    assert (label, line.who_check) == ("SPEAKER_07", None)
+
+
+@pytest.mark.asyncio
+async def test_prints_made_while_the_analysis_waits_for_the_models_count(monkeypatch, uploads, background_db):
+    """An analysis waiting behind the start-up backfill reads the characters after its wait, not before: the
+    prints made meanwhile count (read before, the project looked like it had none: a first episode, all sure)."""
+    project_id, ids = await _project(background_db)
+    async with background_db() as s:     # the checked episode's prints aren't made yet...
+        await s.execute(delete(LinePrint))
+        await s.commit()
+    job_id = await _episode(background_db, project_id)
+    _vocals(uploads, project_id, job_id)
+    _transcribe(monkeypatch, [("SPEAKER_07", 0.0, 1.0, "你好")])
+    loop = asyncio.get_running_loop()
+
+    def fake(video_path, vocals_path, spans, with_faces=True):
+        async def backfill_meanwhile():   # ...and are while this analysis waits its turn
+            async with background_db() as s:
+                lines = (await s.execute(select(Segment).where(Segment.speaker_id.in_(ids.values())))).scalars()
+                for line in lines:
+                    k = 0 if line.speaker_id == ids["SPEAKER_00"] else 1
+                    s.add(LinePrint(segment_id=line.id, job_id=line.job_id, voice_print=voice(k).tobytes(),
+                                    face_print=face(k).tobytes(), model_version=store.MODEL_VERSION))
+                await s.commit()
+        asyncio.run_coroutine_threadsafe(backfill_meanwhile(), loop).result(timeout=10)
+        return [LinePrints(voice(0), None, None, None)]   # sounds like Lin Dong
+
+    monkeypatch.setattr(prints_module, "prints_for_spans", fake)
+    _translate(monkeypatch, pipeline)
+    await pipeline.run_analysis_pipeline(job_id)
+
+    [(line, label)] = await _lines(background_db, job_id)
+    assert (label, line.who_check) == ("SPEAKER_00", None)
 
 
 @pytest.mark.asyncio
@@ -666,3 +812,55 @@ async def test_two_analyses_never_run_the_models_at_once(monkeypatch, uploads, f
     results = await asyncio.gather(*(recognise(job_id) for job_id in jobs))
     assert max(most) == 1
     assert [labels for labels, _, _ in results] == [["SPEAKER_00"], ["SPEAKER_00"]]
+
+
+def _load_models():
+    """Load the models' sessions as a run does (the voice model only once fetched)."""
+    from app.services.characters import faces, lips, voiceprint
+    faces._session("yunet")
+    lips._session()
+    try:
+        models.path("eres2netv2")
+    except models.ModelMissing:
+        return
+    voiceprint._extractor()
+
+
+def _loaded() -> list[int]:
+    from app.services.characters import faces, lips, voiceprint
+    return [loader.cache_info().currsize for loader in (faces._session, lips._session, voiceprint._extractor)]
+
+
+def test_the_models_are_released_after_a_run_nobody_waits_for():
+    """About 0.5 GB stays resident otherwise, for the backend's life, on an 8 GB Mac. The next run loads them again
+    (about a second)."""
+    assert store._one_at_a_time(lambda: (_load_models(), "made")[1]) == "made"
+    assert _loaded() == [0, 0, 0]
+    with pytest.raises(RuntimeError):                 # a failed run releases them too
+        store._one_at_a_time(lambda: (_load_models(), (_ for _ in ()).throw(RuntimeError("ffmpeg died"))))
+    assert _loaded() == [0, 0, 0]
+
+
+def test_the_models_stay_loaded_while_another_run_waits():
+    loaded, release = threading.Event(), threading.Event()
+    seen = []
+
+    def first():
+        _load_models()
+        loaded.set()
+        release.wait(10)
+
+    first_run = threading.Thread(target=store._one_at_a_time, args=(first,))
+    first_run.start()
+    assert loaded.wait(10)
+    second_run = threading.Thread(target=store._one_at_a_time, args=(lambda: seen.append(_loaded()[:2]),))
+    second_run.start()
+    deadline = time.monotonic() + 10
+    while store._runs < 2 and time.monotonic() < deadline:   # the second run waits for the first
+        time.sleep(0.005)
+    release.set()
+    first_run.join(10)
+    second_run.join(10)
+    assert seen == [[1, 1]]               # still loaded for the run that waited
+    assert _loaded() == [0, 0, 0]         # released after the last one
+

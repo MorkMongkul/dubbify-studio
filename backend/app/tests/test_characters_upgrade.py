@@ -5,14 +5,22 @@ project, and computes the prints of every older line in the background so profil
 
 The models are replaced at the service boundary (characters.prints.prints_for_spans), as in test_characters_pipeline.
 """
+import logging
 import os
+import platform
+import subprocess
+import sys
+from datetime import datetime
 
 import pytest
 from sqlalchemy import select
 
+from app.core.binaries import ffmpeg
+
 from app.models.models import Job, JobStatus, LinePrint, Project, Segment, Speaker, Voice
 from app.services.characters import store, upgrade
 from app.services.characters.types import LinePrints
+from app.services.characters import prints as prints_module
 from app.tests.test_characters_pipeline import (  # noqa: F401  (fixtures)
     _episode, _line_prints, _prints, _project, _vocals, background_db, face, uploads, voice,
 )
@@ -60,8 +68,11 @@ async def _convert(db_sessionmaker, project_id) -> int:
 
 
 async def _setup(db_sessionmaker):
-    """A project with Lin Dong (SPEAKER_00) and Mei (SPEAKER_01), and one episode (no lines yet)."""
+    """A project from before 0.5.0 with Lin Dong (SPEAKER_00) and Mei (SPEAKER_01), and one episode (no lines yet)."""
     project_id, ids = await _project(db_sessionmaker)
+    async with db_sessionmaker() as s:
+        (await s.get(Project, project_id)).characters_version = None   # NULL, as add_missing_columns leaves it
+        await s.commit()
     job_id = await _episode(db_sessionmaker, project_id, status=JobStatus.COMPLETED)
     return project_id, ids, job_id
 
@@ -116,6 +127,28 @@ async def test_a_tie_between_characters_goes_to_the_lower_label(db_sessionmaker)
     await _convert(db_sessionmaker, project_id)
 
     assert (await _seg(db_sessionmaker, line)).speaker_id == first
+
+
+@pytest.mark.asyncio
+async def test_a_voice_only_the_app_picked_becomes_a_new_character(db_sessionmaker):
+    """"Choose for me" picks a built-in voice unused in the episode, so the same voice repeats on unrelated
+    characters: a line the owner cast by hand never moves onto (and is never confirmed on) an app-picked one."""
+    project_id, ids, job_id = await _setup(db_sessionmaker)
+    v = await _voices(db_sessionmaker)
+    async with db_sessionmaker() as s:
+        picked_by_app = Speaker(project_id=project_id, label="SPEAKER_02", voice_id=v[2], voice_auto=True)
+        s.add(picked_by_app)
+        await s.commit()
+        auto_id = picked_by_app.id
+    _, line = await _add_lines(db_sessionmaker, job_id, [(auto_id, None, {}), (ids["SPEAKER_00"], v[2], {})])
+
+    assert await _convert(db_sessionmaker, project_id) == 1
+
+    moved = await _seg(db_sessionmaker, line)
+    assert moved.speaker_id not in (auto_id, ids["SPEAKER_00"]) and moved.who_confirmed
+    async with db_sessionmaker() as s:
+        new = await s.get(Speaker, moved.speaker_id)
+        assert (new.voice_id, bool(new.voice_auto), new.display_name) == (v[2], False, "")
 
 
 @pytest.mark.asyncio
@@ -210,6 +243,24 @@ async def test_upgrade_runs_once_and_resumes_prints(monkeypatch, uploads, backgr
 
 
 @pytest.mark.asyncio
+async def test_a_project_made_with_characters_is_never_converted(client, db_sessionmaker):
+    """A project created from 0.5.0 on has characters from its first episode: a line's own voice there is casting
+    only (a flashback), so the next start-up's conversion must leave it on its character."""
+    project_id = (await client.post("/api/v1/projects/", json={"name": "New series"})).json()["id"]
+    job_id = await _episode(db_sessionmaker, project_id, status=JobStatus.COMPLETED)
+    v = await _voices(db_sessionmaker)
+    lin = await _speaker(db_sessionmaker, project_id, "SPEAKER_00", v[0], "Lin Dong")
+    (flashback,) = await _add_lines(db_sessionmaker, job_id, [(lin, v[1], {})])
+
+    assert await upgrade.convert_projects(db_sessionmaker) == 0
+
+    seg = await _seg(db_sessionmaker, flashback)
+    assert (seg.speaker_id, seg.voice_id, seg.who_confirmed) == (lin, v[1], False)
+    async with db_sessionmaker() as s:
+        assert len((await s.execute(select(Speaker).where(Speaker.project_id == project_id))).scalars().all()) == 1
+
+
+@pytest.mark.asyncio
 async def test_prints_backfill_recomputes_stale_rows(monkeypatch, uploads, background_db):
     db = background_db
     project_id, ids, job_id = await _setup(db)
@@ -242,6 +293,118 @@ async def test_models_that_cannot_run_never_stop_the_start_up(monkeypatch, uploa
     await upgrade.upgrade_projects(db)   # no exception
 
     assert await _line_prints(db, job_id) == {}
+
+
+async def _episode_needing_prints(db, uploads, project_id, created_at, at: float) -> str:
+    """An episode made at `created_at` (with its vocals) whose one line, at `at` s, has no prints yet."""
+    async with db() as s:
+        job = Job(project_id=project_id, status=JobStatus.COMPLETED, video_path="v.mp4", created_at=created_at)
+        s.add(job)
+        await s.flush()
+        s.add(Segment(job_id=job.id, start_time=at, end_time=at + 1.0, source_start=at, source_end=at + 1.0,
+                      source_text="句", khmer_text="km"))
+        await s.commit()
+        job_id = job.id
+    _vocals(uploads, project_id, job_id)
+    return job_id
+
+
+async def _new_project(db, name) -> str:
+    async with db() as s:
+        project = Project(name=name)
+        s.add(project)
+        await s.commit()
+        return project.id
+
+
+@pytest.mark.asyncio
+async def test_the_backfill_starts_with_the_project_worked_on_most_recently(monkeypatch, uploads, background_db):
+    """The project the owner is working on gets complete profiles first: projects by their newest episode, newest
+    first, and each project's episodes newest first."""
+    db = background_db
+    older, newer = await _new_project(db, "Older series"), await _new_project(db, "Newer series")
+    await _episode_needing_prints(db, uploads, older, datetime(2026, 10, 10), at=10.0)
+    await _episode_needing_prints(db, uploads, newer, datetime(2026, 10, 1), at=1.0)
+    await _episode_needing_prints(db, uploads, newer, datetime(2026, 10, 20), at=20.0)
+    calls = []
+    _prints(monkeypatch, [LinePrints(voice(1), None, None, None)], calls)
+
+    assert await upgrade.backfill_prints(db) is True
+
+    assert calls == [[(20.0, 21.0)], [(1.0, 2.0)], [(10.0, 11.0)]]
+
+
+@pytest.mark.asyncio
+async def test_an_episode_whose_prints_fail_does_not_stop_the_others(monkeypatch, uploads, background_db, caplog):
+    """One bad episode (a damaged vocals file, say) is logged and skipped: the others still get their prints."""
+    db = background_db
+    project_id = await _new_project(db, "Series")
+    bad = await _episode_needing_prints(db, uploads, project_id, datetime(2026, 10, 20), at=20.0)
+    good = await _episode_needing_prints(db, uploads, project_id, datetime(2026, 10, 1), at=1.0)
+    calls = []
+
+    def fake(video_path, vocals_path, spans, with_faces=True):
+        calls.append(list(spans))
+        if spans == [(20.0, 21.0)]:
+            raise RuntimeError("ffmpeg could not read vocals.wav")
+        return [LinePrints(voice(1), None, None, None)]
+    monkeypatch.setattr(prints_module, "prints_for_spans", fake)
+
+    with caplog.at_level(logging.WARNING):
+        assert await upgrade.backfill_prints(db) is True
+
+    assert calls == [[(20.0, 21.0)], [(1.0, 2.0)]]
+    assert await _line_prints(db, bad) == {} and len(await _line_prints(db, good)) == 1
+    assert any("ffmpeg could not read vocals.wav" in r.getMessage() for r in caplog.records)
+
+
+class _NoImport:
+    """A meta path finder that refuses (and notes) every import of the models' libraries."""
+    def __init__(self, names):
+        self.names, self.tried = names, []
+
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] in self.names:
+            self.tried.append(name)
+            raise ImportError(f"{name} was imported")
+        return None
+
+
+@pytest.mark.asyncio
+async def test_below_macos_13_4_the_backfill_never_imports_the_models(monkeypatch, uploads, background_db, caplog):
+    """onnxruntime's wheels need macOS 13.4: on an older Mac the start-up backfill stops as "can't run here"
+    before anything imports onnxruntime or sherpa_onnx (it runs at every launch)."""
+    db = background_db
+    project_id = await _new_project(db, "Series")
+    job_id = await _episode_needing_prints(db, uploads, project_id, datetime(2026, 10, 20), at=0.0)
+    vocals = uploads / project_id / job_id / "vocals.wav"   # real sound, so the models would really be reached
+    subprocess.run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=f=220:d=2",
+                    str(vocals)], check=True)
+    guard = _NoImport({"onnxruntime", "sherpa_onnx"})
+    for name in [n for n in sys.modules if n.split(".")[0] in guard.names]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setattr(sys, "meta_path", [guard, *sys.meta_path])
+    from app.services.characters import faces, lips, voiceprint
+    for loader in (faces._session, lips._session, voiceprint._extractor):
+        loader.cache_clear()     # nothing loaded before: a run would have to import
+    monkeypatch.setattr(platform, "mac_ver", lambda: ("13.3.1", ("", "", ""), "arm64"))
+
+    with caplog.at_level(logging.WARNING):
+        assert await upgrade.backfill_prints(db) is False
+
+    assert guard.tried == []
+    assert await _line_prints(db, job_id) == {}
+    assert any("can't run here" in r.getMessage() and "13.4" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("release, ok", [
+    ("13.3.1", False), ("12.7.6", False), ("13", False), ("10.16", False),
+    ("13.4", True), ("13.4.1", True), ("14", True), ("26.6.2", True), ("", True),   # "": not a Mac (CI on Linux)
+])
+def test_the_models_need_macos_13_4(monkeypatch, release, ok):
+    from app.services.characters import models
+    monkeypatch.setattr(platform, "mac_ver", lambda: (release, ("", "", ""), "arm64"))
+    assert models.runtime_supported() is ok
 
 
 async def _crop(folder, name, content=b"jpeg") -> str:

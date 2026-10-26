@@ -3,7 +3,8 @@
 A numpy + onnxruntime port of OpenCV 5.0.0's FaceDetectorYN and FaceRecognizerSF (objdetect/src/face_detect.cpp,
 face_recognize.cpp) and of the Light-ASD demo's crop: the app ships no OpenCV, whose macOS wheel bundles a GPL FFmpeg.
 tests/fixtures/faces_parity.npz (OpenCV's own answers, written by scripts/export-yunet.py) is the check. Frames come
-from the bundled ffmpeg one at a time, and a track keeps only crops and features, never frames."""
+from the bundled ffmpeg one at a time, at most 1280 px on their long side (the measured 720x1280: a bigger picture
+costs by the pixel), and a track keeps only crops and features, never frames."""
 import json
 import subprocess
 import tempfile
@@ -18,8 +19,9 @@ from app.core.binaries import ffmpeg, ffprobe
 from app.services.characters import models
 
 FPS = 25
+MAX_SIDE = 1280  # frames are read at most this long (1080p took 2.4x as long as 720p, 4K 9x); never made bigger
 SCORE = 0.7
-MIN_SIDE = 40
+MIN_SIDE = 40  # px, in the frames as read
 NMS_IOU = 0.3
 TOP_K = 5000
 STRIDES = (8, 16, 32)
@@ -46,6 +48,16 @@ def _session(name: str):
 
 
 def video_size(video_path: str) -> tuple[int, int] | None:
+    """(width, height) of the frames `frames` reads — upright (ffmpeg turns a rotated video), the long side at most
+    MAX_SIDE — or None without a picture."""
+    native = _decoded_size(video_path)
+    if native is None or max(native) <= MAX_SIDE:
+        return native
+    scale = MAX_SIDE / max(native)
+    return max(1, round(native[0] * scale)), max(1, round(native[1] * scale))
+
+
+def _decoded_size(video_path: str) -> tuple[int, int] | None:
     """(width, height) of the frames ffmpeg decodes (it turns a rotated video upright), or None without a picture."""
     result = subprocess.run([ffprobe(), "-v", "error", "-select_streams", "v:0", "-show_entries",
                              "stream=width,height:stream_side_data=rotation", "-of", "json", video_path],
@@ -64,6 +76,8 @@ def video_size(video_path: str) -> tuple[int, int] | None:
 def frames(video_path: str, start: float, end: float, fps: int = FPS, *,
            size: tuple[int, int] | None = None) -> Iterator[tuple[float, np.ndarray]]:
     """The picture from `start` to `end` s at `fps`, one (time, BGR uint8 frame) at a time: frame k is start + k/fps.
+    Frames are `size` (video_size: at most MAX_SIDE long); at the video's own size the scale filter leaves them byte
+    for byte as decoded.
 
     start_time=0 makes the fps filter count from `start`; without it, it counts from the first frame after `start` and
     labels every frame one late. `size` saves a probe when the caller knows it (video_size)."""
@@ -75,8 +89,8 @@ def frames(video_path: str, start: float, end: float, fps: int = FPS, *,
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen(
             [ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{start:.6f}", "-to", f"{end:.6f}",
-             "-i", video_path, "-map", "0:v:0", "-vf", f"fps={fps}:start_time=0", "-f", "rawvideo", "-pix_fmt", "bgr24",
-             "-"], stdout=subprocess.PIPE, stderr=errors)
+             "-i", video_path, "-map", "0:v:0", "-vf", f"fps={fps}:start_time=0,scale={width}:{height}", "-f",
+             "rawvideo", "-pix_fmt", "bgr24", "-"], stdout=subprocess.PIPE, stderr=errors)
         read_all = False
         try:
             k = 0

@@ -5,19 +5,32 @@
 workflow runs before the backend is built. `app/assets` is bundled whole, so the files land in the packaged app.
 
 This module imports no runtime library: path() works on a Mac that can't load onnxruntime or sherpa_onnx. Only
-self_test() and the loaders that use those libraries import them. There is no OpenCV in the app (its macOS wheel
-bundles a GPL FFmpeg): the two face models run as plain onnxruntime sessions."""
+self_test() and the loaders that use those libraries import them, and recognition asks runtime_supported() first
+(characters.store), so a Mac below macOS 13.4 never even tries. There is no OpenCV in the app (its macOS wheel bundles
+a GPL FFmpeg): the two face models run as plain onnxruntime sessions."""
 import json
+import platform
 from pathlib import Path
 
 DIR = Path(__file__).resolve().parents[2] / "assets" / "models"
 MANIFEST = DIR / "models.json"
 
 OK = "Character models: ok"
+MIN_MACOS = (13, 4)   # onnxruntime 1.23.2's wheels (the app itself runs from macOS 11)
 
 
 class ModelMissing(RuntimeError):
     pass
+
+
+def runtime_supported() -> bool:
+    """Whether this macOS can load the models' libraries (True off macOS). Asks the system only: nothing is imported."""
+    release = platform.mac_ver()[0]
+    try:
+        version = tuple(int(part) for part in release.split(".")[:2]) if release else None
+    except ValueError:
+        return True
+    return version is None or version + (0,) * (2 - len(version)) >= MIN_MACOS
 
 
 def path(name: str) -> Path:

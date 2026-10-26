@@ -477,12 +477,14 @@ async def run_speaker_detection(job_id: str) -> None:
 
             heard = {p.speaker_label: p.gender for p in pieces if p.gender in VOICES}
             speaker_map = await ensure_speakers(db, project.id, labels, heard)
-            # Re-read: the user may have deleted segments while Gemini was listening.
+            # Re-read: the user may have deleted segments, picked their characters or marked the episode finished
+            # while Gemini was listening (populate_existing: the session still holds them as they were before).
             current = {s.id: s for s in (await db.execute(
-                select(Segment).where(Segment.id.in_(segment_ids))
+                select(Segment).where(Segment.id.in_(segment_ids)).execution_options(populate_existing=True)
             )).scalars().all()}
+            await db.refresh(job)
             for segment_id, label in zip(segment_ids, labels):
-                if segment_id in current:
+                if segment_id in current and not store.is_confirmed(current[segment_id], job):
                     current[segment_id].speaker_id = speaker_map[label].id
             await db.flush()
             await remove_unused_auto_speakers(db, project.id)

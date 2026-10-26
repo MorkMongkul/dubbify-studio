@@ -139,9 +139,11 @@ class Project(Base):
     story_notes = Column(JSON, nullable=True)
 
     # Characters (0.5.0): the rules version the project was last brought up to
-    # (NULL = not yet), and the pairs of speakers the user said are not the same
-    # person (JSON text: a list of [a, b] speaker ids, each pair sorted).
-    characters_version    = Column(Integer, nullable=True)
+    # (NULL = made before 0.5.0, converted once at startup by
+    # characters.upgrade.convert_projects; new projects get 1 — no DB default,
+    # so existing rows stay NULL), and the pairs of speakers the user said are
+    # not the same person (JSON text: a list of [a, b] speaker ids, each pair sorted).
+    characters_version    = Column(Integer, nullable=True, default=1)
     character_dismissals  = Column(Text, nullable=True)
 
     jobs     = relationship("Job", back_populates="project", cascade="all, delete")

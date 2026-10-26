@@ -12,7 +12,7 @@ from collections import Counter
 from contextlib import suppress
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -38,11 +38,12 @@ def _next_label(taken: set[str]) -> str:
 
 
 async def convert_voice_overrides(db: AsyncSession, project_id: str) -> int:
-    """Every line whose own voice differs from its speaker's (or that has no speaker) moves to the character cast
-    with that voice — the one with the most lines when several, the lowest label on a tie — or to a new character
-    for a voice nobody has (one per voice, no name). The line's own voice is cleared and the line counts as
-    confirmed: it was the owner's hand fix. Text, timing and audio are untouched. Flushes; the caller commits.
-    Returns how many lines moved."""
+    """Every line whose own voice differs from its speaker's (or that has no speaker) moves to the character a person
+    cast with that voice — the one with the most lines when several, the lowest label on a tie — or to a new
+    character for a voice no person gave anyone (one per voice, no name). A voice "Choose for me" picked
+    (voice_auto) says nothing about who the actor is: it repeats on unrelated characters. The line's own voice is
+    cleared and the line counts as confirmed: it was the owner's hand fix. Text, timing and audio are untouched.
+    Flushes; the caller commits. Returns how many lines moved."""
     speakers = (await db.execute(select(Speaker).where(Speaker.project_id == project_id))).scalars().all()
     by_id = {sp.id: sp for sp in speakers}
     lines = (await db.execute(
@@ -56,7 +57,7 @@ async def convert_voice_overrides(db: AsyncSession, project_id: str) -> int:
     taken = {sp.label for sp in speakers}
     target_of: dict[str, Speaker] = {}
     for voice_id in sorted({s.voice_id for s in overrides}):
-        cast = [sp for sp in speakers if sp.voice_id == voice_id]
+        cast = [sp for sp in speakers if sp.voice_id == voice_id and not sp.voice_auto]
         if cast:
             target_of[voice_id] = min(cast, key=lambda sp: (-counts[sp.id], sp.label))
             continue
@@ -169,16 +170,27 @@ async def refresh_faces_safely(db: AsyncSession, project_id: str) -> None:
             await db.rollback()
 
 
+async def _jobs_needing_prints(db: AsyncSession) -> list[str]:
+    """Jobs with a line that has no print from today's models: the project worked on most recently first (by its
+    newest episode; until its profiles are complete, no line of its next episode can be sure), each project's
+    newest episodes first."""
+    newest = (select(Job.project_id, func.max(Job.created_at).label("newest"))
+              .group_by(Job.project_id).subquery())
+    waiting = (select(Segment.job_id).outerjoin(LinePrint, LinePrint.segment_id == Segment.id)
+               .where((LinePrint.segment_id.is_(None)) | (LinePrint.model_version != store.model_version())))
+    return (await db.execute(
+        select(Job.id).join(newest, newest.c.project_id == Job.project_id).where(Job.id.in_(waiting))
+        .order_by(newest.c.newest.desc(), Job.project_id, Job.created_at.desc(), Job.id)
+    )).scalars().all()
+
+
 async def backfill_prints(sessionmaker) -> bool:
     """Prints for every line with none (or made by other models), job by job through the one-at-a-time lock.
-    The models run with no connection held (`store._find_prints` commits first). Returns False when they can't run
-    here (logged once by `_find_prints`): the rest waits for a Mac that can."""
+    The models run with no connection held (`store.make_prints` commits first). Returns False when they can't run
+    here (logged once): the rest waits for a Mac that can. An episode whose prints fail is logged and skipped, so
+    one bad episode never keeps the others from theirs."""
     async with sessionmaker() as db:
-        job_ids = (await db.execute(
-            select(Segment.job_id).outerjoin(LinePrint, LinePrint.segment_id == Segment.id)
-            .where((LinePrint.segment_id.is_(None)) | (LinePrint.model_version != store.model_version()))
-            .distinct()
-        )).scalars().all()
+        job_ids = await _jobs_needing_prints(db)
     for job_id in job_ids:
         try:
             async with sessionmaker() as db:
@@ -192,8 +204,10 @@ async def backfill_prints(sessionmaker) -> bool:
                            | (LinePrint.model_version != store.model_version()))
                     .order_by(Segment.start_time))).scalars().all()
                 ids, spans = [s.id for s in todo], [actor_span(s) for s in todo]
-                found = await store._find_prints(db, job, spans, vocals)
-                if found is None:
+                try:
+                    found = await store.make_prints(db, job, spans, vocals)
+                except store.CANT_RUN as e:
+                    logger.warning(f"Older lines' prints weren't made, the models can't run here: {e}")
                     return False
                 # lines the user deleted while the models ran keep no print
                 alive = set((await db.execute(select(Segment.id).where(Segment.id.in_(ids)))).scalars())
@@ -202,8 +216,8 @@ async def backfill_prints(sessionmaker) -> bool:
                                         store.faces_dir(job))
                 await db.commit()
                 logger.info(f"Job {job_id[:8]}: {len(keep)} older line(s) got their prints")
-        except Exception:  # noqa: BLE001 — not fatal: the next launch resumes
-            logger.exception(f"Couldn't make the prints of job {job_id[:8]}'s older lines")
+        except Exception as e:  # noqa: BLE001 — not fatal: the next job goes on, the next launch tries this one again
+            logger.exception(f"Couldn't make the prints of job {job_id[:8]}'s older lines: {e}")
     return True
 
 

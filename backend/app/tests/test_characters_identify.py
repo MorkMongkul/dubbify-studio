@@ -8,6 +8,7 @@ characters.prints.prints_for_spans); the profiles come from real stored prints, 
 """
 import asyncio
 import json
+from datetime import datetime
 
 import numpy as np
 import pytest
@@ -18,9 +19,10 @@ from app.services import pipeline
 from app.services.characters import models, store
 from app.services.characters import prints as prints_module
 from app.services.characters.types import LinePrints
+from app.services.diarizer import DiarizedSegment
 from app.tests.test_characters_pipeline import (  # noqa: F401  (fixtures)
     _episode, _first_episode, _line_prints, _lines, _old_confirmed_line, _prints, _project, _store_warnings, _transcribe, _vocals,
-    background_db, face, uploads, voice,
+    _waiting_line, background_db, face, uploads, voice,
 )
 
 
@@ -121,6 +123,36 @@ async def test_detect_speakers_marks_uncertain_lines(client, monkeypatch, upload
     guesses = json.loads(seg.who_check)
     assert {g["speaker_id"] for g in guesses} == set(ids.values()) and {g["basis"] for g in guesses} == {"voice"}
     assert label in ids   # the better guess, to be checked by the user
+
+
+@pytest.mark.asyncio
+async def test_detect_speakers_is_never_sure_by_voice_over_another_line(client, monkeypatch, uploads, background_db):
+    """An open line spoken over a confirmed one of the same episode has a mixed voice print: to check."""
+    project_id, job_id, ids, _ = await _detect_setup(background_db, uploads, [
+        (0.0, 2.0, {}), (1.0, 3.0, {"who_confirmed": True}), (5.0, 6.0, {})])
+    _no_gemini(monkeypatch)
+    _prints(monkeypatch, [_p(0, with_face=False), _p(0, with_face=False)])
+    await _detect(client, job_id)
+
+    lines = {seg.source_text: (label, seg.who_check) for seg, label in await _lines(background_db, job_id)}
+    label, check = lines["旧0"]
+    assert label == "SPEAKER_00" and [g["basis"] for g in json.loads(check)] == ["voice", "voice"]
+    assert lines["旧2"] == ("SPEAKER_00", None)
+
+
+@pytest.mark.asyncio
+async def test_detect_speakers_is_never_sure_while_confirmed_lines_wait_for_prints(client, monkeypatch, uploads,
+                                                                                  background_db):
+    project_id, job_id, ids, _ = await _detect_setup(background_db, uploads, [(0.0, 2.0, {})])
+    await _waiting_line(background_db, uploads, project_id, ids["SPEAKER_01"])
+    _no_gemini(monkeypatch)
+    _prints(monkeypatch, [_p(0)])    # Lin Dong's voice and face
+    await _detect(client, job_id)
+
+    [(seg, label)] = await _lines(background_db, job_id)
+    assert label == "SPEAKER_00"
+    assert json.loads(seg.who_check) == [{"speaker_id": ids["SPEAKER_00"], "basis": "voice + face"},
+                                         {"speaker_id": ids["SPEAKER_01"], "basis": "voice"}]
 
 
 @pytest.mark.asyncio
@@ -239,6 +271,41 @@ async def test_a_line_confirmed_while_the_models_run_is_not_relabelled(
 
     lines = {seg.source_text: (label, seg.who_check) for seg, label in await _lines(background_db, job_id)}
     assert lines["旧0"] == ("SPEAKER_02", None)   # still Uncle Wang, not Lin Dong
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["picked", "episode finished"])
+async def test_a_line_confirmed_while_gemini_listens_is_not_relabelled(client, monkeypatch, uploads, background_db,
+                                                                        how):
+    """Without characters yet, Detect speakers asks Gemini, which takes minutes: a line confirmed meanwhile — its
+    character picked, or its episode marked finished — keeps its speaker (Ruling U)."""
+    project_id = (await client.post("/api/v1/projects/", json={"name": "New series"})).json()["id"]
+    job_id = await _episode(background_db, project_id, status=JobStatus.COMPLETED)
+    async with background_db() as s:
+        uncle = Speaker(project_id=project_id, label="SPEAKER_02", display_name="Uncle Wang")
+        s.add(uncle)
+        await s.flush()
+        line = Segment(job_id=job_id, speaker_id=uncle.id, start_time=0.0, end_time=2.0, source_start=0.0,
+                       source_end=2.0, source_text="旧", khmer_text="km")
+        s.add(line)
+        await s.commit()
+        line_id = line.id
+    _vocals(uploads, project_id, job_id)
+
+    async def gemini_listens(audio_path, references=(), taken_labels=(), language="zh", clip_audio=None):
+        async with background_db() as s:   # the user confirms the line meanwhile
+            if how == "picked":
+                (await s.get(Segment, line_id)).who_confirmed = True
+            else:
+                (await s.get(Job, job_id)).finished_at = datetime.now()
+            await s.commit()
+        return [DiarizedSegment("SPEAKER_09", 0.0, 2.0, "unknown", "adult", "旧")], False
+    monkeypatch.setattr(pipeline, "transcribe_audio", gemini_listens)
+    await _detect(client, job_id)
+
+    [(seg, label)] = await _lines(background_db, job_id)
+    assert label == "SPEAKER_02"
+    assert (await store_job(background_db, job_id)).status == JobStatus.COMPLETED
 
 
 @pytest.mark.asyncio

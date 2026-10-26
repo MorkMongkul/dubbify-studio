@@ -8,6 +8,7 @@ from app.services.characters.decide import (
     Decision,
     Profile,
     decide,
+    overlapping,
     profile_from,
 )
 from app.services.characters.types import LinePrints
@@ -78,7 +79,37 @@ def test_a_profile_is_the_normalised_mean_of_its_prints():
 def test_a_face_below_the_floor_falls_back_to_the_voice():
     face = line_with([0.0, 0.3])  # favours B, but under the floor
     d = decide(prints(line_with([0.2 + 0.4, 0.2]), face), PROFILES)
-    assert d.speaker_id == "A" and d.sure and d.guesses == []
+    # the voice picks; a face that matches nobody keeps it to check (Ruling AJ, amending K)
+    assert d.speaker_id == "A" and not d.sure and d.guesses == [("A", "voice"), ("B", "voice")]
+
+
+def test_a_speaking_face_no_character_has_is_never_sure_by_voice():
+    """Ruling AJ: a face speaks the line, characters have faces, and it is none of theirs — a new actor on screen.
+    The voice's lead alone can't make that sure."""
+    unknown_face = line_with([0.0, 0.0])
+    d = decide(prints(line_with([0.60, 0.45]), unknown_face), PROFILES)
+    assert d.speaker_id == "A" and not d.sure
+    assert d.guesses == [("A", "voice"), ("B", "voice")]
+    # with no character's face to compare it with, the face says nothing: the voice's lead decides
+    voices_only = {sid: Profile(p.voice, None, p.lines) for sid, p in PROFILES.items()}
+    assert decide(prints(line_with([0.60, 0.45]), unknown_face), voices_only) == Decision("A", True, [])
+
+
+def test_a_voice_mixed_with_another_line_is_never_sure_by_voice_alone():
+    """Two lines whose actors speak at once give one voice print of both: its lead says nothing (Review Focus 3)."""
+    d = decide(prints(line_with([0.60, 0.45])), PROFILES, mixed_voice=True)
+    assert d.speaker_id == "A" and not d.sure and d.guesses == [("A", "voice"), ("B", "voice")]
+    # a speaking face that agrees still makes it sure
+    assert decide(prints(line_with([0.60, 0.45]), line_with([0.9, 0.1])), PROFILES, mixed_voice=True).sure
+
+
+@pytest.mark.parametrize("spans, mixed", [
+    ([(0.0, 2.0), (1.5, 3.0), (4.0, 5.0), (5.0, 6.0)], [True, True, False, False]),   # touching isn't overlapping
+    ([(0.0, 10.0), (11.0, 12.0), (2.0, 3.0)], [True, False, True]),
+    ([], []),
+])
+def test_lines_whose_actors_speak_at_once_overlap(spans, mixed):
+    assert overlapping(spans) == mixed
 
 
 def test_a_single_voice_profile_is_never_sure_by_margin():

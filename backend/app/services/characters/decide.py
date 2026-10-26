@@ -1,5 +1,10 @@
 """Who said this line? A character's profile is the mean of its confirmed lines' prints; `decide` compares one line's
-prints with every profile and says whether it is sure. Pure numpy: no database, no models."""
+prints with every profile and says whether it is sure. Pure numpy: no database, no models.
+
+The face speaking the line picks the character when it matches one (UNKNOWN_FACE_FLOOR); else the voice does.
+Sure: face and voice agree, or the voice leads the runner-up by SURE_VOICE_MARGIN — but never by the voice alone
+while a face no character has is speaking (a new actor on screen, Ruling AJ), nor while another line is spoken over
+this one (its voice print holds both voices: `overlapping`), and never with one voice profile (no runner-up)."""
 from dataclasses import dataclass
 
 import numpy as np
@@ -57,15 +62,31 @@ def _ranked(print_: np.ndarray | None, profiles: dict[str, Profile], kind: str) 
     return sorted(scored, key=lambda s: -s[1])
 
 
-def decide(p: LinePrints, profiles: dict[str, Profile]) -> Decision:
+def overlapping(spans: list[tuple[float, float]]) -> list[bool]:
+    """Per span (where a line's actor spoke), whether another line's span overlaps it — touching isn't overlapping.
+    Those lines' voice prints are mixed."""
+    return [any(min(end, other_end) > max(start, other_start)
+                for k, (other_start, other_end) in enumerate(spans) if k != i)
+            for i, (start, end) in enumerate(spans)]
+
+
+def decide(p: LinePrints, profiles: dict[str, Profile], mixed_voice: bool = False,
+           may_be_sure: bool = True) -> Decision:
+    """mixed_voice: another line is spoken over this one (`overlapping`), so its voice print holds two voices.
+    may_be_sure: False while the profiles are incomplete (confirmed lines still wait for their prints): a line that
+    would be sure is then to check, its pick the first guess."""
     voices = _ranked(p.voice, profiles, "voice")
-    faces = [s for s in _ranked(p.face, profiles, "face") if s[1] >= UNKNOWN_FACE_FLOOR]
+    compared = _ranked(p.face, profiles, "face")   # empty when no face speaks or no character has a face yet
+    faces = [s for s in compared if s[1] >= UNKNOWN_FACE_FLOOR]
     voice_pick = voices[0][0] if voices else None
     face_pick = faces[0][0] if faces else None
 
     if face_pick is not None:
         if voice_pick == face_pick:
-            return Decision(face_pick, True, [])
+            if may_be_sure:
+                return Decision(face_pick, True, [])
+            runner_up = [(sid, "voice") for sid, _ in voices[1:2]]
+            return Decision(face_pick, False, [(face_pick, "voice + face"), *runner_up])
         if voice_pick is not None:
             return Decision(face_pick, False, [(face_pick, "face"), (voice_pick, "voice")])
         return Decision(face_pick, False, [(sid, "face") for sid, _ in faces[:2]])
@@ -73,7 +94,10 @@ def decide(p: LinePrints, profiles: dict[str, Profile]) -> Decision:
     if not voices or voices[0][1] < UNKNOWN_VOICE_FLOOR:
         return Decision(None, False, [(sid, "voice") for sid, _ in voices[:2]])
 
+    # a face speaks but matches none of the characters' faces: someone new may be speaking, whatever the voice says
+    unknown_face = bool(compared)
     margin = voices[0][1] - voices[1][1] if len(voices) > 1 else None
-    if margin is not None and margin >= SURE_VOICE_MARGIN - _TOLERANCE:
+    if (margin is not None and margin >= SURE_VOICE_MARGIN - _TOLERANCE and not unknown_face and not mixed_voice
+            and may_be_sure):
         return Decision(voice_pick, True, [])
     return Decision(voice_pick, False, [(sid, "voice") for sid, _ in voices[:2]])

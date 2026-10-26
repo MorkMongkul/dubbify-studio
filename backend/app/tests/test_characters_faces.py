@@ -97,6 +97,27 @@ def test_frames_of_a_rotated_video_come_upright(tmp_path):
     assert frame.shape == (64, 48, 3)
 
 
+@pytest.mark.parametrize("native, read", [
+    ((1080, 1920), (720, 1280)),     # a 1080p vertical episode: read as the measured 720x1280
+    ((1920, 1080), (1280, 720)),
+    ((720, 1280), (720, 1280)),      # the measured setup: untouched
+    ((64, 48), (64, 48)),            # never made bigger
+])
+def test_frames_are_read_with_the_long_side_at_most_1280(tmp_path, native, read):
+    """Ruling AK: finding faces costs by the pixel (1080p took 2.4x as long, 4K 9x), and every Apple chip runs it.
+    Read at most 1280 long, as measured; boxes, crops, the 40 px rule and thumbnails all work in that size."""
+    video = tmp_path / "episode.mp4"
+    _ff("-f", "lavfi", "-i", f"testsrc2=s={native[0]}x{native[1]}:r=25:d=0.4", "-c:v", "mpeg4", "-q:v", "2", str(video))
+    assert faces.video_size(str(video)) == read
+    got = list(faces.frames(str(video), 0.0, 0.2))
+    assert len(got) == 5 and all(frame.shape == (read[1], read[0], 3) for _, frame in got)
+    if native == read:   # byte for byte what ffmpeg gives with no scaling
+        plain = subprocess.run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", "0.000000", "-to",
+                                "0.200000", "-i", str(video), "-map", "0:v:0", "-vf", "fps=25:start_time=0",
+                                "-f", "rawvideo", "-pix_fmt", "bgr24", "-"], capture_output=True, check=True).stdout
+        assert b"".join(frame.tobytes() for _, frame in got) == plain
+
+
 def test_a_file_without_a_picture_has_no_video_size(tmp_path):
     sound = tmp_path / "vocals.wav"
     _ff("-f", "lavfi", "-i", "sine=f=220:d=1", str(sound))
