@@ -2,7 +2,8 @@
 card's *Same person as…* does the work, so a merge stays one click and one undo step.
 
 A pair is suggested when both characters were cast with the same voice by a person (an app-picked voice repeats
-across episodes, so it says nothing), or when their voice AND face profiles are close. A pair the user said is not
+across episodes, so it says nothing), or when their voice AND face profiles are close — never when a person cast
+them with different voices (one voice is one actor). A pair the user said is not
 the same is kept in `projects.character_dismissals` (a JSON list of sorted [a, b] pairs) and never comes back."""
 import json
 from itertools import combinations
@@ -49,6 +50,12 @@ def _cosine(a: np.ndarray | None, b: np.ndarray | None) -> float | None:
     return None if a is None or b is None else float(np.dot(a, b))
 
 
+def _cast_apart(x: Speaker, y: Speaker) -> bool:
+    """A person cast them with different voices: one voice is one actor for the whole series (Ruling AO), so they
+    are different people however close their profiles are. A voice "Choose for me" picked says nothing."""
+    return bool(x.voice_id and y.voice_id and x.voice_id != y.voice_id and not x.voice_auto and not y.voice_auto)
+
+
 def find(speakers: list[Speaker], profiles: dict[str, Profile], dismissed: set[Pair],
          lines: dict[str, int] | None = None) -> list[dict]:
     """[{a, b, reason, a_lines, b_lines}] with a < b (the lines each has in the whole project): "same voice" first, then the voice cosine falling, then by pair."""
@@ -60,7 +67,8 @@ def find(speakers: list[Speaker], profiles: dict[str, Profile], dismissed: set[P
         px, py = profiles.get(x.id), profiles.get(y.id)
         voice = _cosine(px and px.voice, py and py.voice)
         face = _cosine(px and px.face, py and py.face)
-        if voice is not None and voice >= SAME_VOICE and face is not None and face >= SAME_FACE:
+        if (voice is not None and voice >= SAME_VOICE and face is not None and face >= SAME_FACE
+                and not _cast_apart(x, y)):
             found.append((1, voice, pair, "same voice and face"))
         elif (x.voice_id and x.voice_id == y.voice_id and not x.voice_auto and not y.voice_auto):
             found.append((0, voice if voice is not None else 0.0, pair, "same voice"))

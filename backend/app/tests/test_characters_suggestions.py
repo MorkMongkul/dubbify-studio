@@ -111,6 +111,23 @@ def test_a_face_as_close_as_two_actors_on_one_label_is_not_enough(face_cosine, s
     assert [g["reason"] for g in got] == (["same voice and face"] if suggested else [])
 
 
+@pytest.mark.parametrize("auto_a, auto_b, suggested", [
+    (False, False, False),   # both chosen by a person, and different: two actors (one voice = one actor)
+    (True, False, True),     # "Choose for me" picked one: it says nothing about the actor
+    (True, True, True),
+])
+def test_two_characters_a_person_cast_with_different_voices_are_never_the_same(auto_a, auto_b, suggested):
+    """Ruling AO: the owner casts one voice per actor for the whole series, so different voices a person chose mean
+    different people — however close their voice and face profiles are."""
+    from app.services.characters.decide import Profile
+    speakers = [Speaker(id="a", label="SPEAKER_00", voice_id="kim", voice_auto=auto_a),
+                Speaker(id="b", label="SPEAKER_01", voice_id="sokunthea", voice_auto=auto_b)]
+    profiles = {"a": Profile(voice(0), face(0), 5),
+                "b": Profile(_near(0, 1, 0.95, 192), _near(0, 1, 0.95, 128), 5)}
+    got = suggestions.find(speakers, profiles, set())
+    assert [g["reason"] for g in got] == (["same voice and face"] if suggested else [])
+
+
 @pytest.mark.asyncio
 async def test_a_dismissed_pair_never_comes_back(client, db_sessionmaker):
     kim = await _voice(db_sessionmaker)
