@@ -210,6 +210,7 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
                       autoFocus
                       className="bg-ink-950 text-[11px] text-ink-200 rounded px-1 py-0.5 flex-1 min-w-0 focus:outline-none border border-brand-500/50"
                       value={editingSpeakerName}
+                      placeholder={getSpeakerDisplayName(speaker, projectIndex)}
                       onChange={(e) => setEditingSpeakerName(e.target.value)}
                       onBlur={() => {
                         const trimmed = editingSpeakerName.trim()
@@ -231,7 +232,8 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
                       className="text-[11px] font-medium text-ink-200 truncate flex-1 cursor-text hover:text-white transition-colors"
                       onClick={() => {
                         setEditingSpeakerId(speaker.id)
-                        setEditingSpeakerName(speaker.display_name || getSpeakerDisplayName(speaker, projectIndex))
+                        // the name only: an unnamed character's label is the placeholder, never saved as a name
+                        setEditingSpeakerName(speaker.display_name || '')
                       }}
                       title="Click to rename"
                     >
