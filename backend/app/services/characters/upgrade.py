@@ -29,7 +29,7 @@ from app.models.models import (
     CHARACTERS_VERSION, AgeGroup, Gender, Job, LinePrint, Project, Segment, Speaker, Voice,
 )
 from app.services import speaker_merge
-from app.services.characters import models, store
+from app.services.characters import models, store, suggestions
 from app.services.diarizer import build_voice_design_prompt
 from app.services.timeline import actor_span
 
@@ -126,8 +126,9 @@ def _as_at_start_up(seg: Segment, at: _Line | None, voices_now: dict, snapshot: 
 
 
 async def _move_lines(db: AsyncSession, project_id: str, heard: dict[str, str], snapshot: _Snapshot) -> list[Segment]:
-    """Every line still as `snapshot` found it whose voice then — its own when it had one, else the one `heard` says
-    its audio was made with — differs from its character's (or that has no character) moves to the character a
+    """Every line still as `snapshot` found it and not confirmed (before 0.5.0 nothing was: a confirmed line is the
+    user's pick) whose voice then — its own when it had one, else the one `heard` says its audio was made with —
+    differs from its character's (or that has no character) moves to the character a
     person cast with that voice: the one with the most lines when several, the lowest label on a tie — or to a new
     character for a voice no person gave anyone (one per voice, no name). A voice "Choose for me" picked (voice_auto)
     says nothing about who the actor is: it repeats on unrelated characters. The line's own voice is cleared (its
@@ -143,7 +144,9 @@ async def _move_lines(db: AsyncSession, project_id: str, heard: dict[str, str], 
     made_with = {}
     for s in lines:
         at = snapshot.lines.get(s.id)
-        if _as_at_start_up(s, at, voices_now, snapshot):
+        # a confirmed line in a project below version 2 is a pick made in 0.5.0 (maybe in a session that quit
+        # before the project's turn): it stays
+        if _as_at_start_up(s, at, voices_now, snapshot) and not at.confirmed:
             made_with[s.id] = at.voice_id or heard.get(s.id)
     moves = [s for s in lines if made_with.get(s.id) and made_with[s.id] != voices_now.get(s.speaker_id)]
     if not moves:
@@ -172,27 +175,55 @@ async def _move_lines(db: AsyncSession, project_id: str, heard: dict[str, str], 
     return moves
 
 
-async def _merge_same_voice(db: AsyncSession, project_id: str, snapshot: _Snapshot) -> int:
-    """Ruling AQ: one voice is one actor, so the characters a person cast with one voice become one — the one with
-    the most lines, the lowest label on a tie — through Same person as…'s own merge (its lines, its Story characters'
-    links; the others removed). A voice "Choose for me" picked says nothing, and a character whose voice isn't the
-    one the start-up found was re-cast by the user since: both are left out. Only the one-time conversion does this;
-    after it Movelo never merges by itself. Flushes; the caller commits. Returns how many labels went."""
-    speakers = (await db.execute(select(Speaker).where(Speaker.project_id == project_id)
+def _real_name(sp: Speaker) -> bool:
+    return bool(sp.display_name) and sp.display_name != sp.label
+
+
+def _inherit(keeper: Speaker, other: Speaker) -> None:
+    """What the user told about a label merged away, where the character that stays has nothing: a name (not just
+    its label), a gender, an age other than the default adult."""
+    if not _real_name(keeper) and _real_name(other):
+        keeper.display_name = other.display_name
+    if keeper.gender in (None, Gender.UNKNOWN) and other.gender not in (None, Gender.UNKNOWN):
+        keeper.gender = other.gender
+    if keeper.age_group in (None, AgeGroup.ADULT) and other.age_group not in (None, AgeGroup.ADULT):
+        keeper.age_group = other.age_group
+
+
+async def _merge_same_voice(db: AsyncSession, project: Project, snapshot: _Snapshot) -> int:
+    """Ruling AQ: one voice is one actor, so the characters a person cast with one voice become one, through Same
+    person as…'s own merge (their lines, their Story characters' links; the others removed). By most lines (the
+    lowest label on a tie), each joins the first character so far that holds no label the user said is "Not the
+    same" as it, else stays its own — so such a pair never becomes one character. The one that stays takes a name,
+    gender or age the user gave a merged label when it has none. A voice "Choose for me" picked says nothing, and a
+    character whose voice isn't the one the start-up found was re-cast by the user since: both are left out. Only
+    the one-time conversion does this; after it Movelo never merges by itself. Flushes; the caller commits. Returns
+    how many labels went."""
+    speakers = (await db.execute(select(Speaker).where(Speaker.project_id == project.id)
                                  .execution_options(populate_existing=True))).scalars().all()
     counts = dict((await db.execute(
         select(Segment.speaker_id, func.count(Segment.id)).where(Segment.speaker_id.in_([sp.id for sp in speakers]))
         .group_by(Segment.speaker_id))).all())
+    dismissed = suggestions.dismissals_from(project.character_dismissals)
     by_voice: dict[str, list[Speaker]] = {}
     for sp in speakers:
         if sp.voice_id and not sp.voice_auto and sp.id in snapshot.voices and snapshot.voices[sp.id] == sp.voice_id:
             by_voice.setdefault(sp.voice_id, []).append(sp)
     merged = 0
     for voice_id in sorted(by_voice):
-        cast = sorted(by_voice[voice_id], key=lambda sp: (-counts.get(sp.id, 0), sp.label))
-        for other in cast[1:]:
-            await speaker_merge.merge_into(db, other, cast[0])
-            merged += 1
+        characters: list[list[Speaker]] = []
+        for sp in sorted(by_voice[voice_id], key=lambda sp: (-counts.get(sp.id, 0), sp.label)):
+            home = next((c for c in characters
+                         if not any(suggestions.pair_of(sp.id, member.id) in dismissed for member in c)), None)
+            if home is None:
+                characters.append([sp])
+            else:
+                home.append(sp)
+        for keeper, *others in characters:
+            for other in others:
+                _inherit(keeper, other)
+                await speaker_merge.merge_into(db, other, keeper)
+                merged += 1
     await db.flush()
     return merged
 
@@ -319,7 +350,7 @@ async def convert_project(sessionmaker, project_id: str, with_models: bool = Tru
             if _converted(project):
                 return 0
             moved = await _move_lines(db, project_id, heard, snapshot)
-            merged = await _merge_same_voice(db, project_id, snapshot)
+            merged = await _merge_same_voice(db, project, snapshot)
             project.characters_version = CHARACTERS_VERSION
             await db.commit()
     except Exception:  # noqa: BLE001 — not fatal: the project stays as it was and the next start-up tries again

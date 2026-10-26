@@ -22,7 +22,7 @@ from sqlalchemy import select
 from app.core.binaries import ffmpeg
 
 from app.models.models import Job, JobStatus, LinePrint, Project, Segment, Speaker, Voice
-from app.services.characters import store, upgrade
+from app.services.characters import store, suggestions, upgrade
 from app.services.characters.types import LinePrints
 from app.services.characters import prints as prints_module
 from app.tests.test_characters_pipeline import (  # noqa: F401  (fixtures)
@@ -779,7 +779,7 @@ async def test_a_label_left_without_lines_stays(monkeypatch, uploads, background
     await _cast_voices(db, {lin: v[0], mei: v[1]})
     async with db() as s:   # _project's first-episode lines: Mei's moves to Lin Dong, Lin Dong's is unvoiced
         for seg in (await s.execute(select(Segment).where(Segment.speaker_id == mei))).scalars():
-            seg.tts_audio_path = str(uploads / "mei.wav")
+            seg.tts_audio_path, seg.who_confirmed = str(uploads / "mei.wav"), False   # as before 0.5.0
         await s.commit()
     (uploads / "mei.wav").write_bytes(b"RIFF")
     _hear(monkeypatch, {**clips, str(uploads / "mei.wav"): _heard((0, 1.0))})
@@ -1279,3 +1279,143 @@ async def test_a_project_made_with_characters_never_merges(client, monkeypatch, 
     await upgrade.upgrade_projects(db)
 
     assert len(await _project_speakers(db, project_id)) == 4
+
+
+
+@pytest.mark.asyncio
+async def test_a_pick_made_in_a_session_that_quit_before_the_conversion_is_kept(monkeypatch, uploads, background_db):
+    """A project below version 2 had no picks before 0.5.0, so a confirmed line there is the user's pick — from this
+    session or one that quit before the project's turn (the snapshot lives in memory): never moved by ear or by its
+    own voice. Its label can still be merged (same voice, same actor), and the pick goes with it."""
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    uncle = await _same_voice_cast(db, project_id, job_id, v[2], story=False)
+    picked, own_voice, on_uncle = await _voiced(db, uploads, project_id, job_id, [
+        (mei, None, {}), (lin, v[1], {}), (uncle["SPEAKER_02"], None, {})])
+    tts = uploads / project_id / job_id / "tts"
+    await upgrade.queue_backfill(db)                # launch 1
+    async with db() as s:                           # the user picks: Lin Dong, Lin Dong, Uncle Wang
+        for line, speaker_id in ((picked, lin), (own_voice, lin), (on_uncle, uncle["SPEAKER_02"])):
+            seg = await s.get(Segment, line)
+            seg.speaker_id, seg.who_confirmed, seg.who_check = speaker_id, True, None
+        await s.commit()
+    store.clear_backfill()                          # the app quits before the project's turn
+    await upgrade.queue_backfill(db)                # launch 2
+    _hear(monkeypatch, {**clips, str(tts / "seg_0.wav"): _heard((1, 1.0)), str(tts / "seg_2.wav"): _heard((1, 1.0))})
+
+    await upgrade.convert_project(db, project_id)
+
+    assert (await _seg(db, picked)).speaker_id == lin
+    seg = await _seg(db, own_voice)
+    assert (seg.speaker_id, seg.voice_id) == (lin, v[1])
+    seg = await _seg(db, on_uncle)
+    assert (seg.speaker_id, seg.who_confirmed) == (uncle["SPEAKER_03"], True)   # merged with its label
+
+
+@pytest.mark.parametrize("not_the_same, stays, lines", [
+    (("SPEAKER_03", "SPEAKER_04"), {"SPEAKER_03", "SPEAKER_04"}, {"SPEAKER_03": 4, "SPEAKER_04": 2}),
+    (("SPEAKER_02", "SPEAKER_03"), {"SPEAKER_03", "SPEAKER_02"}, {"SPEAKER_03": 5, "SPEAKER_02": 1}),
+    # never one character holding a pair the user said are two, even through a third
+    (("SPEAKER_02", "SPEAKER_04"), {"SPEAKER_03", "SPEAKER_02"}, {"SPEAKER_03": 5, "SPEAKER_02": 1}),
+])
+@pytest.mark.asyncio
+async def test_labels_the_user_said_are_not_the_same_are_not_merged(not_the_same, stays, lines, monkeypatch, uploads,
+                                                                   background_db):
+    """By most lines, each label joins the first character so far that holds no one it was said not to be, else
+    stays its own: a pair "Not the same" never ends up as one character."""
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v = await _voices(db)
+    uncle = await _same_voice_cast(db, project_id, job_id, v[2], story=False)
+    await upgrade.queue_backfill(db)                # the start-up
+    async with db() as s:                           # the user, in the Speakers panel: Not the same
+        project = await s.get(Project, project_id)
+        project.character_dismissals = suggestions.dismissals_to(
+            {suggestions.pair_of(uncle[not_the_same[0]], uncle[not_the_same[1]])})
+        await s.commit()
+    _hear(monkeypatch, {})
+
+    await upgrade.finish_upgrade(db)
+
+    labels = {sp.label for sp in await _project_speakers(db, project_id)}
+    assert labels == {"SPEAKER_00", "SPEAKER_01", "SPEAKER_05"} | stays
+    assert {label: await _lines_of(db, uncle[label]) for label in stays} == lines
+
+
+@pytest.mark.asyncio
+async def test_a_merge_keeps_the_names_the_user_gave(monkeypatch, uploads, background_db):
+    """The character that stays takes a name, a gender and an age the user gave a label merged into it when it has
+    none (a name: not empty and not just its label; an age: other than the default adult)."""
+    from app.models.models import AgeGroup, Gender
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v = await _voices(db)
+    uncle = await _same_voice_cast(db, project_id, job_id, v[2], story=False)
+    async with db() as s:
+        second = await s.get(Speaker, uncle["SPEAKER_04"])          # 2 lines: merged first
+        second.display_name, second.gender, second.age_group = "SPEAKER_04", Gender.MALE, AgeGroup.SENIOR
+        third = await s.get(Speaker, uncle["SPEAKER_02"])           # 1 line
+        third.display_name, third.gender, third.age_group = "Uncle Wang", Gender.FEMALE, AgeGroup.CHILD
+        await s.commit()
+    _hear(monkeypatch, {})
+
+    await upgrade.upgrade_projects(db)
+
+    kept = await _speaker_row(db, uncle["SPEAKER_03"])
+    assert (kept.display_name, kept.gender, kept.age_group) == ("Uncle Wang", Gender.MALE, AgeGroup.SENIOR)
+
+
+@pytest.mark.asyncio
+async def test_a_merge_never_renames_a_named_character(monkeypatch, uploads, background_db):
+    from app.models.models import Gender
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v = await _voices(db)
+    uncle = await _same_voice_cast(db, project_id, job_id, v[2], story=False)
+    async with db() as s:
+        kept = await s.get(Speaker, uncle["SPEAKER_03"])
+        kept.display_name, kept.gender = "Wang", Gender.MALE
+        other = await s.get(Speaker, uncle["SPEAKER_02"])
+        other.display_name, other.gender = "Uncle Wang", Gender.FEMALE
+        await s.commit()
+    _hear(monkeypatch, {})
+
+    await upgrade.upgrade_projects(db)
+
+    kept = await _speaker_row(db, uncle["SPEAKER_03"])
+    assert (kept.display_name, kept.gender) == ("Wang", Gender.MALE)
+
+
+@pytest.mark.asyncio
+async def test_a_merge_that_fails_undoes_the_moves_too(monkeypatch, uploads, background_db):
+    """The moves and the merges are one commit: a failing merge leaves the project as it was, for the next start-up
+    (a merge that committed by itself would fail this)."""
+    from app.services import speaker_merge
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v = await _voices(db)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    uncle = await _same_voice_cast(db, project_id, job_id, v[2], story=False)
+    (own,) = await _voiced(db, uploads, project_id, job_id, [(lin, v[1], {})])
+    _hear(monkeypatch, {})
+    real_merge = speaker_merge.merge_into
+    merges = []
+
+    async def merge_then_fail(db_, source, target):
+        merges.append(source.label)
+        if len(merges) == 2:
+            raise RuntimeError("merge failed")
+        return await real_merge(db_, source, target)
+    monkeypatch.setattr(speaker_merge, "merge_into", merge_then_fail)
+
+    await upgrade.upgrade_projects(db)
+
+    seg = await _seg(db, own)
+    assert (seg.speaker_id, seg.voice_id, seg.who_confirmed) == (lin, v[1], False)
+    assert len(merges) == 2 and len(await _project_speakers(db, project_id)) == 6   # the first merge undone too
+    assert await _lines_of(db, uncle["SPEAKER_02"]) == 1
+    assert await _version(db, project_id) is None
