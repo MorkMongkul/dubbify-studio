@@ -21,7 +21,7 @@ from app.schemas.schemas import (
     CharacterPick, CharacterPicked, SegmentResponse, SegmentUpdate, SegmentCreate, LayoutRequest, LayoutResponse, SplitRequest, SplitResponse,
     SpeakerResponse, SpeakerUpdate, SpeakerCreate, SpeakerMerge, SpeakerMergeResponse, CharacterSuggestion, CharacterDismiss, SpeakerUnmerge,
 )
-from app.services import story_notes, timeline, voice_level
+from app.services import speaker_merge, story_notes, timeline, voice_level
 from app.services.audio_extractor import voice_at_rate
 
 router = APIRouter(tags=["Segments & Speakers"])
@@ -627,15 +627,8 @@ async def merge_speaker(
         raise HTTPException(status_code=404, detail="Speaker not found")
     if source.id == target.id or source.project_id != target.project_id:
         raise HTTPException(status_code=400, detail="Choose another speaker of this project")
-    lines = (await db.execute(select(Segment).where(Segment.speaker_id == source.id))).scalars().all()
-    for line in lines:
-        line.speaker_id = target.id
     removed = SpeakerResponse.model_validate(source)
-    project = await db.get(Project, source.project_id)
-    project.story_notes, relinked = story_notes.relink_speaker(project.story_notes, source.label, target.label)
-    flag_modified(project, "story_notes")
-    await db.flush()
-    await db.delete(source)
+    lines, relinked = await speaker_merge.merge_into(db, source, target)
     await db.commit()
     await _refresh_faces(db, target.project_id)   # the character now has both faces to choose from
     return SpeakerMergeResponse(moved=[line.id for line in lines], removed=removed, relinked=relinked)
