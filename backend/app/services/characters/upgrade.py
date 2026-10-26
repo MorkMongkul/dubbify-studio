@@ -61,24 +61,90 @@ def _converted(project: Project | None) -> bool:
     return project is None or (project.characters_version or 0) >= CHARACTERS_VERSION
 
 
-async def _move_lines(db: AsyncSession, project_id: str, heard: dict[str, str]) -> list[Segment]:
-    """Every line whose voice — its own when it has one, else the one `heard` says its audio was made with — differs
-    from its character's (or that has no character) moves to the character a person cast with that voice: the one
-    with the most lines when several, the lowest label on a tie — or to a new character for a voice no person gave
-    anyone (one per voice, no name). A voice "Choose for me" picked (voice_auto) says nothing about who the actor is:
-    it repeats on unrelated characters. The line's own voice is cleared (its character carries it now) and the line
-    counts as confirmed. Text, timing and audio are untouched; a label left with no line stays. Flushes; the caller
-    commits. Returns the lines moved."""
+@dataclass(frozen=True)
+class _Line:
+    """A line of a project to convert, as the start-up found it. `heard` is the file its voice is heard from — the
+    engine's voice before the line's effects (seg_<id>_raw.wav) when it's there, else the clip — for a voiced line
+    without a voice of its own; `made` is when that file was written."""
+    speaker_id: str | None
+    voice_id: str | None
+    confirmed: bool
+    stored: str | None
+    heard: str | None = None
+    made: int | None = None
+
+
+@dataclass(frozen=True)
+class _Snapshot:
+    """A project's lines and its characters' voices as the start-up found them. The conversion moves only a line
+    still exactly as it was then, whose character still has the voice it had: anything the user did in 0.5.0 before
+    the project's turn came (its episodes' prints come one project after another), or while its audio was heard,
+    stands — a character picked, a voice of its own (casting only since 0.5.0), a voice made again, a re-cast. A line
+    added since is never moved."""
+    lines: dict[str, _Line]
+    voices: dict[str, str | None]
+
+
+def _made_at(path: str) -> int | None:
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return None
+
+
+def _file_to_hear(segment_id: str, stored: str | None) -> str | None:
+    """The engine's own voice (the raw clip every effect, speed and level is rendered from: a filter can fool a voice
+    print), else the line's clip; None when neither is there."""
+    if not stored:
+        return None
+    clip = Path(resolve_media_path(stored))
+    return next((str(f) for f in (clip.with_name(f"seg_{segment_id}_raw.wav"), clip) if f.is_file()), None)
+
+
+async def _snapshot(db: AsyncSession, project_id: str) -> _Snapshot:
+    """The project's lines and characters as they are now (a few file checks per voiced line)."""
+    voices = dict((await db.execute(
+        select(Speaker.id, Speaker.voice_id).where(Speaker.project_id == project_id))).all())
+    lines = {}
+    for segment_id, speaker_id, voice_id, confirmed, stored in (await db.execute(
+        select(Segment.id, Segment.speaker_id, Segment.voice_id, Segment.who_confirmed, Segment.tts_audio_path)
+        .join(Job, Job.id == Segment.job_id).where(Job.project_id == project_id)
+    )).all():
+        heard = None if voice_id else _file_to_hear(segment_id, stored)
+        lines[segment_id] = _Line(speaker_id, voice_id, bool(confirmed), stored, heard,
+                                  _made_at(heard) if heard else None)
+    return _Snapshot(lines, voices)
+
+
+def _as_at_start_up(seg: Segment, at: _Line | None, voices_now: dict, snapshot: _Snapshot) -> bool:
+    return (at is not None
+            and (seg.speaker_id, seg.voice_id, bool(seg.who_confirmed), seg.tts_audio_path)
+            == (at.speaker_id, at.voice_id, at.confirmed, at.stored)
+            and voices_now.get(seg.speaker_id) == snapshot.voices.get(seg.speaker_id)
+            and (at.heard is None or _made_at(at.heard) == at.made))
+
+
+async def _move_lines(db: AsyncSession, project_id: str, heard: dict[str, str], snapshot: _Snapshot) -> list[Segment]:
+    """Every line still as `snapshot` found it whose voice then — its own when it had one, else the one `heard` says
+    its audio was made with — differs from its character's (or that has no character) moves to the character a
+    person cast with that voice: the one with the most lines when several, the lowest label on a tie — or to a new
+    character for a voice no person gave anyone (one per voice, no name). A voice "Choose for me" picked (voice_auto)
+    says nothing about who the actor is: it repeats on unrelated characters. The line's own voice is cleared (its
+    character carries it now) and the line counts as confirmed. Text, timing and audio are untouched; a label left
+    with no line stays. Reads the lines and characters again; flushes, the caller commits. Returns the lines moved."""
     speakers = (await db.execute(select(Speaker).where(Speaker.project_id == project_id)
                                  .execution_options(populate_existing=True))).scalars().all()
-    by_id = {sp.id: sp for sp in speakers}
+    voices_now = {sp.id: sp.voice_id for sp in speakers}
     lines = (await db.execute(
         select(Segment).join(Job, Job.id == Segment.job_id).where(Job.project_id == project_id)
         .execution_options(populate_existing=True)
     )).scalars().all()
-    made_with = {s.id: s.voice_id or heard.get(s.id) for s in lines}
-    moves = [s for s in lines if made_with[s.id] and made_with[s.id] != (by_id[s.speaker_id].voice_id
-                                                                         if s.speaker_id in by_id else None)]
+    made_with = {}
+    for s in lines:
+        at = snapshot.lines.get(s.id)
+        if _as_at_start_up(s, at, voices_now, snapshot):
+            made_with[s.id] = at.voice_id or heard.get(s.id)
+    moves = [s for s in lines if made_with.get(s.id) and made_with[s.id] != voices_now.get(s.speaker_id)]
     if not moves:
         return []
     counts = Counter(s.speaker_id for s in lines)
@@ -106,41 +172,10 @@ async def _move_lines(db: AsyncSession, project_id: str, heard: dict[str, str]) 
 
 
 async def convert_voice_overrides(db: AsyncSession, project_id: str, heard: dict[str, str] | None = None) -> int:
-    """_move_lines: `heard` {segment id: voice id} names the voice the audio of lines without their own was made
-    with (none: only lines with their own voice move, the rule of version 1). Returns how many lines moved."""
-    return len(await _move_lines(db, project_id, heard or {}))
-
-
-@dataclass(frozen=True)
-class _Heard:
-    """A voiced line as it was when its audio was heard: if any of this changed meanwhile (the user picked its
-    character, gave it a voice of its own or a new voice), what was heard no longer says anything about it."""
-    path: str
-    speaker_id: str | None
-    confirmed: bool
-    stored: str
-    made: int | None
-
-
-def _made_at(path: str) -> int | None:
-    try:
-        return os.stat(path).st_mtime_ns
-    except OSError:
-        return None
-
-
-async def _voiced_lines(db: AsyncSession, project_id: str) -> dict[str, _Heard]:
-    """The project's lines without a voice of their own whose Khmer voice file exists."""
-    found = {}
-    for seg in (await db.execute(
-        select(Segment).join(Job, Job.id == Segment.job_id)
-        .where(Job.project_id == project_id, Segment.voice_id.is_(None), Segment.tts_audio_path.is_not(None),
-               Segment.tts_audio_path != "").order_by(Segment.id)
-    )).scalars():
-        path = resolve_media_path(seg.tts_audio_path)
-        if Path(path).is_file():
-            found[seg.id] = _Heard(path, seg.speaker_id, bool(seg.who_confirmed), seg.tts_audio_path, _made_at(path))
-    return found
+    """_move_lines with the project as it is now: `heard` {segment id: voice id} names the voice the audio of lines
+    without their own was made with (none: only lines with their own voice move, the rule of version 1). Returns how
+    many lines moved."""
+    return len(await _move_lines(db, project_id, heard or {}, await _snapshot(db, project_id)))
 
 
 async def _reference_clips(db: AsyncSession) -> dict[str, str]:
@@ -155,11 +190,6 @@ async def _reference_clips(db: AsyncSession) -> dict[str, str]:
         if Path(path).is_file():
             clips[voice_id] = path
     return clips
-
-
-def _still_as_heard(seg: Segment, heard: _Heard) -> bool:
-    return (seg.voice_id is None and seg.speaker_id == heard.speaker_id and bool(seg.who_confirmed) == heard.confirmed
-            and seg.tts_audio_path == heard.stored and _made_at(heard.path) == heard.made)
 
 
 def _voices_made_with(reference_clips: dict[str, str], line_audio: dict[str, str],
@@ -191,11 +221,11 @@ def _voices_made_with(reference_clips: dict[str, str], line_audio: dict[str, str
             prints[voice_id] = reference_prints[key]
     if failed and not prints:
         raise failed[0]
+    if len(prints) < 2:
+        raise RuntimeError(f"{len(prints)} voice(s)' reference clips could be heard, too few to tell voices apart")
     if failed:
         logger.warning(f"{len(failed)} voice(s)' reference clips couldn't be heard, so no line goes to them: "
                        f"{failed[0]}")
-    if len(prints) < 2:   # with one voice there is nothing to tell it from
-        return {}
     ids = list(prints)
     voices = np.stack([prints[voice_id] for voice_id in ids])
     found, unreadable = {}, []
@@ -229,37 +259,40 @@ async def convert_project(sessionmaker, project_id: str, with_models: bool = Tru
     """Puts each line of a project below CHARACTERS_VERSION on the character of the voice it was made with
     (_move_lines): its own voice, else the voice its audio was clearly made with — heard with the voice model, in a
     thread through store's one-at-a-time lock, with no connection held — and marks the project done, in one commit.
-    A line changed while the audio was heard is left as it is now. When the voices can't be heard (`with_models`
-    False: the models can't run here; or they fail) only lines with their own voice move, the project is still marked
-    done (never retried at every start-up), and one line is logged. `reference_prints` keeps the voices' reference
-    clip prints for the start-up's run. Never raises (an error leaves the project for the next start-up, logged); the project leaves
-    store's conversion queue either way. Returns how many lines moved."""
+    Only lines still as the start-up found them move (store keeps that snapshot; without one, e.g. from a script, the
+    project as it is now). When the voices can't be heard (`with_models` False: the models can't run here; fewer than
+    two voices with a reference clip; or the model fails) only lines with their own voice move, the project is still
+    marked done (never retried at every start-up), and one line is logged. `reference_prints` keeps the voices'
+    reference clip prints for the start-up's run. Never raises (an error leaves the project for the next start-up,
+    logged); the project leaves store's conversion queue either way. Returns how many lines moved."""
     reference_prints = {} if reference_prints is None else reference_prints
+    snapshot = store.conversion_snapshot(project_id)
     try:
         async with sessionmaker() as db:
             if _converted(await db.get(Project, project_id)):
                 return 0
-            voiced = await _voiced_lines(db, project_id)
-            reference_clips = await _reference_clips(db) if voiced else {}
+            if snapshot is None:
+                snapshot = await _snapshot(db, project_id)
+            to_hear = {sid: line.heard for sid, line in snapshot.lines.items() if line.heard}
+            reference_clips = await _reference_clips(db) if to_hear else {}
             await db.commit()   # nothing held while the voices are heard (the dev SQLite engine has one connection)
             heard: dict[str, str] = {}
-            if voiced and not with_models:
+            if to_hear and not with_models:
                 _cannot_hear(project_id, "the models can't run here")
-            elif voiced:
+            elif to_hear and len(reference_clips) < 2:
+                _cannot_hear(project_id, f"{len(reference_clips)} voice(s) have a reference clip, too few to tell "
+                                         f"voices apart")
+            elif to_hear:
                 try:
                     heard = await asyncio.to_thread(store._one_at_a_time, _voices_made_with, reference_clips,
-                                                    {sid: h.path for sid, h in voiced.items()}, reference_prints)
+                                                    to_hear, reference_prints)
                 except Exception as e:  # noqa: BLE001 — CANT_RUN, or the model failed: degrade to version 1's rule
                     _cannot_hear(project_id, e)
-            # the user may have picked, re-voiced, edited or deleted lines while the audio was heard
-            current = {s.id: s for s in (await db.execute(
-                select(Segment).where(Segment.id.in_(list(heard))).execution_options(populate_existing=True)
-            )).scalars()} if heard else {}
-            heard = {sid: v for sid, v in heard.items() if sid in current and _still_as_heard(current[sid], voiced[sid])}
+            # the user may have picked, re-voiced, re-cast, edited or deleted while the audio was heard
             project = await db.get(Project, project_id, populate_existing=True)
             if _converted(project):
                 return 0
-            moved = await _move_lines(db, project_id, heard)
+            moved = await _move_lines(db, project_id, heard, snapshot)
             project.characters_version = CHARACTERS_VERSION
             await db.commit()
     except Exception:  # noqa: BLE001 — not fatal: the project stays as it was and the next start-up tries again
@@ -268,9 +301,9 @@ async def convert_project(sessionmaker, project_id: str, with_models: bool = Tru
     finally:
         store.conversion_done(project_id)
     by_ear = sum(1 for s in moved if s.id in heard)
-    if moved or voiced:
+    if moved or to_hear:
         logger.info(f"Project {project_id[:8]}: {len(moved)} line(s) moved to the character of the voice they were "
-                    f"made with — {len(moved) - by_ear} by their own voice, {by_ear} by ear ({len(voiced)} voiced "
+                    f"made with — {len(moved) - by_ear} by their own voice, {by_ear} by ear ({len(to_hear)} voiced "
                     f"line(s) heard, {len(heard)} clearly)")
     return len(moved)
 
@@ -362,17 +395,20 @@ async def _jobs_to_queue(db: AsyncSession, converting: list[str]) -> list[str]:
 
 async def queue_backfill(sessionmaker) -> int:
     """What the start-up's background will do, queued in store before it starts (the lifespan awaits this, so no
-    analysis can come in first): the projects whose characters it will convert (Ruling AN) with every one of their
-    episodes, and the jobs it will give prints — those with separated vocals (the others never get prints) — so the
+    request can come in first): the projects whose characters it will convert (Ruling AN), each with its lines and
+    characters as they are now (the conversion moves only lines still so) and every one of its episodes, and the
+    jobs it will give prints — those with separated vocals (the others never get prints) — so the
     confirmed lines of those episodes wait: no line of their projects is sure before they have their prints and
     their project's characters are converted (Ruling AL). Quick database work. Returns how many jobs were queued."""
     async with sessionmaker() as db:
         converting = (await db.execute(select(Project.id).where(_below_version()).order_by(Project.id))).scalars().all()
+        # what the conversion may move: the lines as they are before the user can touch anything
+        snapshots = {project_id: await _snapshot(db, project_id) for project_id in converting}
         ids = await _jobs_to_queue(db, converting)
         jobs = {job.id: job for job in (await db.execute(select(Job).where(Job.id.in_(ids)))).scalars()}
     queued = [job_id for job_id in ids
               if jobs[job_id].project_id in converting or store.vocals_path(jobs[job_id]).exists()]
-    store.queue_for_conversion(converting)
+    store.queue_for_conversion(snapshots)
     store.queue_for_backfill(queued)
     return len(queued)
 

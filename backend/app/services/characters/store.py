@@ -51,10 +51,11 @@ PRINTS_VERSION = 1
 # lifespan fills it, awaited, before the backfill starts; the backfill drains it (a job leaves once its prints are
 # saved or their making failed). Only the event loop touches it, and never across an await, so it needs no lock.
 _backfill: dict[str, None] = {}
-# Ruling AN: the projects whose characters the upgrade hasn't converted yet (project id -> None). Every episode of
-# theirs is queued above too, and every confirmed line of a queued episode waits while its project is here — its
-# characters may still hold several actors. Filled and drained like the jobs.
-_converting: dict[str, None] = {}
+# Ruling AN: the projects whose characters the upgrade hasn't converted yet (project id -> the project's lines and
+# characters as the start-up found them: upgrade moves only lines still as they were then). Every episode of theirs
+# is queued above too, and every confirmed line of a queued episode waits while its project is here — its characters
+# may still hold several actors. Filled and drained like the jobs.
+_converting: dict[str, object] = {}
 
 
 def queue_for_backfill(job_ids) -> None:
@@ -70,9 +71,9 @@ def backfill_done(job_id: str) -> None:
     _backfill.pop(job_id, None)
 
 
-def queue_for_conversion(project_ids) -> None:
-    for project_id in project_ids:
-        _converting.setdefault(project_id, None)
+def queue_for_conversion(snapshots: dict[str, object]) -> None:
+    for project_id, snapshot in snapshots.items():
+        _converting.setdefault(project_id, snapshot)
 
 
 def conversions_pending() -> list[str]:
@@ -81,6 +82,11 @@ def conversions_pending() -> list[str]:
 
 def converting(project_id: str) -> bool:
     return project_id in _converting
+
+
+def conversion_snapshot(project_id: str) -> object | None:
+    """The project's lines and characters as the start-up found them, or None when it isn't queued."""
+    return _converting.get(project_id)
 
 
 def conversion_done(project_id: str) -> None:

@@ -89,8 +89,10 @@ async def _upgrade(project_id: str) -> str:
         return f"already upgraded (version {version})"
     began = time.monotonic()
     moved = await upgrade.convert_project(database.AsyncSessionLocal, project_id)
-    return (f"version {version} -> {upgrade.CHARACTERS_VERSION}: {moved} line(s) moved to the character of the voice "
-            f"they were made with, in {time.monotonic() - began:.0f} s")
+    async with database.AsyncSessionLocal() as db:   # a failed conversion (logged) leaves it where it was
+        now = (await db.get(Project, project_id)).characters_version
+    return (f"version {version} -> {now}: {moved} line(s) moved to the character of the voice they were made with, "
+            f"in {time.monotonic() - began:.0f} s")
 
 
 async def _jobs(db, project_id: str):

@@ -783,6 +783,7 @@ async def test_a_label_left_without_lines_stays(monkeypatch, uploads, background
         await s.commit()
     (uploads / "mei.wav").write_bytes(b"RIFF")
     _hear(monkeypatch, {**clips, str(uploads / "mei.wav"): _heard((0, 1.0))})
+    await upgrade.queue_backfill(db)   # the start-up: the project's lines as they are now
 
     assert await upgrade.convert_project(db, project_id) == 1
 
@@ -815,33 +816,191 @@ async def test_the_character_a_line_moves_to_is_one_a_person_cast_with_the_most_
     assert (await _seg(db, line)).speaker_id == many
 
 
+def _while_heard(monkeypatch, heard: dict, trigger: str, change):
+    """voiceprint.file_print answers from `heard`; hearing the file ending in `trigger` first runs `change` (an async
+    function: the user, in the editor, while the audio is heard in the worker thread)."""
+    from app.services.characters import voiceprint
+    loop = asyncio.get_running_loop()
+
+    def fake(path):
+        if path.endswith(trigger):
+            asyncio.run_coroutine_threadsafe(change(), loop).result(timeout=10)
+        return heard[path]
+    monkeypatch.setattr(voiceprint, "file_print", fake)
+
+
+@pytest.mark.parametrize("change", ["picked", "speaker", "own voice", "voice file path", "voice made again",
+                                    "character re-cast"])
 @pytest.mark.asyncio
-async def test_a_line_confirmed_while_the_voices_are_heard_is_left_alone(monkeypatch, uploads, background_db):
-    """The audio is heard with no session open (minutes on a big project); a line the user picks meanwhile keeps the
-    character they picked."""
+async def test_a_line_changed_while_the_voices_are_heard_is_left_alone(change, monkeypatch, uploads, background_db):
+    """The audio is heard with no session open (minutes on a big project). A line the user changes meanwhile — its
+    character picked or changed, a voice of its own (casting only since 0.5.0), its voice made again, or its
+    character re-cast — is left as the user left it: what was heard no longer says anything about it."""
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    uncle = await _speaker(db, project_id, "SPEAKER_02", v[2], "Uncle Wang")
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    (line,) = await _voiced(db, uploads, project_id, job_id, [(lin, None, {})])
+    voice_file = uploads / project_id / job_id / "tts" / "seg_0.wav"
+    other_file = uploads / project_id / job_id / "tts" / "other.wav"
+    other_file.write_bytes(b"RIFF")
+    expected = {"speaker_id": lin, "voice_id": None, "who_confirmed": False}
+
+    async def user():
+        async with db() as s:
+            seg = await s.get(Segment, line)
+            if change == "picked":
+                seg.who_confirmed = True
+                expected["who_confirmed"] = True
+            elif change == "speaker":
+                seg.speaker_id = uncle
+                expected["speaker_id"] = uncle
+            elif change == "own voice":
+                seg.voice_id = v[3]
+                expected["voice_id"] = v[3]
+            elif change == "voice file path":
+                seg.tts_audio_path = str(other_file)
+            elif change == "voice made again":
+                voice_file.write_bytes(b"RIFF again")
+                made = os.stat(voice_file).st_mtime_ns
+                os.utime(voice_file, ns=(made + 5_000_000_000, made + 5_000_000_000))
+            elif change == "character re-cast":
+                (await s.get(Speaker, lin)).voice_id = v[2]
+            await s.commit()
+    _while_heard(monkeypatch, {**clips, str(voice_file): _heard((1, 1.0))}, "seg_0.wav", user)
+
+    assert await upgrade.convert_project(db, project_id) == 0   # Mei's voice, were it still as it was heard
+
+    seg = await _seg(db, line)
+    assert {k: getattr(seg, k) for k in expected} == expected
+    assert len(await _project_speakers(db, project_id)) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_line_with_its_own_voice_picked_while_the_voices_are_heard_is_left_alone(monkeypatch, uploads,
+                                                                                       background_db):
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    own, _plain = await _voiced(db, uploads, project_id, job_id, [(lin, v[1], {}), (lin, None, {})])
+
+    async def user_picks_lin_dong():
+        async with db() as s:
+            seg = await s.get(Segment, own)
+            seg.who_confirmed, seg.who_check = True, None
+            await s.commit()
+    tts = uploads / project_id / job_id / "tts"
+    _while_heard(monkeypatch, {**clips, str(tts / "seg_1.wav"): _heard((0, 1.0))}, "seg_1.wav", user_picks_lin_dong)
+
+    await upgrade.convert_project(db, project_id)
+
+    seg = await _seg(db, own)
+    assert (seg.speaker_id, seg.voice_id, seg.who_confirmed) == (lin, v[1], True)
+
+
+@pytest.mark.asyncio
+async def test_a_pick_made_after_the_start_up_before_the_conversion_is_kept(monkeypatch, uploads, background_db):
+    """The project's turn may come long after the start-up (its episodes' prints come one project after another:
+    33 minutes on the owner's data). What the user did meanwhile in 0.5.0 stands."""
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    picked, unchanged, voiced_again = await _voiced(db, uploads, project_id, job_id, [
+        (mei, None, {}), (lin, None, {}), (lin, None, {})])
+    tts = uploads / project_id / job_id / "tts"
+    await upgrade.queue_backfill(db)          # the start-up
+    async with db() as s:                     # the user, in 0.5.0
+        seg = await s.get(Segment, picked)    # says this line is Lin Dong
+        seg.speaker_id, seg.who_confirmed, seg.who_check = lin, True, None
+        await s.commit()
+    (tts / "seg_2.wav").write_bytes(b"RIFF again")
+    made = os.stat(tts / "seg_2.wav").st_mtime_ns
+    os.utime(tts / "seg_2.wav", ns=(made + 5_000_000_000, made + 5_000_000_000))   # makes this one's voice again
+    async with db() as s:
+        flashback = Segment(job_id=job_id, speaker_id=lin, voice_id=v[3], start_time=30.0, end_time=31.0,
+                            source_text="新", khmer_text="km", tts_audio_path=str(tts / "seg_2.wav"))
+        s.add(flashback)                      # and adds a line, with a voice of its own for a flashback
+        await s.commit()
+        flashback = flashback.id
+    _hear(monkeypatch, {**clips, str(tts / "seg_0.wav"): _heard((1, 1.0)), str(tts / "seg_1.wav"): _heard((3, 1.0)),
+                        str(tts / "seg_2.wav"): _heard((1, 1.0))})
+
+    assert await upgrade.convert_project(db, project_id) == 1   # the background reaches the project
+
+    assert (await _seg(db, picked)).speaker_id == lin
+    (new,) = [sp for sp in await _project_speakers(db, project_id) if sp.id not in (lin, mei)]
+    seg = await _seg(db, unchanged)           # untouched since the start-up: goes to its voice's new character
+    assert (new.voice_id, seg.speaker_id, seg.who_confirmed) == (v[3], new.id, True)
+    assert (await _seg(db, voiced_again)).speaker_id == lin
+    seg = await _seg(db, flashback)
+    assert (seg.speaker_id, seg.voice_id, seg.who_confirmed) == (lin, v[3], False)
+
+
+@pytest.mark.asyncio
+async def test_a_character_re_cast_after_the_start_up_keeps_its_lines(monkeypatch, uploads, background_db):
     db = background_db
     project_id, ids, job_id = await _setup(db)
     v, clips = await _voices_with_clips(db, uploads)
     lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
     await _cast_voices(db, {lin: v[0], mei: v[1]})
     (line,) = await _voiced(db, uploads, project_id, job_id, [(lin, None, {})])
-    loop = asyncio.get_running_loop()
-    from app.services.characters import voiceprint
-    heard = {**clips, str(uploads / project_id / job_id / "tts" / "seg_0.wav"): _heard((1, 1.0))}
-
-    def fake(path):
-        if path.endswith("seg_0.wav"):
-            async def user_confirms():
-                async with db() as s:
-                    (await s.get(Segment, line)).who_confirmed = True
-                    await s.commit()
-            asyncio.run_coroutine_threadsafe(user_confirms(), loop).result(timeout=10)
-        return heard[path]
-    monkeypatch.setattr(voiceprint, "file_print", fake)
+    await upgrade.queue_backfill(db)
+    await _cast_voices(db, {lin: v[2]})       # the user re-casts Lin Dong in 0.5.0
+    _hear(monkeypatch, {**clips, str(uploads / project_id / job_id / "tts" / "seg_0.wav"): _heard((0, 1.0))})
 
     assert await upgrade.convert_project(db, project_id) == 0
 
     assert (await _seg(db, line)).speaker_id == lin
+    assert len(await _project_speakers(db, project_id)) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_engines_own_voice_is_heard_not_the_clip_with_its_effects(monkeypatch, uploads, background_db):
+    """A line's clip carries its filter (echo, phone…), speed and level, which can fool a voice print; the engine's
+    voice before them (seg_<id>_raw.wav) is heard when it's there."""
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v, clips = await _voices_with_clips(db, uploads)
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    with_raw, without_raw = await _voiced(db, uploads, project_id, job_id, [(lin, None, {}), (lin, None, {})])
+    tts = uploads / project_id / job_id / "tts"
+    raw = tts / f"seg_{with_raw}_raw.wav"
+    raw.write_bytes(b"RIFF")
+    calls = []
+    _hear(monkeypatch, {**clips, str(raw): _heard((1, 1.0)), str(tts / "seg_0.wav"): _heard((0, 1.0)),
+                        str(tts / "seg_1.wav"): _heard((1, 1.0))}, calls)
+
+    assert await upgrade.convert_project(db, project_id) == 2
+
+    assert str(raw) in calls and str(tts / "seg_0.wav") not in calls and str(tts / "seg_1.wav") in calls
+    assert (await _seg(db, with_raw)).speaker_id == mei and (await _seg(db, without_raw)).speaker_id == mei
+
+
+@pytest.mark.asyncio
+async def test_with_no_voice_to_compare_with_only_hand_set_voices_move(monkeypatch, uploads, background_db, caplog):
+    db = background_db
+    project_id, ids, job_id = await _setup(db)
+    v = await _voices(db)   # voices with no reference clip
+    lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
+    await _cast_voices(db, {lin: v[0], mei: v[1]})
+    hand_set, plain = await _voiced(db, uploads, project_id, job_id, [(lin, v[1], {}), (lin, None, {})])
+    calls = []
+    _hear(monkeypatch, {}, calls)
+
+    with caplog.at_level(logging.WARNING):
+        assert await upgrade.convert_project(db, project_id) == 1
+
+    assert ((await _seg(db, hand_set)).speaker_id, (await _seg(db, plain)).speaker_id, calls) == (mei, lin, [])
+    said = [r for r in caplog.records if r.name == upgrade.__name__ and r.levelno >= logging.WARNING]
+    assert len(said) == 1 and "only lines with their own voice" in said[0].getMessage()
+    assert await _version(db, project_id) == 2
 
 
 @pytest.mark.parametrize("cannot", [
