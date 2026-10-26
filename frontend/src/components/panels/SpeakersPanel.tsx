@@ -17,7 +17,7 @@ import { recordSpeakerChange, recordSpeakerMerge } from '@/lib/historyHelpers'
 import { voiceUsers } from '@/lib/voiceTags'
 import { CharacterFace } from '@/components/speakers/CharacterFace'
 import { SameCharacter } from '@/components/speakers/SameCharacter'
-import type { Speaker } from '@/types'
+import type { Speaker, SpeakerMergeResponse } from '@/types'
 import { useHistoryStore } from '@/store/historyStore'
 import { PanelHeader, PanelEmptyState } from './PanelShell'
 
@@ -40,8 +40,10 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
   const [confirmReanalyze, setConfirmReanalyze] = useState(false)
   // The speaker whose voice is being chosen: the voice browser covers the list meanwhile
   const [browsingId, setBrowsingId] = useState<string | null>(null)
-  // "Same person as…": the card choosing, then the speaker chosen (waiting for the confirm)
-  const mergeSpeaker = useMergeSpeaker()
+  // "Same person as…": the card choosing, then the speaker chosen (waiting for the confirm).
+  // mutateAsync, never mutate's own callbacks: TanStack calls those for the last call only, so
+  // the first of two quick Merges ("Same character?" offers several) lost its undo step and toast
+  const { mutateAsync: mergeSpeaker } = useMergeSpeaker()
   const [mergingId, setMergingId] = useState<string | null>(null)
   const [mergeIntoId, setMergeIntoId] = useState<string | null>(null)
   // "Same character?": pairs Movelo thinks are one; only a click merges
@@ -80,16 +82,18 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
 
   const nameOf = (speaker: Speaker) => getSpeakerDisplayName(speaker, spks.findIndex((sp) => sp.id === speaker.id))
 
-  const runMerge = (source: Speaker, into: Speaker) => {
+  const runMerge = async (source: Speaker, into: Speaker) => {
     setMergingId(null)
     setMergeIntoId(null)
-    mergeSpeaker.mutate({ speakerId: source.id, into: into.id, projectId: projectId! }, {
-      onSuccess: (result) => {
-        recordSpeakerMerge(qc, projectId!, result, into.id)
-        toast.success(`${nameOf(source)} merged into ${nameOf(into)}`)
-      },
-      onError: (e) => toast.error((e as Error).message || 'Could not merge the speakers'),
-    })
+    let result: SpeakerMergeResponse
+    try {
+      result = await mergeSpeaker({ speakerId: source.id, into: into.id, projectId: projectId! })
+    } catch (e) {
+      toast.error((e as Error).message || 'Could not merge the speakers')
+      return
+    }
+    recordSpeakerMerge(qc, projectId!, result, into.id)
+    toast.success(`${nameOf(source)} merged into ${nameOf(into)}`)
   }
 
   // ▶ in "Same character?" plays a line from the episode's original voices
