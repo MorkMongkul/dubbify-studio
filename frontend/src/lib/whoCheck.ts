@@ -88,6 +88,15 @@ export function guessChips<S extends Character>(seg: Pick<Line, 'who_check'>, sp
 /** A character's name as the editor shows it. */
 export const characterName = (s: Pick<Character, 'display_name' | 'label'>) => s.display_name || s.label
 
+/** A speaker's name in the Speakers panel and wherever else no label is at hand: like characterName, and
+ * "Speaker N" (1-indexed) when a speaker has neither. */
+export function speakerDisplayName(
+  speaker: { display_name?: string; label?: string } | null | undefined,
+  index: number,
+): string {
+  return speaker?.display_name || speaker?.label || `Speaker ${index + 1}`
+}
+
 const byName = (a: Character, b: Character) =>
   characterName(a).localeCompare(characterName(b), undefined, { numeric: true, sensitivity: 'base' })
 

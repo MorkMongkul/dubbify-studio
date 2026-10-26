@@ -3,7 +3,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  basisOf, characterChoices, guessChips, isToCheck, nextToCheck, pickUndoPatches, toCheck, toCheckAmong, unassignPatches,
+  basisOf, characterChoices, characterName, guessChips, isToCheck, nextToCheck, pickUndoPatches, speakerDisplayName,
+  toCheck, toCheckAmong, unassignPatches,
 } from '../src/lib/whoCheck.ts'
 import type { CharacterPicked, Segment, Speaker, WhoGuess } from '../src/types/index.ts'
 
@@ -196,4 +197,13 @@ test('a batch voicing warns only about the lines it will voice', () => {
   assert.equal(toCheckAmong(segs, ['2', '4']), 0)   // mixed: only 4 is voiced
   assert.equal(toCheckAmong(segs, ['3', '4']), 0)
   assert.equal(toCheckAmong(segs, []), 0)
+})
+
+test('an unnamed character shows its label everywhere, "Speaker N" only without one (Ruling AP)', () => {
+  const unnamed = speaker('x', '', 'SPEAKER_12')
+  assert.equal(speakerDisplayName(unnamed, 3), 'SPEAKER_12')
+  assert.equal(speakerDisplayName(unnamed, 3), characterName(unnamed))   // the Speakers panel and the transcript agree
+  assert.equal(speakerDisplayName(speaker('y', 'Kim Sreymom', 'SPEAKER_01'), 0), 'Kim Sreymom')
+  assert.equal(speakerDisplayName({ display_name: '', label: '' }, 3), 'Speaker 4')
+  assert.equal(speakerDisplayName(null, 0), 'Speaker 1')
 })
