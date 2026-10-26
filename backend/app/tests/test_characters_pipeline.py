@@ -23,7 +23,7 @@ from sqlalchemy import delete, select
 import app.core.database as core_db
 from app.models.models import Gender, Job, JobStatus, LinePrint, Project, Segment, Speaker
 from app.services import pipeline, subtitle_pipeline
-from app.services.characters import models, store
+from app.services.characters import models, store, upgrade
 from app.services.characters import prints as prints_module
 from app.services.characters.types import LinePrints
 from app.services.diarizer import DiarizedSegment
@@ -167,10 +167,11 @@ async def _old_confirmed_line(db_sessionmaker, project_id: str, job_id: str) -> 
         return uncle.id
 
 
-async def _waiting_line(db_sessionmaker, uploads: Path, project_id: str, speaker_id: str, version=None) -> str:
+async def _waiting_line(db_sessionmaker, uploads: Path, project_id: str, speaker_id: str, version=None,
+                        queued=True) -> str:
     """Another checked episode (with its vocals) whose confirmed line has no prints from today's models yet — the
-    start-up backfill, or a model change, hasn't reached it. version: the models an older print was made by.
-    Returns the episode's id."""
+    start-up queued it for the backfill (queued), which hasn't reached it. version: the models an older print was
+    made by. Returns the episode's id."""
     job_id = await _episode(db_sessionmaker, project_id, status=JobStatus.COMPLETED)
     async with db_sessionmaker() as s:
         line = Segment(job_id=job_id, speaker_id=speaker_id, start_time=0.0, end_time=2.0, source_start=0.0,
@@ -181,6 +182,8 @@ async def _waiting_line(db_sessionmaker, uploads: Path, project_id: str, speaker
             s.add(LinePrint(segment_id=line.id, job_id=job_id, voice_print=voice(9).tobytes(), model_version=version))
         await s.commit()
     _vocals(uploads, project_id, job_id)
+    if queued:
+        await upgrade.queue_backfill(db_sessionmaker)   # as the start-up does, before the backfill starts
     return job_id
 
 
@@ -402,7 +405,7 @@ async def test_with_no_confirmed_line_to_wait_for_it_is_a_first_episode(others, 
             lin = Speaker(project_id=project_id, label="SPEAKER_00", display_name="Lin Dong")
             s.add(lin)
             await s.commit()
-        other = await _waiting_line(background_db, uploads, project_id, lin.id)
+        other = await _waiting_line(background_db, uploads, project_id, lin.id, queued=False)
         async with background_db() as s:
             line = (await s.execute(select(Segment).where(Segment.job_id == other))).scalar_one()
             if others == "drafts only":
@@ -410,6 +413,7 @@ async def test_with_no_confirmed_line_to_wait_for_it_is_a_first_episode(others, 
             await s.commit()
         if others == "no vocals to print":
             (uploads / project_id / other / "vocals.wav").unlink()
+        await upgrade.queue_backfill(background_db)
     _vocals(uploads, project_id, job_id)
     _transcribe(monkeypatch, [("SPEAKER_07", 0.0, 1.0, "你好")])
     _prints(monkeypatch, [LinePrints(voice(0), None, None, None)])
@@ -428,13 +432,16 @@ async def test_prints_made_while_the_analysis_waits_for_the_models_count(monkeyp
     async with background_db() as s:     # the checked episode's prints aren't made yet...
         await s.execute(delete(LinePrint))
         await s.commit()
+        checked = (await s.execute(select(Segment.job_id).where(Segment.speaker_id == ids["SPEAKER_00"]))).scalar()
+    _vocals(uploads, project_id, checked)
+    await upgrade.queue_backfill(background_db)   # ...the start-up queued them for the backfill...
     job_id = await _episode(background_db, project_id)
     _vocals(uploads, project_id, job_id)
     _transcribe(monkeypatch, [("SPEAKER_07", 0.0, 1.0, "你好")])
     loop = asyncio.get_running_loop()
 
     def fake(video_path, vocals_path, spans, with_faces=True):
-        async def backfill_meanwhile():   # ...and are while this analysis waits its turn
+        async def backfill_meanwhile():   # ...which makes them while this analysis waits its turn
             async with background_db() as s:
                 lines = (await s.execute(select(Segment).where(Segment.speaker_id.in_(ids.values())))).scalars()
                 for line in lines:
@@ -442,10 +449,35 @@ async def test_prints_made_while_the_analysis_waits_for_the_models_count(monkeyp
                     s.add(LinePrint(segment_id=line.id, job_id=line.job_id, voice_print=voice(k).tobytes(),
                                     face_print=face(k).tobytes(), model_version=store.MODEL_VERSION))
                 await s.commit()
+            store.backfill_done(checked)
         asyncio.run_coroutine_threadsafe(backfill_meanwhile(), loop).result(timeout=10)
         return [LinePrints(voice(0), None, None, None)]   # sounds like Lin Dong
 
     monkeypatch.setattr(prints_module, "prints_for_spans", fake)
+    _translate(monkeypatch, pipeline)
+    await pipeline.run_analysis_pipeline(job_id)
+
+    [(line, label)] = await _lines(background_db, job_id)
+    assert (label, line.who_check) == ("SPEAKER_00", None)
+
+
+@pytest.mark.asyncio
+async def test_a_split_mid_session_never_keeps_the_next_episode_from_being_sure(client, monkeypatch, uploads,
+                                                                                background_db):
+    """Ruling AL: only the jobs the start-up backfill queued wait for prints. A split's second half (a new row,
+    confirmed like the line it came from, with no print) just doesn't teach until a later start-up gives it one."""
+    project_id, ids = await _project(background_db)
+    async with background_db() as s:
+        mei_line = (await s.execute(select(Segment).where(Segment.speaker_id == ids["SPEAKER_01"]))).scalar_one()
+    _vocals(uploads, project_id, mei_line.job_id)   # that episode was separated, as every analysed one is
+    await upgrade.queue_backfill(background_db)      # the start-up found nothing to print
+    resp = await client.post(f"/api/v1/segments/{mei_line.id}/split", json={"at": 4.0})
+    assert resp.status_code == 200
+    job_id = await _episode(background_db, project_id)
+    _vocals(uploads, project_id, job_id)
+    _transcribe(monkeypatch, [("SPEAKER_07", 0.0, 1.0, "你好")])
+    # clearly Lin Dong, voice and face (Mei has no print left to make a second profile: the split dropped it)
+    _prints(monkeypatch, [LinePrints(voice(0), face(0), 0.9, None)])
     _translate(monkeypatch, pipeline)
     await pipeline.run_analysis_pipeline(job_id)
 

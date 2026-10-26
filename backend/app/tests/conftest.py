@@ -115,6 +115,15 @@ async def file_db(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_backfill_queue_left():
+    """The start-up backfill's queue (characters.store) lives in the process: each test starts with it empty."""
+    from app.services.characters import store
+    store.clear_backfill()
+    yield
+    store.clear_backfill()
+
+
+@pytest.fixture(autouse=True)
 def _no_speed_measuring(monkeypatch):
     """The face step's speed test (characters.speed) runs the real models: no test may start it, and each starts
     without an answer left by another. A fast machine unless a test says otherwise."""

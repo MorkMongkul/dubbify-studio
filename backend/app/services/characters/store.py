@@ -41,12 +41,42 @@ _runs = 0   # runs waiting for the models or running them: the last one out rele
 _LOADERS = (("faces", "_session"), ("lips", "_session"), ("voiceprint", "_extractor"))
 # The models can't run here: a Mac below macOS 13.4 (onnxruntime), or a dev checkout without scripts/fetch-models.sh
 CANT_RUN = (ImportError, models.ModelMissing)
+# How prints are made, beside the models themselves: bump it when that changes (1: 0.5.0, frames at most
+# faces.MAX_SIDE long), so every print is made again
+PRINTS_VERSION = 1
+
+# Ruling AL: the jobs the start-up backfill will give today's prints (job id -> None, in its order). Only their
+# confirmed lines wait — keep their project's lines from being sure. A confirmed line without a print anywhere else (a
+# split's second half, a line added by hand) just doesn't teach until a later start-up's backfill gives it one. The
+# lifespan fills it, awaited, before the backfill starts; the backfill drains it (a job leaves once its prints are
+# saved or their making failed). Only the event loop touches it, and never across an await, so it needs no lock.
+_backfill: dict[str, None] = {}
+
+
+def queue_for_backfill(job_ids) -> None:
+    for job_id in job_ids:
+        _backfill.setdefault(job_id, None)
+
+
+def backfill_pending() -> list[str]:
+    return list(_backfill)
+
+
+def backfill_done(job_id: str) -> None:
+    _backfill.pop(job_id, None)
+
+
+def clear_backfill() -> None:
+    _backfill.clear()
 
 
 @lru_cache(maxsize=1)
 def model_version() -> str:
-    """Which models made a print: the first 12 hex of models.json's SHA-256, so any model change makes new prints."""
-    return hashlib.sha256(models.MANIFEST.read_bytes()).hexdigest()[:12]
+    """Which models made a print, and how (Ruling AM): the first 12 hex of the SHA-256 of models.json's sorted
+    (name, sha256) pairs and PRINTS_VERSION. A model or a way of printing that changes makes new prints; a URL,
+    licence, size or layout edit of models.json doesn't."""
+    pairs = sorted((entry["name"], entry["sha256"]) for entry in json.loads(models.MANIFEST.read_text()))
+    return hashlib.sha256(json.dumps([PRINTS_VERSION, pairs]).encode()).hexdigest()[:12]
 
 
 def __getattr__(name: str):
@@ -118,10 +148,10 @@ def _removed_on_rollback(db: AsyncSession, files: list[Path]) -> None:
 
 @dataclass
 class Known:
-    """What a project's checked lines teach: each character's profile, how many confirmed lines have or can get
-    prints, and how many of those still wait for prints from today's models (the start-up backfill, or a model
-    change, hasn't reached them). A project with none is at its first episode; while lines wait, the profiles are
-    incomplete and no line may be sure."""
+    """What a project's checked lines teach: each character's profile, how many confirmed lines have today's prints
+    or wait for them, and how many wait — their job is queued for the start-up backfill, which hasn't reached it. A
+    project with none is at its first episode; while lines wait, the profiles are incomplete and no line may be
+    sure."""
     profiles: dict[str, Profile]
     confirmed: int
     waiting: int
@@ -137,8 +167,8 @@ class Known:
 
 async def known_characters(db: AsyncSession, project_id: str, exclude_job_id: str | None = None) -> Known:
     """The profiles from the stored prints of each character's confirmed lines (made by today's models; characters
-    with no such print are left out), and the confirmed lines still waiting for those prints. A line whose episode
-    has no separated vocals never gets prints: it neither waits nor counts."""
+    with no such print are left out), and the confirmed lines still waiting for those prints in a job the start-up
+    backfill queued. Any other confirmed line without a print neither waits nor counts."""
     query = (
         select(Segment, Job, LinePrint)
         .join(Job, Job.id == Segment.job_id)
@@ -162,7 +192,7 @@ async def known_characters(db: AsyncSession, project_id: str, exclude_job_id: st
         by_speaker.setdefault(seg.speaker_id, []).append(LinePrints(
             _vector(row.voice_print, VOICE_SIZE), _vector(row.face_print, FACE_SIZE), row.speaking_score, None))
     profiles = {speaker_id: profile_from(prints) for speaker_id, prints in by_speaker.items()}
-    waiting = sum(n for job, n in unprinted.items() if vocals_path(job).exists())
+    waiting = sum(n for job, n in unprinted.items() if job.id in _backfill)
     return Known({sid: p for sid, p in profiles.items() if p.voice is not None or p.face is not None},
                  printed + waiting, waiting)
 
@@ -315,8 +345,8 @@ async def recognise(
     (None = sure; else the guesses, possibly none), and the prints ([] when they couldn't be made).
 
     The project's first episode (no confirmed line in its other episodes) keeps Gemini's labels, nothing to check.
-    While confirmed lines wait for their prints (the start-up backfill, a model change), no line is sure. The
-    characters are read after the models ran, which may have meant waiting for another episode's (the backfill's).
+    While confirmed lines wait for the start-up backfill's prints, no line is sure. The characters are read after
+    the models ran, which may have meant waiting for another episode's (the backfill's).
 
     Commits before the models run. Never fails: without vocals, or when the models can't run, Gemini's labels stand
     and nothing is marked to check, as before characters existed.
@@ -372,8 +402,8 @@ async def identify(db: AsyncSession, job: Job, segments: list[Segment]) -> str:
     on its speaker, marked to check. Text, timing and confirmed lines are never touched. Prints are made only for
     lines without today's, in one run of the models, and kept.
 
-    While confirmed lines in other episodes wait for their prints (the start-up backfill, a model change), no line
-    is sure. The characters are read again after the models ran.
+    While confirmed lines in other episodes wait for the start-up backfill's prints, no line is sure. The
+    characters are read again after the models ran.
 
     Returns "done", or — nothing changed, the caller falls back to Gemini — why it couldn't run: "no_profiles" (the
     project has no characters yet), "no_vocals", or "cant_run" (the models can't run; logged). Commits before the

@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from app.services.characters import models
+from app.services.characters import models, store
 
 NEEDS_FETCH = "run scripts/fetch-models.sh"
 
@@ -45,3 +45,44 @@ def test_the_models_load_and_run():
     if not all((models.DIR / e["file"]).exists() for e in _manifest()):
         pytest.skip(NEEDS_FETCH)
     assert models.self_test() == "Character models: ok"
+
+
+@pytest.fixture
+def manifest_copy(monkeypatch, tmp_path):
+    """models.json copied where a test may edit it, model_version read from the copy."""
+    copy = tmp_path / "models.json"
+    copy.write_text(models.MANIFEST.read_text())
+    monkeypatch.setattr(models, "MANIFEST", copy)
+    store.model_version.cache_clear()
+    yield copy
+    store.model_version.cache_clear()
+
+
+def _edited(copy, name, **fields):
+    entries = json.loads(copy.read_text())
+    next(e for e in entries if e["name"] == name).update(fields)
+    copy.write_text(json.dumps(entries))
+
+
+def test_a_url_licence_or_layout_edit_keeps_the_model_version(manifest_copy):
+    """Ruling AM: a version change re-makes every print (and nothing is sure until that ends), so only what makes
+    the prints may change it."""
+    before = store.model_version()
+    _edited(manifest_copy, "sface", url="https://example.com/sface.onnx", licence="other", bytes=1)
+    store.model_version.cache_clear()
+    assert store.model_version() == before
+    manifest_copy.write_text(json.dumps(list(reversed(json.loads(manifest_copy.read_text()))), indent=4))
+    store.model_version.cache_clear()
+    assert store.model_version() == before
+
+
+def test_another_model_or_another_way_of_printing_changes_the_model_version(monkeypatch, manifest_copy):
+    shipped, before = manifest_copy.read_text(), store.model_version()
+    _edited(manifest_copy, "sface", sha256="0" * 64)
+    store.model_version.cache_clear()
+    assert store.model_version() != before and len(store.model_version()) == 12
+    manifest_copy.write_text(shipped)
+    monkeypatch.setattr(store, "PRINTS_VERSION", store.PRINTS_VERSION + 1)
+    store.model_version.cache_clear()
+    assert store.model_version() != before
+

@@ -356,6 +356,49 @@ async def test_an_episode_whose_prints_fail_does_not_stop_the_others(monkeypatch
     assert calls == [[(20.0, 21.0)], [(1.0, 2.0)]]
     assert await _line_prints(db, bad) == {} and len(await _line_prints(db, good)) == 1
     assert any("ffmpeg could not read vocals.wav" in r.getMessage() for r in caplog.records)
+    assert store.backfill_pending() == []   # saved or failed, neither holds its project back any more
+
+
+@pytest.mark.asyncio
+async def test_queued_jobs_wait_until_their_prints_are_saved_or_fail(monkeypatch, uploads, background_db):
+    """Ruling AL: the start-up queues the jobs the backfill will print (those with vocals: the others never get
+    prints); a queued job's confirmed lines keep its project's lines from being sure until the job leaves the
+    queue — its prints saved, or their making failed (a permanently failing episode holds nothing back)."""
+    db = background_db
+    project_id = await _new_project(db, "Series")
+    saved = await _episode_needing_prints(db, uploads, project_id, datetime(2026, 10, 20), at=20.0)
+    failing = await _episode_needing_prints(db, uploads, project_id, datetime(2026, 10, 1), at=1.0)
+    voiceless = await _episode_needing_prints(db, uploads, project_id, datetime(2026, 10, 10), at=10.0)
+    (uploads / project_id / voiceless / "vocals.wav").unlink()
+    async with db() as s:
+        lin = Speaker(project_id=project_id, label="SPEAKER_00", voice_id=None)
+        s.add(lin)
+        await s.flush()
+        for seg in (await s.execute(select(Segment))).scalars():
+            seg.speaker_id, seg.who_confirmed = lin.id, True
+        await s.commit()
+
+    assert await upgrade.queue_backfill(db) == 2
+    assert store.backfill_pending() == [saved, failing]
+    async with db() as s:
+        known = await store.known_characters(s, project_id)
+    assert (known.waiting, known.complete) == (2, False)
+
+    seen = []
+
+    def fake(video_path, vocals_path, spans, with_faces=True):
+        seen.append(list(store.backfill_pending()))   # a job stays queued while its prints are being made
+        if spans == [(1.0, 2.0)]:
+            raise RuntimeError("ffmpeg could not read vocals.wav")
+        return [LinePrints(voice(0), None, None, None)]
+    monkeypatch.setattr(prints_module, "prints_for_spans", fake)
+    await upgrade.backfill_prints(db)
+
+    assert seen == [[saved, failing], [failing]]
+    assert store.backfill_pending() == []
+    async with db() as s:
+        known = await store.known_characters(s, project_id)
+    assert (known.waiting, known.complete, list(known.profiles)) == (0, True, [lin.id])
 
 
 class _NoImport:

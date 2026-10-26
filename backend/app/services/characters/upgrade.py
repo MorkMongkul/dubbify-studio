@@ -184,14 +184,35 @@ async def _jobs_needing_prints(db: AsyncSession) -> list[str]:
     )).scalars().all()
 
 
-async def backfill_prints(sessionmaker) -> bool:
-    """Prints for every line with none (or made by other models), job by job through the one-at-a-time lock.
-    The models run with no connection held (`store.make_prints` commits first). Returns False when they can't run
-    here (logged once): the rest waits for a Mac that can. An episode whose prints fail is logged and skipped, so
-    one bad episode never keeps the others from theirs."""
+async def queue_backfill(sessionmaker) -> int:
+    """The jobs the backfill will give prints — those with separated vocals (the others never get prints) — queued
+    in store (Ruling AL), so their confirmed lines wait: no line of their projects is sure before they have them.
+    The lifespan awaits it before starting the backfill, so no analysis sees stale prints as complete. Quick
+    database work. Returns how many jobs were queued."""
     async with sessionmaker() as db:
-        job_ids = await _jobs_needing_prints(db)
-    for job_id in job_ids:
+        ids = await _jobs_needing_prints(db)
+        jobs = {job.id: job for job in (await db.execute(select(Job).where(Job.id.in_(ids)))).scalars()}
+    queued = [job_id for job_id in ids if store.vocals_path(jobs[job_id]).exists()]
+    store.queue_for_backfill(queued)
+    return len(queued)
+
+
+def _next_queued(tried: set[str]) -> str | None:
+    return next((job_id for job_id in store.backfill_pending() if job_id not in tried), None)
+
+
+async def backfill_prints(sessionmaker) -> bool:
+    """Prints for the queued jobs' lines with none (or made by other models), job by job through the one-at-a-time
+    lock, queuing them first when nothing is queued. The models run with no connection held (`store.make_prints`
+    commits first). A job leaves the queue once its prints are saved or their making failed: a failing episode is
+    logged and skipped, so it never keeps the others from theirs nor holds its project back. Returns False when the
+    models can't run here (logged once): nothing waits on prints this session won't make."""
+    if not store.backfill_pending():
+        await queue_backfill(sessionmaker)
+    tried: set[str] = set()
+    # until the queue is empty: a job queued while this runs gets its turn too
+    while (job_id := _next_queued(tried)) is not None:
+        tried.add(job_id)
         try:
             async with sessionmaker() as db:
                 job = await db.get(Job, job_id)
@@ -203,11 +224,14 @@ async def backfill_prints(sessionmaker) -> bool:
                     .where(Segment.job_id == job_id, (LinePrint.segment_id.is_(None))
                            | (LinePrint.model_version != store.model_version()))
                     .order_by(Segment.start_time))).scalars().all()
+                if not todo:   # a re-analysis since the queue was made gave them their prints
+                    continue
                 ids, spans = [s.id for s in todo], [actor_span(s) for s in todo]
                 try:
                     found = await store.make_prints(db, job, spans, vocals)
                 except store.CANT_RUN as e:
                     logger.warning(f"Older lines' prints weren't made, the models can't run here: {e}")
+                    store.clear_backfill()
                     return False
                 # lines the user deleted while the models ran keep no print
                 alive = set((await db.execute(select(Segment.id).where(Segment.id.in_(ids)))).scalars())
@@ -218,14 +242,20 @@ async def backfill_prints(sessionmaker) -> bool:
                 logger.info(f"Job {job_id[:8]}: {len(keep)} older line(s) got their prints")
         except Exception as e:  # noqa: BLE001 — not fatal: the next job goes on, the next launch tries this one again
             logger.exception(f"Couldn't make the prints of job {job_id[:8]}'s older lines: {e}")
+        finally:
+            store.backfill_done(job_id)
     return True
 
 
 async def finish_upgrade(sessionmaker) -> None:
     """The background part of the upgrade, at every start-up: sweep stray crops, make missing prints, then each
-    project's thumbnails. Never raises."""
+    project's thumbnails. Never raises, and leaves nothing queued: whatever happened, no line waits on prints this
+    session won't make."""
     try:
         await sweep_orphan_crops(sessionmaker)
+    except Exception:  # noqa: BLE001 — not fatal: the next launch tries again
+        logger.exception("Couldn't sweep the face crops no line uses")
+    try:
         await backfill_prints(sessionmaker)
         async with sessionmaker() as db:
             project_ids = (await db.execute(select(Project.id))).scalars().all()
@@ -234,6 +264,8 @@ async def finish_upgrade(sessionmaker) -> None:
                 await refresh_faces(db, project_id)
     except Exception:  # noqa: BLE001 — not fatal: the next launch tries again
         logger.exception("Couldn't finish upgrading older projects to characters")
+    finally:
+        store.clear_backfill()
 
 
 async def upgrade_projects(sessionmaker) -> None:

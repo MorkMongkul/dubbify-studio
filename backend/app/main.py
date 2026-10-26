@@ -68,6 +68,9 @@ async def lifespan(app: FastAPI):
         moved = await upgrade.convert_projects(core_db.AsyncSessionLocal)
         if moved:
             logger.info(f"Moved {moved} line(s) with their own voice to characters.")
+        # the episodes whose prints the backfill will make, queued before it starts: until it has, no line of
+        # their projects is sure (an analysis can't come in before the lifespan yields)
+        await upgrade.queue_backfill(core_db.AsyncSessionLocal)
         # then, in the background and at every start: stray face crops swept, missing prints made, thumbnails set
         task = asyncio.create_task(upgrade.finish_upgrade(core_db.AsyncSessionLocal))
         _background.add(task)
