@@ -14,7 +14,8 @@ It runs the shipped engine in the app's order:
      the copy's database, so a later run, or a backend started on the copy, reuses them (about a minute per episode
      with faces on an M1);
   3. "as it happens": episode N (in the order they were added) knows only episodes 1..N-1 — the profiles come from
-     their confirmed lines (store.is_confirmed, decide.profile_from) and each line of N gets decide().
+     their confirmed lines (store.is_confirmed, decide.profile_from) and each line of N gets decide(), told as the
+     app tells it whether another line of N is spoken over it (decide.overlapping).
 
 Truth: the Khmer voice of each line's character after the upgrade (in a project the owner checked, one voice is one
 actor, so a guess of another label cast with the same voice is right), or the character a corrections file names:
@@ -50,6 +51,7 @@ class Line:
     voice: str | None      # that character's Khmer voice: the identity "right" is judged by
     confirmed: bool
     prints: object         # LinePrints
+    span: tuple[float, float]   # where its actor spoke (timeline.actor_span)
 
 
 @dataclass
@@ -162,6 +164,7 @@ async def load(project_id: str, episodes: int | None, corrections: dict[str, str
     from app.models.models import Job, LinePrint, Project, Segment, Speaker
     from app.services.characters import store, suggestions
     from app.services.characters.types import LinePrints
+    from app.services.timeline import actor_span
 
     async with database.AsyncSessionLocal() as db:
         project = await db.get(Project, project_id)
@@ -190,7 +193,7 @@ async def load(project_id: str, episodes: int | None, corrections: dict[str, str
                 prints = LinePrints(store._vector(row.voice_print, store.VOICE_SIZE),
                                     store._vector(row.face_print, store.FACE_SIZE), row.speaking_score, None) \
                     if current else LinePrints(None, None, None, None)
-                episode.lines.append(Line(seg.id, truth, None, store.is_confirmed(seg, job), prints))
+                episode.lines.append(Line(seg.id, truth, None, store.is_confirmed(seg, job), prints, actor_span(seg)))
             result.append(episode)
     missing = sorted(set(corrections) - found)
     if missing:
@@ -205,7 +208,7 @@ async def load(project_id: str, episodes: int | None, corrections: dict[str, str
 
 def measure(data: Data, after_merges: bool = False) -> tuple[list[dict], Counter]:
     """Per episode and overall: counted lines, right, sure, sure and right, nobody, new people, same label."""
-    from app.services.characters.decide import decide, profile_from
+    from app.services.characters.decide import decide, overlapping, profile_from
 
     character = (lambda sid: data.merged_into.get(sid, sid)) if after_merges else (lambda sid: sid)
     rows, total = [], Counter()
@@ -219,11 +222,12 @@ def measure(data: Data, after_merges: bool = False) -> tuple[list[dict], Counter
                     if p.voice is not None or p.face is not None}
         known_voices = {data.voice_of[sid] for sid in profiles if data.voice_of.get(sid)}
         c = Counter(lines=len(episode.lines))
-        for line in episode.lines:
+        mixed = overlapping([line.span for line in episode.lines])
+        for line, spoken_over in zip(episode.lines, mixed):
             if line.voice is None:
                 c["no answer"] += 1
                 continue
-            decision = decide(line.prints, profiles)
+            decision = decide(line.prints, profiles, mixed_voice=spoken_over)
             if line.voice not in known_voices:
                 c["new person"] += 1
                 c["new person, nobody"] += decision.speaker_id is None
