@@ -107,8 +107,9 @@
           <div>
             <p class="eyebrow">Transcript</p>
             <h2 class="section-title section-title-sm">Every line timed, labelled and translated</h2>
-            <p class="body-lg">Studio separates the dialogue from the music, transcribes each line and works out who is speaking, then translates it into Khmer with the scene in view.</p>
+            <p class="body-lg">Studio separates the dialogue from the music, transcribes each line and works out who is speaking, recognising each character by voice and face from the lines you've already checked. Then it translates into Khmer with the scene in view.</p>
             <ul class="ticks">
+              <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>A line it isn't sure about asks “Who is this?”, with its two best guesses</li>
               <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>Start from embedded or .srt subtitles instead</li>
               <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>Detect speakers again at any time, without losing edits</li>
               <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>Translate missed lines without touching the ones you changed</li>
@@ -195,8 +196,8 @@
         <p class="eyebrow">What you need</p>
         <h2 class="section-title" id="needs-title">Free to download. Bring your own key.</h2>
         <div class="need-grid">
-          <div class="need"><h3>A Mac</h3><p>macOS 11 or later, with Apple Silicon or an Intel processor.</p></div>
-          <div class="need"><h3>An internet connection</h3><p>The AI runs in the cloud: Google's Gemini for transcription and translation, services on Hugging Face for music separation and voices.</p></div>
+          <div class="need"><h3>A Mac</h3><p>macOS 11 or later, with Apple Silicon or an Intel processor. Recognising characters by voice and face needs macOS 13.4 or later.</p></div>
+          <div class="need"><h3>An internet connection</h3><p>Most of the AI runs in the cloud: Google's Gemini for transcription and translation, services on Hugging Face for music separation and voices. Recognising characters runs on your Mac.</p></div>
           <div class="need"><h3>A Gemini API key</h3><p>Create one in <a href="https://aistudio.google.com/apikey">Google AI Studio</a> and paste it into Settings. Studio uses it only to talk to Gemini.</p></div>
         </div>
         <p class="needs-note">Your projects, videos and exports stay on your Mac.</p>
@@ -288,7 +289,7 @@
           </details>
           <details>
             <summary>Do my videos leave my Mac?<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>
-            <p>Your projects, videos and exports are saved on your Mac. To do the AI work, the app sends audio and text to cloud services: Google's Gemini API, using your key, for transcription and translation, and services hosted on Hugging Face for separating the music and generating voices.</p>
+            <p>Your projects, videos and exports are saved on your Mac. To do the AI work, the app sends audio and text to cloud services: Google's Gemini API, using your key, for transcription and translation, and services hosted on Hugging Face for separating the music and generating voices. Recognising characters by voice and face happens on your Mac, and nothing is sent anywhere for it.</p>
           </details>
           <details>
             <summary>How do updates work?<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>
