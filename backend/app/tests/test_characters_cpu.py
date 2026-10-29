@@ -11,7 +11,7 @@ import pytest
 
 from app.services.characters import faces, lips, models, store, voiceprint
 
-DEFAULT, BACKGROUND = 0x15, 0x09   # QOS_CLASS_DEFAULT, QOS_CLASS_BACKGROUND
+from app.services.characters.priority import BACKGROUND, DEFAULT
 
 
 def test_model_sessions_use_two_threads_that_never_spin():
@@ -115,3 +115,22 @@ def test_the_start_up_upgrade_runs_in_the_background(monkeypatch):
     asyncio.run(upgrade.finish_upgrade(None))
     assert seen == [True]
     assert store._BACKGROUND.get() is False
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS thread priorities")
+def test_an_intel_mac_times_its_face_step_at_normal_priority_even_from_background_work(monkeypatch):
+    """Timed on the efficiency cores, an Intel Mac would turn faces off for good (for this app version)."""
+    from app.services.characters import speed
+    seen = []
+    monkeypatch.setattr(speed.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(speed, "_memo", None)
+    monkeypatch.setattr(speed, "_read_cache", lambda version: None)
+    monkeypatch.setattr(speed, "_write_cache", lambda answer: None)
+    monkeypatch.setattr(speed, "measure", lambda: seen.append(_qos()) or speed.Parts(1, 1, 1, 1, 1))
+
+    async def main():
+        with store.at_background_priority():
+            await asyncio.to_thread(store._one_at_a_time, speed.face_step_enabled)
+
+    asyncio.run(main())
+    assert seen == [DEFAULT]

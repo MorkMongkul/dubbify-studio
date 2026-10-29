@@ -25,6 +25,7 @@ import numpy as np
 
 from app.core.binaries import ffmpeg
 from app.core.config import settings
+from app.services.characters import priority
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +183,8 @@ def face_step_enabled() -> bool:
             return _memo["faces"]
         answer = _read_cache(version)
         if answer is None:
-            parts = measure()
+            with priority.thread_at(priority.DEFAULT):   # even from the start-up's background work
+                parts = measure()
             estimate = parts.estimate
             answer = {"app_version": version, "estimate_secs": round(estimate, 1),
                       "faces": estimate <= FACE_STEP_BUDGET_SECS,
