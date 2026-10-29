@@ -142,3 +142,8 @@ test("Detect speakers' recognizing fills the whole ring", () => {
   // Re-analysis keeps the analysis ring
   assert.equal(stagePercent('recognizing', 0, 129, 'analyze'), 60)
 })
+
+test("transcribing includes line timing: 2 s + 0.04 s per second of video (6.4 s measured for 113 s)", () => {
+  const usual = 2 + 0.04 * 113
+  assert.equal(stagePercent('transcribing', usual / 2, 113), 55 + Math.floor(0.5 * 5))
+})

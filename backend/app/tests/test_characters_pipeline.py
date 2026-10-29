@@ -274,6 +274,28 @@ async def test_carry_over_compares_where_the_actor_spoke_not_the_moved_clip(db_s
 # ── The analysis ──────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
+async def test_lines_start_where_their_first_word_is_heard(monkeypatch, uploads, background_db):
+    """0.5.2: after transcription, a line whose words are heard more than a second from where the pauses put it
+    starts just before its first word — for recognition (its voice print) and on the timeline alike."""
+    from app.services import line_timing
+    project_id, ids = await _project(background_db)
+    job_id = await _episode(background_db, project_id)
+    _vocals(uploads, project_id, job_id)
+    _transcribe(monkeypatch, [("SPEAKER_07", 10.0, 14.0, "你好吗我很好")])
+    monkeypatch.setattr(line_timing, "model_ready", lambda: True)
+    monkeypatch.setattr(line_timing, "heard_characters",
+                        lambda vocals: [(ch, 11.5 + 0.25 * k) for k, ch in enumerate("你好吗我很好")])
+    calls = []
+    _prints(monkeypatch, [LinePrints(voice(0), None, None, None)], calls)
+    _translate(monkeypatch, pipeline)
+    await pipeline.run_analysis_pipeline(job_id)
+
+    assert calls == [[(11.4, 14.0)]]
+    [(line, _)] = await _lines(background_db, job_id)
+    assert (line.start_time, line.source_start, line.source_end) == (11.4, 11.4, 14.0)
+
+
+@pytest.mark.asyncio
 async def test_known_characters_get_their_lines_before_translation(monkeypatch, uploads, background_db):
     project_id, ids = await _project(background_db)
     job_id = await _episode(background_db, project_id)

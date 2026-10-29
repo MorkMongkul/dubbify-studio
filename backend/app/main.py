@@ -19,6 +19,7 @@ from app.services.pipeline_common import recover_orphaned_jobs
 from app.services.builtin_voices import seed_builtin_voices
 from app.services.timeline import convert_old_jobs
 from app.services.media_assets import resume_interrupted
+from app.services import line_timing
 import app.core.database as core_db
 from app.api.routes import health, projects, jobs, segments, tts, voices, overlays, chat, story, stem_pieces, media
 from app.api.routes import settings as settings_routes
@@ -78,6 +79,11 @@ async def lifespan(app: FastAPI):
         logger.exception("Couldn't upgrade older projects to characters")
     # Media left preparing when the app quit: prepared again, in the background
     task = asyncio.create_task(resume_interrupted(core_db.AsyncSessionLocal))
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    # The speech model line timing uses: downloaded once into the data folder, in the background (until then lines
+    # keep the pauses' timing)
+    task = asyncio.create_task(line_timing.ensure_model())
     _background.add(task)
     task.add_done_callback(_background.discard)
     yield

@@ -24,6 +24,7 @@ from app.core.config import settings
 from app.models.models import Job, Project, Segment, Speaker, JobStatus
 from app.services.audio_extractor import extract_audio, get_video_duration, video_frame_rate
 from app.services.source_separator import render_bgm_volume, separate_vocals_bgm
+from app.services import line_timing
 from app.services.asr import VOICES, labels_for_spans, transcribe_audio
 from app.services.translator import EARLIER_LINES, translate_batch_with_report
 from app.services.timeline import actor_span, follow_text, lay_out_new, settle_job
@@ -201,6 +202,10 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
             await _update_job(db, job, JobStatus.TRANSCRIBING, 55)
             has_text = sum(1 for s in diarized if s.source_text)
             logger.info(f"Transcription: {has_text}/{len(diarized)} segments have text")
+            # Lines start where their first word is heard, not just at the nearest pause (before recognition, so
+            # each voice print is taken where the actor speaks)
+            await db.commit()   # no connection held while the speech model runs
+            await line_timing.refine(vocals_path, diarized, project.source_lang or "zh")
 
             # Who speaks each line, before translating: Khmer politeness and pronouns depend on it
             await _update_job(db, job, JobStatus.RECOGNIZING, 60)

@@ -90,8 +90,8 @@ const RING_STEPS: Record<string, RingStep> = {
   // The separation service has a fixed start-up (a 30-second clip took about 70 s)
   separating:   { from: 12, to: 100, usualSecs: (v) => 45 + 0.55 * v },
   diarizing:    { from: 0,  to: 55,  usualSecs: (v) => 15 + 0.3 * v },
-  // Comes right after listening, for a moment
-  transcribing: { from: 55, to: 60,  usualSecs: () => 2 },
+  // Right after listening: line timing finds where each line's words are heard (6.4 s for 113 s on an M1)
+  transcribing: { from: 55, to: 60,  usualSecs: (v) => 2 + 0.04 * v },
   // Voice only since 0.5.2, measured on an M1: 11 s for a 129 s video (34 lines; with faces it took 2–3 min)
   recognizing:  { from: 60, to: 85,  usualSecs: (v) => 3 + 0.07 * v },
   translating:  { from: 85, to: 100, usualSecs: (v) => 5 + 0.04 * v },
