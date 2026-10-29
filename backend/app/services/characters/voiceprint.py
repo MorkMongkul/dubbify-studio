@@ -32,7 +32,7 @@ def _extractor():
     import sherpa_onnx
 
     return sherpa_onnx.SpeakerEmbeddingExtractor(
-        sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(models.path("eres2netv2")), num_threads=4))
+        sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(models.path("eres2netv2")), num_threads=models.THREADS))
 
 
 def voice_print(audio: np.ndarray) -> np.ndarray | None:

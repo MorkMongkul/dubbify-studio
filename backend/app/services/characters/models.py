@@ -17,6 +17,11 @@ MANIFEST = DIR / "models.json"
 
 OK = "Character models: ok"
 MIN_MACOS = (13, 4)   # onnxruntime 1.23.2's wheels (the app itself runs from macOS 11)
+# How hard the models work. Measured 2026-10-29 on the owner's M1 MacBook Air (12 lines of a real episode):
+# onnxruntime's defaults, a thread per core that spins between frames, kept 4 cores busy (103 CPU-s in 26 s) and over
+# the start-up's older episodes heated the fanless Mac to 97 °C; 2 threads that never spin: 68 CPU-s in 37 s, the same
+# prints. The picture is decoded with as many (characters.faces).
+THREADS = 2
 
 
 class ModelMissing(RuntimeError):
@@ -44,6 +49,19 @@ def path(name: str) -> Path:
     return file
 
 
+def session_options():
+    """onnxruntime's options for every model: THREADS threads, which sleep rather than spin between runs."""
+    import onnxruntime
+
+    options = onnxruntime.SessionOptions()
+    options.log_severity_level = 3
+    options.intra_op_num_threads = THREADS
+    options.inter_op_num_threads = 1
+    options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    options.add_session_config_entry("session.inter_op.allow_spinning", "0")
+    return options
+
+
 def self_test() -> str:
     """Loads all four models and runs one tiny input through each. Returns "Character models: ok"."""
     import numpy as np
@@ -53,7 +71,7 @@ def self_test() -> str:
     from app.services.characters import lips
 
     extractor = sherpa_onnx.SpeakerEmbeddingExtractor(
-        sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(path("eres2netv2")), num_threads=1))
+        sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(path("eres2netv2")), num_threads=THREADS))
     stream = extractor.create_stream()
     stream.accept_waveform(16000, (np.random.default_rng(0).standard_normal(16000) * 0.1).astype(np.float32))
     stream.input_finished()
@@ -61,9 +79,7 @@ def self_test() -> str:
         raise RuntimeError("the voice model gave no voice print")
 
     def run(name: str, shape: tuple) -> list:
-        options = onnxruntime.SessionOptions()
-        options.log_severity_level = 3
-        session = onnxruntime.InferenceSession(str(path(name)), options, providers=["CPUExecutionProvider"])
+        session = onnxruntime.InferenceSession(str(path(name)), session_options(), providers=["CPUExecutionProvider"])
         return session.run(None, {session.get_inputs()[0].name: np.zeros(shape, np.float32)})
 
     # YuNet takes a picture of any size padded to multiples of 32 (here 384x256) and answers per anchor

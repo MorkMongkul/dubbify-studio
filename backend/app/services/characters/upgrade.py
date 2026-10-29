@@ -538,7 +538,13 @@ async def backfill_prints(sessionmaker, reference_prints: dict | None = None) ->
 async def finish_upgrade(sessionmaker) -> None:
     """The background part of the upgrade, at every start-up: sweep stray crops; convert the projects that wait for
     it, each before its prints are made; make missing prints; then each project's thumbnails. Never raises, and
-    leaves nothing queued: whatever happened, no line waits on work this session won't do."""
+    leaves nothing queued: whatever happened, no line waits on work this session won't do. Nobody waits for it, so
+    its models run at background priority (store.at_background_priority)."""
+    with store.at_background_priority():
+        await _finish_upgrade(sessionmaker)
+
+
+async def _finish_upgrade(sessionmaker) -> None:
     try:
         await sweep_orphan_crops(sessionmaker)
     except Exception:  # noqa: BLE001 — not fatal: the next launch tries again

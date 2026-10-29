@@ -92,8 +92,9 @@ const RING_STEPS: Record<string, RingStep> = {
   diarizing:    { from: 0,  to: 55,  usualSecs: (v) => 15 + 0.3 * v },
   // Comes right after listening, for a moment
   transcribing: { from: 55, to: 60,  usualSecs: () => 2 },
-  // Faces on, measured on an M1: 164 s for a 129 s video, 147 s for 147 s
-  recognizing:  { from: 60, to: 85,  usualSecs: (v) => 10 + 1.2 * v },
+  // Faces on, measured on an M1: 164 s for a 129 s video, 147 s for 147 s; since 0.5.1 the models use two
+  // threads, which took 1.4× as long (36 s instead of 26 s for 12 lines; half the heat)
+  recognizing:  { from: 60, to: 85,  usualSecs: (v) => 10 + 1.7 * v },
   translating:  { from: 85, to: 100, usualSecs: (v) => 5 + 0.04 * v },
 }
 /** Detect speakers runs only this step, so it fills a ring of its own. */

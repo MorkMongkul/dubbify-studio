@@ -127,8 +127,8 @@ test('transcribing, recognizing and translating run in that order and the ring n
   assert.equal(stagePercent('translating', 0, 129), 85)
 })
 
-test("recognizing goes at the pace measured with faces on (10 s + 1.2 s per second of video)", () => {
-  const usual = 10 + 1.2 * 129
+test("recognizing goes at the pace measured with faces on, two threads (10 s + 1.7 s per second of video)", () => {
+  const usual = 10 + 1.7 * 129
   const half = stagePercent('recognizing', usual / 2, 129)!
   assert.equal(half, 60 + Math.floor(0.5 * 25))
   assert.ok(stagePercent('recognizing', usual * 5, 129)! < 85)
@@ -136,7 +136,7 @@ test("recognizing goes at the pace measured with faces on (10 s + 1.2 s per seco
 
 test("Detect speakers' recognizing fills the whole ring", () => {
   assert.equal(stagePercent('recognizing', 0, 129, 'detect-speakers'), 0)
-  const mid = stagePercent('recognizing', (10 + 1.2 * 129) / 2, 129, 'detect-speakers')!
+  const mid = stagePercent('recognizing', (10 + 1.7 * 129) / 2, 129, 'detect-speakers')!
   assert.ok(mid >= 45 && mid <= 55, String(mid))
   assert.ok(stagePercent('recognizing', 1e6, 129, 'detect-speakers')! <= 99)
   // Re-analysis keeps the analysis ring

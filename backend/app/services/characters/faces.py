@@ -42,9 +42,8 @@ THUMBNAIL = 160
 def _session(name: str):
     import onnxruntime
 
-    options = onnxruntime.SessionOptions()
-    options.log_severity_level = 3
-    return onnxruntime.InferenceSession(str(models.path(name)), options, providers=["CPUExecutionProvider"])
+    return onnxruntime.InferenceSession(str(models.path(name)), models.session_options(),
+                                        providers=["CPUExecutionProvider"])
 
 
 def video_size(video_path: str) -> tuple[int, int] | None:
@@ -89,7 +88,8 @@ def frames(video_path: str, start: float, end: float, fps: int = FPS, *,
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen(
             [ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{start:.6f}", "-to", f"{end:.6f}",
-             "-i", video_path, "-map", "0:v:0", "-vf", f"fps={fps}:start_time=0,scale={width}:{height}", "-f",
+             "-threads", str(models.THREADS), "-i", video_path, "-map", "0:v:0", "-filter_threads", "1",
+             "-vf", f"fps={fps}:start_time=0,scale={width}:{height}", "-f",
              "rawvideo", "-pix_fmt", "bgr24", "-"], stdout=subprocess.PIPE, stderr=errors)
         read_all = False
         try:

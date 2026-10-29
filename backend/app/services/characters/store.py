@@ -5,6 +5,7 @@ A profile is recomputed from the stored prints of a character's confirmed lines 
 sum, so a later correction takes effect at once. The models run only in `recognise`, imported there and with no
 session open (SQLite has one writer), so a Mac that can't load them still analyses as before."""
 import asyncio
+import ctypes
 import hashlib
 import json
 import logging
@@ -12,7 +13,8 @@ import platform
 import sys
 import threading
 from collections import Counter
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -37,6 +39,8 @@ FACE_SIZE = 128
 _ONE_AT_A_TIME = threading.Lock()
 _COUNTING = threading.Lock()
 _runs = 0   # runs waiting for the models or running them: the last one out releases them
+_BACKGROUND: ContextVar[bool] = ContextVar("characters_background", default=False)   # at_background_priority
+_QOS_DEFAULT, _QOS_BACKGROUND = 0x15, 0x09   # macOS's QOS_CLASS_DEFAULT, QOS_CLASS_BACKGROUND
 # The models' cached loaders, by module: about 0.5 GB while loaded
 _LOADERS = (("faces", "_session"), ("lips", "_session"), ("voiceprint", "_extractor"))
 # The models can't run here: a Mac below macOS 13.4 (onnxruntime), or a dev checkout without scripts/fetch-models.sh
@@ -289,21 +293,55 @@ async def kept_characters(db: AsyncSession, job: Job, spans: list[tuple[float, f
     return carried(spans, confirmed) if confirmed else [None] * len(spans)
 
 
+@contextmanager
+def at_background_priority():
+    """The model runs started inside (from this task, through asyncio.to_thread, which carries the context) run at
+    background priority: the start-up's older episodes, which nobody waits for. On an M1 that is the efficiency cores —
+    2.6× as long as a normal run, at a fraction of the power, so a fanless Mac stays cool through the hour it takes."""
+    token = _BACKGROUND.set(True)
+    try:
+        yield
+    finally:
+        _BACKGROUND.reset(token)
+
+
+@contextmanager
+def _thread_priority(background: bool):
+    """macOS: this worker thread at background priority while it runs, then back. The threads ffmpeg and the models
+    start from it get the same (measured: the whole run moved to the efficiency cores)."""
+    if not background or sys.platform != "darwin":
+        yield
+        return
+    system = ctypes.CDLL("/usr/lib/libSystem.dylib")
+    system.qos_class_self.restype = ctypes.c_uint
+    before = system.qos_class_self() or _QOS_DEFAULT
+    system.pthread_set_qos_class_self_np(_QOS_BACKGROUND, 0)
+    try:
+        yield
+    finally:
+        system.pthread_set_qos_class_self_np(before, 0)
+
+
 def _one_at_a_time(work, *args):
     """Runs in the worker thread: a second analysis waits here, never while holding a database session. The last run
     out releases the models (about 0.5 GB on an 8 GB Mac for the backend's life otherwise); the next run loads them
-    again, in about a second."""
+    again, in about a second. A background run loads its own and drops them after: a model's threads keep the
+    priority they were started at."""
     global _runs
+    background = _BACKGROUND.get()
     with _COUNTING:
         _runs += 1
     with _ONE_AT_A_TIME:
+        if background:
+            release_models()
         try:
-            return work(*args)
+            with _thread_priority(background):
+                return work(*args)
         finally:
             with _COUNTING:
                 _runs -= 1
                 last = _runs == 0
-            if last:
+            if last or background:
                 release_models()
 
 

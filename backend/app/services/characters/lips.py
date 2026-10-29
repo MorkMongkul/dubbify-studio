@@ -19,9 +19,8 @@ DURATIONS = (1, 2, 4)  # seconds; Light-ASD scores a clip at a few lengths and t
 def _session():
     import onnxruntime
 
-    options = onnxruntime.SessionOptions()
-    options.log_severity_level = 3
-    return onnxruntime.InferenceSession(str(models.path("lightasd")), options, providers=["CPUExecutionProvider"])
+    return onnxruntime.InferenceSession(str(models.path("lightasd")), models.session_options(),
+                                        providers=["CPUExecutionProvider"])
 
 
 def run_onnx(audio: np.ndarray, video: np.ndarray) -> np.ndarray:
