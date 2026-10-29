@@ -281,7 +281,7 @@ async def test_known_characters_get_their_lines_before_translation(monkeypatch, 
     _transcribe(monkeypatch, [("SPEAKER_07", 0.0, 1.0, "你好"), ("SPEAKER_08", 2.0, 3.0, "再见")])
     _prints(monkeypatch, [
         LinePrints(voice(0), None, None, None),            # Lin Dong's voice, nobody on screen: sure
-        LinePrints(voice(0), face(1), 0.8, b"jpeg"),       # Lin Dong's voice, Mei's speaking face: to check
+        LinePrints(voice(1), face(0), 0.8, b"jpeg"),       # Mei's voice, Lin Dong on screen: the voice decides, sure
     ])
     seen = {}
     _translate(monkeypatch, pipeline, seen)
@@ -291,9 +291,7 @@ async def test_known_characters_get_their_lines_before_translation(monkeypatch, 
     assert "Lin Dong" in seen["cast"] and "Mei" in seen["cast"] and "SPEAKER_07" not in seen["cast"]
     (first, first_label), (second, second_label) = await _lines(background_db, job_id)
     assert (first_label, second_label) == ("SPEAKER_00", "SPEAKER_01")
-    assert first.who_check is None
-    assert json.loads(second.who_check) == [{"speaker_id": ids["SPEAKER_01"], "basis": "face"},
-                                            {"speaker_id": ids["SPEAKER_00"], "basis": "voice"}]
+    assert first.who_check is None and second.who_check is None
     assert not first.who_confirmed and not second.who_confirmed
     async with background_db() as s:     # Gemini's labels made no new characters
         labels = (await s.execute(select(Speaker.label).where(Speaker.project_id == project_id))).scalars().all()
@@ -362,7 +360,7 @@ async def test_while_confirmed_lines_wait_for_their_prints_no_line_is_sure(waiti
     _vocals(uploads, project_id, job_id)
     _transcribe(monkeypatch, [("SPEAKER_07", 0.0, 1.0, "你好"), ("SPEAKER_08", 2.0, 3.0, "再见")])
     _prints(monkeypatch, [LinePrints(voice(0), None, None, None),          # Lin Dong's voice, nobody on screen
-                          LinePrints(voice(0), face(0), 0.8, None)])       # Lin Dong's voice and face
+                          LinePrints(voice(0), face(0), 0.8, None)])       # Lin Dong's voice (a face no longer counts)
     _translate(monkeypatch, pipeline)
     await pipeline.run_analysis_pipeline(job_id)
 
@@ -370,8 +368,7 @@ async def test_while_confirmed_lines_wait_for_their_prints_no_line_is_sure(waiti
     assert (first_label, second_label) == ("SPEAKER_00", "SPEAKER_00")    # the best guess still takes the line
     lin, mei = ids["SPEAKER_00"], ids["SPEAKER_01"]
     assert json.loads(first.who_check) == [{"speaker_id": lin, "basis": "voice"}, {"speaker_id": mei, "basis": "voice"}]
-    assert json.loads(second.who_check) == [{"speaker_id": lin, "basis": "voice + face"},
-                                            {"speaker_id": mei, "basis": "voice"}]
+    assert json.loads(second.who_check) == [{"speaker_id": lin, "basis": "voice"}, {"speaker_id": mei, "basis": "voice"}]
 
 
 @pytest.mark.asyncio
@@ -466,7 +463,8 @@ async def test_a_split_mid_session_never_keeps_the_next_episode_from_being_sure(
                                                                                 background_db):
     """Ruling AL: only the jobs the start-up backfill queued wait for prints. A split's second half (a new row,
     confirmed like the line it came from, with no print) just doesn't teach until a later start-up gives it one."""
-    project_id, ids = await _project(background_db)
+    project_id, ids = await _project(background_db, characters=(("SPEAKER_00", "Lin Dong"), ("SPEAKER_01", "Mei"),
+                                                                ("SPEAKER_02", "Wu")))
     async with background_db() as s:
         mei_line = (await s.execute(select(Segment).where(Segment.speaker_id == ids["SPEAKER_01"]))).scalar_one()
     _vocals(uploads, project_id, mei_line.job_id)   # that episode was separated, as every analysed one is
@@ -476,7 +474,7 @@ async def test_a_split_mid_session_never_keeps_the_next_episode_from_being_sure(
     job_id = await _episode(background_db, project_id)
     _vocals(uploads, project_id, job_id)
     _transcribe(monkeypatch, [("SPEAKER_07", 0.0, 1.0, "你好")])
-    # clearly Lin Dong, voice and face (Mei has no print left to make a second profile: the split dropped it)
+    # clearly Lin Dong (Mei has no print left — the split dropped it — so Lin Dong and Wu are the two profiles)
     _prints(monkeypatch, [LinePrints(voice(0), face(0), 0.9, None)])
     _translate(monkeypatch, pipeline)
     await pipeline.run_analysis_pipeline(job_id)
@@ -796,7 +794,7 @@ async def test_subtitle_analysis_recognises_too(monkeypatch, uploads, background
     monkeypatch.setattr(subtitle_pipeline, "label_speech", label_speech)
     calls = []
     _prints(monkeypatch, [LinePrints(voice(0), None, None, None),            # Lin Dong, sure
-                          LinePrints(voice(0), face(1), 0.7, None),          # Mei's face, Lin Dong's voice
+                          LinePrints(voice(1), face(0), 0.7, None),          # Mei's voice, Lin Dong's face: Mei
                           LinePrints(voice(1), None, None, None)], calls)    # sounds like Mei, but confirmed
     seen = {}
     _translate(monkeypatch, subtitle_pipeline, seen)
@@ -806,9 +804,7 @@ async def test_subtitle_analysis_recognises_too(monkeypatch, uploads, background
     assert seen["labels"] == ["SPEAKER_00", "SPEAKER_01", "SPEAKER_00"]
     rows = await _lines(background_db, job_id)
     assert [label for _, label in rows] == ["SPEAKER_00", "SPEAKER_01", "SPEAKER_00"]
-    assert rows[0][0].who_check is None and rows[2][0].who_check is None and rows[2][0].who_confirmed
-    assert json.loads(rows[1][0].who_check) == [{"speaker_id": ids["SPEAKER_01"], "basis": "face"},
-                                                {"speaker_id": ids["SPEAKER_00"], "basis": "voice"}]
+    assert all(seg.who_check is None for seg, _ in rows) and rows[2][0].who_confirmed
     assert [seg.khmer_machine for seg, _ in rows] == ["km:字幕0", "km:字幕1", "km:字幕2"]
     kept = await _line_prints(background_db, job_id)
     assert set(kept) == {seg.id for seg, _ in rows}

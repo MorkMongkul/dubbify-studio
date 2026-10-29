@@ -134,3 +134,22 @@ def test_an_intel_mac_times_its_face_step_at_normal_priority_even_from_backgroun
 
     asyncio.run(main())
     assert seen == [DEFAULT]
+
+
+def test_recognition_never_reads_the_picture(monkeypatch):
+    """0.5.2: voice only — the face step (every frame through three models) took 2–3 min per episode."""
+    from app.services.characters import prints, speed
+    seen = {}
+
+    def prints_for_spans(video, vocals, spans, with_faces=True):
+        seen["with_faces"] = with_faces
+        return []
+
+    def never():
+        raise AssertionError("the face step's speed was timed")
+
+    monkeypatch.setattr(models, "runtime_supported", lambda: True)
+    monkeypatch.setattr(prints, "prints_for_spans", prints_for_spans)
+    monkeypatch.setattr(speed, "face_step_enabled", never)
+    store._prints_of("/episode.mp4", "/vocals.wav", [(0.0, 1.0)])
+    assert seen == {"with_faces": False}

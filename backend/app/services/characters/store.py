@@ -336,14 +336,13 @@ def release_models() -> None:
 
 
 def _prints_of(video: Path, vocals: str, spans: list[tuple[float, float]]) -> list[LinePrints]:
-    """Worker thread, one analysis at a time: whether this Mac can afford the faces is decided here, because the first
-    time it runs the models for a few seconds. Below macOS 13.4 it stops before anything imports the models'
-    libraries (onnxruntime's wheels need 13.4)."""
+    """Worker thread, one analysis at a time: the lines' voice prints. Below macOS 13.4 it stops before anything imports
+    the models' libraries (onnxruntime's wheels need 13.4)."""
     if not models.runtime_supported():
         raise ImportError(f"character recognition needs macOS {'.'.join(map(str, models.MIN_MACOS))} or later "
                           f"(this Mac has {platform.mac_ver()[0]})")
-    from app.services.characters import prints, speed
-    return prints.prints_for_spans(video, vocals, spans, with_faces=speed.face_step_enabled())
+    from app.services.characters import prints
+    return prints.prints_for_spans(video, vocals, spans, with_faces=False)   # voice only since 0.5.2 (decide)
 
 
 def vocals_path(job: Job) -> Path:

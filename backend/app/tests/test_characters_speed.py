@@ -3,17 +3,13 @@ Characters: the face step is switched off on a Mac too slow for it (characters.s
 
 The timed workload is replaced at the service boundary (speed.measure), so no test runs a model.
 """
-import asyncio
 import json
 import platform
-import threading
-from types import SimpleNamespace
 
 import pytest
 
 from app.core.config import settings
-from app.services.characters import prints as prints_module
-from app.services.characters import speed, store
+from app.services.characters import speed
 
 
 @pytest.fixture(autouse=True)
@@ -96,32 +92,6 @@ def test_a_failed_measurement_raises(monkeypatch):
     monkeypatch.setattr(speed, "measure", broken)
     with pytest.raises(OSError):
         speed.face_step_enabled()
-
-
-def test_faces_are_decided_inside_the_worker_thread(monkeypatch, tmp_path):
-    seen: dict = {}
-
-    def enabled():
-        seen["thread"] = threading.current_thread()
-        return False
-
-    def fake_prints(video, vocals, spans, with_faces=True):
-        seen["with_faces"] = with_faces
-        return ["found" for _ in spans]
-
-    monkeypatch.setattr(speed, "face_step_enabled", enabled)
-    monkeypatch.setattr(prints_module, "prints_for_spans", fake_prints)
-    monkeypatch.setattr(store, "resolve_media_path", lambda p: p)
-
-    class Db:
-        async def commit(self):
-            pass
-
-    job = SimpleNamespace(id="job-1234", video_path="v.mp4")
-    found = asyncio.run(store._find_prints(Db(), job, [(0.0, 1.0)], tmp_path / "vocals.wav"))
-    assert found == ["found"]
-    assert seen["with_faces"] is False
-    assert seen["thread"] is not threading.main_thread()
 
 
 def test_only_the_frames_inside_lines_are_counted():

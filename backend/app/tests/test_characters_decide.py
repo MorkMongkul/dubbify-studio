@@ -3,7 +3,6 @@ import pytest
 
 from app.services.characters.decide import (
     SURE_VOICE_MARGIN,
-    UNKNOWN_FACE_FLOOR,
     UNKNOWN_VOICE_FLOOR,
     Decision,
     Profile,
@@ -35,14 +34,16 @@ def prints(voice=None, face=None):
     return LinePrints(voice, face, 1.0 if face is not None else None, None)
 
 
-def test_face_and_voice_agree_is_sure():
-    d = decide(prints(line_with([0.8, 0.1]), line_with([0.9, 0.1])), PROFILES)
-    assert d.speaker_id == "A" and d.sure and d.guesses == []
-
-
-def test_face_wins_when_they_disagree_and_both_are_guesses():
+def test_a_face_print_never_decides():
+    """0.5.2: recognition is by voice only (the face step took minutes per episode); a face print an older line still
+    has is ignored."""
     d = decide(prints(line_with([0.8, 0.1]), line_with([0.1, 0.9])), PROFILES)
-    assert d.speaker_id == "B" and not d.sure and d.guesses == [("B", "face"), ("A", "voice")]
+    assert d == Decision("A", True, [])
+    # a face that agrees can't make an unclear voice sure
+    d = decide(prints(line_with([0.60, 0.55]), line_with([0.9, 0.1])), PROFILES)
+    assert d.speaker_id == "A" and not d.sure and d.guesses == [("A", "voice"), ("B", "voice")]
+    # a face alone says nothing
+    assert decide(prints(None, line_with([0.9, 0.1])), PROFILES) == Decision(None, False, [])
 
 
 @pytest.mark.parametrize("second, sure", [(0.50, True), (0.51, False)])
@@ -76,31 +77,12 @@ def test_a_profile_is_the_normalised_mean_of_its_prints():
     assert profile_from([prints(None, None)]).voice is None
 
 
-def test_a_face_below_the_floor_falls_back_to_the_voice():
-    face = line_with([0.0, 0.3])  # favours B, but under the floor
-    d = decide(prints(line_with([0.2 + 0.4, 0.2]), face), PROFILES)
-    # the voice picks; a face that matches nobody keeps it to check (Ruling AJ, amending K)
-    assert d.speaker_id == "A" and not d.sure and d.guesses == [("A", "voice"), ("B", "voice")]
-
-
-def test_a_speaking_face_no_character_has_is_never_sure_by_voice():
-    """Ruling AJ: a face speaks the line, characters have faces, and it is none of theirs — a new actor on screen.
-    The voice's lead alone can't make that sure."""
-    unknown_face = line_with([0.0, 0.0])
-    d = decide(prints(line_with([0.60, 0.45]), unknown_face), PROFILES)
-    assert d.speaker_id == "A" and not d.sure
-    assert d.guesses == [("A", "voice"), ("B", "voice")]
-    # with no character's face to compare it with, the face says nothing: the voice's lead decides
-    voices_only = {sid: Profile(p.voice, None, p.lines) for sid, p in PROFILES.items()}
-    assert decide(prints(line_with([0.60, 0.45]), unknown_face), voices_only) == Decision("A", True, [])
-
-
 def test_a_voice_mixed_with_another_line_is_never_sure_by_voice_alone():
     """Two lines whose actors speak at once give one voice print of both: its lead says nothing (Review Focus 3)."""
     d = decide(prints(line_with([0.60, 0.45])), PROFILES, mixed_voice=True)
     assert d.speaker_id == "A" and not d.sure and d.guesses == [("A", "voice"), ("B", "voice")]
-    # a speaking face that agrees still makes it sure
-    assert decide(prints(line_with([0.60, 0.45]), line_with([0.9, 0.1])), PROFILES, mixed_voice=True).sure
+    # nor can a face that agrees
+    assert not decide(prints(line_with([0.60, 0.45]), line_with([0.9, 0.1])), PROFILES, mixed_voice=True).sure
 
 
 @pytest.mark.parametrize("spans, mixed", [
@@ -115,13 +97,7 @@ def test_lines_whose_actors_speak_at_once_overlap(spans, mixed):
 def test_a_single_voice_profile_is_never_sure_by_margin():
     d = decide(prints(line_with([0.9])), {"A": PROFILES["A"]})
     assert d.speaker_id == "A" and not d.sure and d.guesses == [("A", "voice")]
-    assert decide(prints(line_with([0.9]), line_with([0.9])), {"A": PROFILES["A"]}).sure
-
-
-def test_face_only_gives_the_faces_top_two():
-    d = decide(prints(None, line_with([0.5, 0.4])), PROFILES)
-    assert d.speaker_id == "A" and not d.sure
-    assert d.guesses == [("A", "face"), ("B", "face")]
+    assert not decide(prints(line_with([0.9]), line_with([0.9])), {"A": PROFILES["A"]}).sure
 
 
 def test_nobody_still_offers_the_voices_top_two():

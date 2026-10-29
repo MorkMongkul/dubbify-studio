@@ -296,7 +296,7 @@ async def run(project_id: str, episodes: int | None, corrections: dict[str, str]
     data = await load(project_id, episodes, corrections)
     merges = sum(1 for sid, into in data.merged_into.items() if sid != into)
     print(f"Measured: {', '.join(e.title for e in data.episodes)} as it happens; corrections: {len(corrections)}; "
-          f"floors voice {decide.UNKNOWN_VOICE_FLOOR}, face {decide.UNKNOWN_FACE_FLOOR}; "
+          f"voice floor {decide.UNKNOWN_VOICE_FLOOR}; "
           f"sure margin {decide.SURE_VOICE_MARGIN}")
     as_upgraded = measure(data)
     merged = measure(data, after_merges=True)

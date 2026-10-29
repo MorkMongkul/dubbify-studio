@@ -146,12 +146,12 @@ async def test_detect_speakers_is_never_sure_while_confirmed_lines_wait_for_prin
     project_id, job_id, ids, _ = await _detect_setup(background_db, uploads, [(0.0, 2.0, {})])
     await _waiting_line(background_db, uploads, project_id, ids["SPEAKER_01"])
     _no_gemini(monkeypatch)
-    _prints(monkeypatch, [_p(0)])    # Lin Dong's voice and face
+    _prints(monkeypatch, [_p(0)])    # Lin Dong's voice (and face, which no longer counts)
     await _detect(client, job_id)
 
     [(seg, label)] = await _lines(background_db, job_id)
     assert label == "SPEAKER_00"
-    assert json.loads(seg.who_check) == [{"speaker_id": ids["SPEAKER_00"], "basis": "voice + face"},
+    assert json.loads(seg.who_check) == [{"speaker_id": ids["SPEAKER_00"], "basis": "voice"},
                                          {"speaker_id": ids["SPEAKER_01"], "basis": "voice"}]
 
 
