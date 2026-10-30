@@ -1,5 +1,12 @@
-"""Who said this line? A character's profile is the mean of its confirmed lines' prints; `decide` compares one line's
-voice print with every profile and says whether it is sure. Pure numpy: no database, no models.
+"""Who said this line? A character's profile is its confirmed lines' prints: their mean, and every voice print; `decide`
+compares one line's voice print with every profile and says whether it is sure. Pure numpy: no database, no models.
+
+A character's score (0.5.3) blends the mean of the line's TOP_K closest checked prints of theirs with the cosine to
+their mean (VOICE_BLEND): an actor heard calm and shouting has two kinds of print, and the mean sits between them.
+Measured on the owner's 30 finished episodes as it happens: 63.1% → 65.7% right with the ERes2NetV2 prints alone,
+67.8% with CAM++ added to the print (characters.voiceprint); sure on 35.8% at 85.0% (was 36.2% at 84.6%). Tried and
+dropped: lines of an episode that sound alike sharing their scores, and a man/woman tie-breaker (worth +5 points only
+with a gender always right; at 90% right it gained nothing or lost).
 
 By voice only since 0.5.2: the face step (every frame through three models) took 2–3 min per episode, and the owner
 chose speed (measured on ep01–10: 74.1% right with faces). A face print an older line still has is ignored. Sure: the
@@ -11,7 +18,9 @@ import numpy as np
 
 from app.services.characters.types import LinePrints
 
-SURE_VOICE_MARGIN = 0.10  # best minus second voice cosine
+SURE_VOICE_MARGIN = 0.10  # best minus second voice score (0.08: sure on 44.5% at 82.8%; 0.12: 29.4% at 88.2%)
+TOP_K = 5                 # the line's closest checked prints of a character...
+VOICE_BLEND = 0.5         # ...averaged, and blended half and half with the cosine to the character's mean
 # Measured on the owner's project and kept: from 0.25 to 0.45 it moved at most 3 of 169 lines. A new actor's best voice
 # cosine (0.42-0.58) sits among the known actors' (0.47 and up on 95% of lines), so the floor only catches a voice far
 # from everyone.
@@ -24,6 +33,7 @@ class Profile:
     voice: np.ndarray | None
     face: np.ndarray | None
     lines: int
+    voices: np.ndarray | None = None   # every confirmed line's voice print, one per row (None: score by the mean only)
 
 
 @dataclass
@@ -42,22 +52,28 @@ def _mean_unit(vectors: list[np.ndarray]) -> np.ndarray | None:
 
 
 def profile_from(prints: list[LinePrints]) -> Profile:
+    voices = [p.voice for p in prints if p.voice is not None]
     return Profile(
-        _mean_unit([p.voice for p in prints if p.voice is not None]),
+        _mean_unit(voices),
         _mean_unit([p.face for p in prints if p.face is not None]),
         len(prints),
+        np.asarray(voices, np.float32) if voices else None,
     )
 
 
-def _ranked(print_: np.ndarray | None, profiles: dict[str, Profile], kind: str) -> list[tuple[str, float]]:
-    """Characters with a `kind` profile, best cosine first."""
-    if print_ is None:
+def _voice_score(voice: np.ndarray, profile: Profile) -> float:
+    mean = float(np.dot(voice, profile.voice))
+    if profile.voices is None or not len(profile.voices):
+        return mean
+    closest = np.sort(profile.voices @ voice)[::-1][:TOP_K]
+    return VOICE_BLEND * float(np.mean(closest)) + (1 - VOICE_BLEND) * mean
+
+
+def _ranked(voice: np.ndarray | None, profiles: dict[str, Profile]) -> list[tuple[str, float]]:
+    """Characters with a voice profile, best score first."""
+    if voice is None:
         return []
-    scored = [
-        (sid, float(np.dot(print_, getattr(prof, kind))))
-        for sid, prof in profiles.items()
-        if getattr(prof, kind) is not None
-    ]
+    scored = [(sid, _voice_score(voice, prof)) for sid, prof in profiles.items() if prof.voice is not None]
     return sorted(scored, key=lambda s: -s[1])
 
 
@@ -74,7 +90,7 @@ def decide(p: LinePrints, profiles: dict[str, Profile], mixed_voice: bool = Fals
     """mixed_voice: another line is spoken over this one (`overlapping`), so its voice print holds two voices.
     may_be_sure: False while the profiles are incomplete (confirmed lines still wait for their prints): a line that
     would be sure is then to check, its pick the first guess."""
-    voices = _ranked(p.voice, profiles, "voice")
+    voices = _ranked(p.voice, profiles)
     if not voices or voices[0][1] < UNKNOWN_VOICE_FLOOR:
         return Decision(None, False, [(sid, "voice") for sid, _ in voices[:2]])
 

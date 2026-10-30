@@ -104,3 +104,21 @@ def test_nobody_still_offers_the_voices_top_two():
     low = UNKNOWN_VOICE_FLOOR - 0.1
     d = decide(prints(line_with([low, low - 0.05])), PROFILES)
     assert d.speaker_id is None and d.guesses == [("A", "voice"), ("B", "voice")]
+
+
+def test_a_line_matches_the_character_with_the_closest_checked_lines_not_only_the_closest_average():
+    """0.5.3: an actor heard calm and shouting has two kinds of print; the average sits between them. A shouted line
+    matches their shouted lines (top-5 closest, blended with the average), not a stranger whose average is nearer."""
+    from app.services.characters.decide import TOP_K
+    assert TOP_K == 5
+    calm, shout = axis(0, 3), axis(1, 3)
+    stranger = np.array([0.0, 0.75, np.sqrt(1 - 0.75 ** 2)])
+    a = profile_from([prints(calm)] * 5 + [prints(shout)] * 5)
+    b = profile_from([prints(stranger)] * 10)
+    assert float(np.dot(a.voice, shout)) < float(np.dot(b.voice, shout))   # by the averages, the stranger
+    assert decide(prints(shout), {"A": a, "B": b}).speaker_id == "A"
+
+
+def test_a_profile_keeps_every_checked_voice_print():
+    p = profile_from([prints(axis(0)), prints(axis(1)), prints(None, axis(1))])
+    assert p.voices.shape == (2, 4)
