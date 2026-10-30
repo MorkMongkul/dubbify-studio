@@ -105,3 +105,6 @@ backend/backups/
 # Static ffmpeg/ffprobe builds bundled into desktop releases (fetched per machine)
 vendor/ffmpeg/
 vendor/fribidi/
+# Character models fetched by scripts/fetch-models.sh (the rest of backend/app/assets/models is committed)
+backend/app/assets/models/3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx
+backend/app/assets/models/face_recognition_sface_2021dec.onnx

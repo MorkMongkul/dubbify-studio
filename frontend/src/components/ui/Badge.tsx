@@ -58,6 +58,7 @@ const statusVariantMap: Record<JobStatus, BadgeVariant> = {
   stems_ready:  'brand',
   diarizing:    'brand',
   transcribing: 'brand',
+  recognizing:  'brand',
   translating:  'blue',
   synthesizing: 'brand',
   mixing:       'blue',
@@ -72,7 +73,7 @@ interface StatusBadgeProps {
 }
 
 export function StatusBadge({ status, label, className }: StatusBadgeProps) {
-  const isRunning = ['uploading','extracting','separating','diarizing','transcribing','translating','synthesizing','mixing'].includes(status)
+  const isRunning = ['uploading','extracting','separating','diarizing','transcribing','recognizing','translating','synthesizing','mixing'].includes(status)
   return (
     <Badge
       variant={statusVariantMap[status]}

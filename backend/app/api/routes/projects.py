@@ -14,7 +14,7 @@ from typing import List
 from app.core.database import get_db
 from app.core.config import settings
 from app.models.models import (
-    Project, Job, Segment, Speaker, Overlay, ChatMessage, ChatProposedEdit, ChatThread, StemPiece,
+    Project, Job, Segment, Speaker, Overlay, ChatMessage, ChatProposedEdit, ChatThread, StemPiece, LinePrint,
     MediaAsset, MediaClip, MediaTemplate,
 )
 from app.schemas.schemas import ProjectCreate, ProjectUpdate, ProjectResponse
@@ -141,6 +141,7 @@ async def delete_project(project_id: str, db: AsyncSession = Depends(get_db, sco
     await db.execute(delete(ChatThread).where(ChatThread.project_id == project_id))
     job_ids = (await db.execute(select(Job.id).where(Job.project_id == project_id))).scalars().all()
     if job_ids:
+        await db.execute(delete(LinePrint).where(LinePrint.job_id.in_(job_ids)))
         await db.execute(delete(Segment).where(Segment.job_id.in_(job_ids)))
         await db.execute(delete(Overlay).where(Overlay.job_id.in_(job_ids)))
         await db.execute(delete(StemPiece).where(StemPiece.job_id.in_(job_ids)))

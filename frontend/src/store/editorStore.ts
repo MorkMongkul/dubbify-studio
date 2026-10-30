@@ -46,6 +46,10 @@ interface EditorStore {
   // The line whose text the cursor was last in: "this line" for the Assistant.
   // Follows the text cursor, not the mouse (activeSegmentId follows hover).
   assistantLineId: string | null
+  // The "Who is this?" line that keys 1 / 2 pick for (Next to check moves it).
+  // In DEFAULT_STATE: a switch of episode drops it, like the selection.
+  checkingLineId: string | null
+  setCheckingLineId: (id: string | null) => void
   selectedSpeakerId: string | null
   selectedSegmentIds: string[]
   // Segment ids queued in a running batch voice generation, plus the job
@@ -194,6 +198,7 @@ const DEFAULT_STATE = {
   selectedOverlayId: null,
   editingSegmentId: null,
   assistantLineId: null as string | null,
+  checkingLineId: null as string | null,
   selectedSpeakerId: null,
   leftPanelCollapsed: false,
   rightPanelCollapsed: false,
@@ -299,6 +304,9 @@ export const useEditorStore = create<EditorStore>()(
     setSelectedOverlay: (id) => set({ selectedOverlayId: id }),
     setEditingSegment: (id) => set({ editingSegmentId: id }),
     setAssistantLineId: (id) => set({ assistantLineId: id }),
+    setCheckingLineId: (id) => {
+      if (get().checkingLineId !== id) set({ checkingLineId: id })
+    },
     setSelectedSpeaker: (id) => set({ selectedSpeakerId: id }),
     toggleSelectSegment: (id) => set((s) => ({
       selectedSegmentIds: s.selectedSegmentIds.includes(id)

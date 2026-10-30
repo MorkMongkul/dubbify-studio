@@ -6,21 +6,22 @@ Also includes speaker management endpoints.
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm.attributes import flag_modified
 from typing import List
+import json
 import uuid
 from pathlib import Path
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.paths import resolve_media_path
-from app.models.models import Segment, Speaker, Job, Project, Voice
+from app.models.models import LinePrint, Segment, Speaker, Job, Project, Voice
 from app.schemas.schemas import (
-    SegmentResponse, SegmentUpdate, SegmentCreate, LayoutRequest, LayoutResponse, SplitRequest, SplitResponse,
-    SpeakerResponse, SpeakerUpdate, SpeakerCreate, SpeakerMerge, SpeakerMergeResponse, SpeakerUnmerge,
+    CharacterPick, CharacterPicked, SegmentResponse, SegmentUpdate, SegmentCreate, LayoutRequest, LayoutResponse, SplitRequest, SplitResponse,
+    SpeakerResponse, SpeakerUpdate, SpeakerCreate, SpeakerMerge, SpeakerMergeResponse, CharacterSuggestion, CharacterDismiss, SpeakerUnmerge,
 )
-from app.services import story_notes, timeline, voice_level
+from app.services import speaker_merge, story_notes, timeline, voice_level
 from app.services.audio_extractor import voice_at_rate
 
 router = APIRouter(tags=["Segments & Speakers"])
@@ -135,8 +136,14 @@ async def update_segment(
     old_start = seg.start_time
 
     update_data = payload.model_dump(exclude_unset=True)
+    if (update_data.get("speaker_id") not in (None, seg.speaker_id)
+            and "who_confirmed" not in update_data and "who_check" not in update_data):
+        # Choosing another character is a decision: the line is confirmed. (A voice change is casting only.)
+        update_data["who_confirmed"], update_data["who_check"] = True, None
     if update_data.get("tts_audio_path"):
         update_data["tts_audio_path"] = await _clip_path_in_session(db, seg, update_data["tts_audio_path"])
+    if "who_check" in update_data:
+        update_data["who_check"] = None if update_data["who_check"] is None else json.dumps(update_data["who_check"])
     for field, value in update_data.items():
         setattr(seg, field, value)
     if update_data.get("tts_audio_path") == "":
@@ -256,6 +263,43 @@ async def _segment_or_404(db: AsyncSession, segment_id: str) -> Segment:
     return seg
 
 
+async def _refresh_faces(db: AsyncSession, project_id: str) -> None:
+    from app.services.characters import upgrade   # here, so the backend starts without the characters package
+    await upgrade.refresh_faces_safely(db, project_id)
+
+
+@router.post("/segments/{segment_id}/character", response_model=CharacterPicked)
+async def pick_character(
+    segment_id: str,
+    payload: CharacterPick,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """
+    The user picks who speaks this line: it is confirmed for that speaker, and — when the speaker
+    changed and nobody edited its Khmer — translated again for them. The pick is saved first and never fails because
+    of the translation (retranslated=False then). previous_khmer lets the editor undo it.
+    """
+    from app.services import pipeline
+
+    seg = await _segment_or_404(db, segment_id)
+    job = (await db.execute(select(Job).where(Job.id == seg.job_id))).scalar_one()
+    speaker = (await db.execute(select(Speaker).where(Speaker.id == payload.speaker_id))).scalar_one_or_none()
+    if speaker is None or speaker.project_id != job.project_id:
+        raise HTTPException(status_code=400, detail="That character isn't in this project")
+    previous = seg.khmer_text
+    # Confirming the speaker the line already has (Movelo's guess, the usual pick): the Khmer was
+    # translated for that speaker, so it isn't asked for again
+    same_speaker = seg.speaker_id == speaker.id
+    seg.speaker_id, seg.who_confirmed, seg.who_check = speaker.id, True, None
+    await db.commit()   # the pick stands whatever the translation does, and the connection is free for Gemini
+    await _refresh_faces(db, job.project_id)   # the line's face may now be its character's best
+    retranslated = False if same_speaker else await pipeline.retranslate_line(db, seg.id)
+    seg = (await db.execute(select(Segment).where(Segment.id == segment_id)
+                            .execution_options(populate_existing=True))).scalar_one()
+    return CharacterPicked(segment=SegmentResponse.model_validate(seg), retranslated=retranslated,
+                           previous_khmer=previous or "")
+
+
 @router.post("/segments/{segment_id}/split", response_model=SplitResponse)
 async def split_segment(
     segment_id: str,
@@ -303,6 +347,8 @@ async def split_segment(
         seg.end_time = at
         timeline.follow_text(seg)
         timeline.follow_text(second)
+    # The first half keeps the id, but its print described the whole line
+    await db.execute(delete(LinePrint).where(LinePrint.segment_id == seg.id))
     db.add(second)
     await db.commit()
     await timeline.settle_job(db, seg.job_id, [seg.id, second.id])
@@ -335,6 +381,7 @@ async def delete_segment(segment_id: str, db: AsyncSession = Depends(get_db, sco
     seg = result.scalar_one_or_none()
     if not seg:
         raise HTTPException(status_code=404, detail="Segment not found")
+    await db.execute(delete(LinePrint).where(LinePrint.segment_id == segment_id))
     await db.delete(seg)
     await db.commit()
 
@@ -580,16 +627,10 @@ async def merge_speaker(
         raise HTTPException(status_code=404, detail="Speaker not found")
     if source.id == target.id or source.project_id != target.project_id:
         raise HTTPException(status_code=400, detail="Choose another speaker of this project")
-    lines = (await db.execute(select(Segment).where(Segment.speaker_id == source.id))).scalars().all()
-    for line in lines:
-        line.speaker_id = target.id
     removed = SpeakerResponse.model_validate(source)
-    project = await db.get(Project, source.project_id)
-    project.story_notes, relinked = story_notes.relink_speaker(project.story_notes, source.label, target.label)
-    flag_modified(project, "story_notes")
-    await db.flush()
-    await db.delete(source)
+    lines, relinked = await speaker_merge.merge_into(db, source, target)
     await db.commit()
+    await _refresh_faces(db, target.project_id)   # the character now has both faces to choose from
     return SpeakerMergeResponse(moved=[line.id for line in lines], removed=removed, relinked=relinked)
 
 
@@ -628,5 +669,46 @@ async def unmerge_speaker(
         project.story_notes = story_notes.link_characters(project.story_notes, payload.relinked, snap.label)
         flag_modified(project, "story_notes")
     await db.commit()
+    # a snapshot doesn't carry the thumbnail: both characters take their best confirmed face again
+    await _refresh_faces(db, target.project_id)
     await db.refresh(speaker)
     return speaker
+
+
+@router.get("/projects/{project_id}/character-suggestions", response_model=List[CharacterSuggestion])
+async def character_suggestions(
+    project_id: str,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """
+    Characters that may be one person: cast with the same voice by the user, or close in voice and face. Only
+    suggestions — nothing is merged here; the user's click calls /speakers/{id}/merge.
+    """
+    from app.services.characters import suggestions
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return await suggestions.suggest(db, project_id, project.character_dismissals)
+
+
+@router.post("/projects/{project_id}/character-suggestions/dismiss", status_code=status.HTTP_204_NO_CONTENT)
+async def dismiss_character_suggestion(
+    project_id: str,
+    payload: CharacterDismiss,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """Not the same: the pair (given in either order) is never suggested again."""
+    from app.services.characters import suggestions
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if payload.a == payload.b:
+        raise HTTPException(status_code=400, detail="Choose two different characters")
+    found = (await db.execute(select(Speaker.id).where(
+        Speaker.project_id == project_id, Speaker.id.in_([payload.a, payload.b])))).scalars().all()
+    if len(set(found)) != 2:
+        raise HTTPException(status_code=400, detail="Those characters aren't in this project")
+    pairs = suggestions.dismissals_from(project.character_dismissals)
+    pairs.add(suggestions.pair_of(payload.a, payload.b))
+    project.character_dismissals = suggestions.dismissals_to(pairs)
+    await db.commit()

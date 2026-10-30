@@ -4,6 +4,7 @@
 import { clsx, type ClassValue } from 'clsx'
 import { twMerge } from 'tailwind-merge'
 import { SPEAKER_COLORS, getJobStatusConfig } from '@/types'
+import { speakerDisplayName } from '@/lib/whoCheck'
 
 export { getJobStatusConfig }
 
@@ -36,17 +37,8 @@ export function getSpeakerColor(index: number): string {
   return SPEAKER_COLORS[index % SPEAKER_COLORS.length]
 }
 
-/**
- * Standard display name for a speaker: the user's custom name if set,
- * otherwise a friendly "Speaker N" (1-indexed) — never the raw internal
- * diarization label (e.g. "SPEAKER_00"), which reads as a technical ID.
- */
-export function getSpeakerDisplayName(
-  speaker: { display_name?: string; label?: string } | null | undefined,
-  index: number
-): string {
-  return speaker?.display_name || `Speaker ${index + 1}`
-}
+/** Standard display name for a speaker (whoCheck.speakerDisplayName, which `npm test` covers). */
+export const getSpeakerDisplayName = speakerDisplayName
 
 /** Compute hex → rgba with alpha */
 export function hexToRgba(hex: string, alpha: number): string {
@@ -91,7 +83,7 @@ export function debounce<T extends (...args: Parameters<T>) => void>(
 
 /** Map job status to pipeline step index */
 export function getJobStepIndex(status: string): number {
-  const steps = ['pending', 'extracting', 'separating', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing', 'completed', 'failed']
+  const steps = ['pending', 'extracting', 'separating', 'diarizing', 'transcribing', 'recognizing', 'translating', 'synthesizing', 'mixing', 'completed', 'failed']
   return steps.indexOf(status)
 }
 
@@ -106,7 +98,7 @@ export function originalVoicesReplaced(status: string | undefined | null): boole
 
 /** Check if job is still processing */
 export function isJobRunning(status: string): boolean {
-  const running = ['pending', 'extracting', 'separating', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing']
+  const running = ['pending', 'extracting', 'separating', 'diarizing', 'transcribing', 'recognizing', 'translating', 'synthesizing', 'mixing']
   return running.includes(status)
 }
 

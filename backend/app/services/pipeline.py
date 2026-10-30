@@ -3,12 +3,14 @@ app/services/pipeline.py
 ASR pipeline orchestrator — two user-controlled stages.
 
 Stage 1  run_pipeline()           → extract audio + stem separation (HF Space) → STEMS_READY
-Stage 2  run_analysis_pipeline()  → transcribe + speaker-label + translate  → COMPLETED
+Stage 2  run_analysis_pipeline()  → transcribe + recognise characters + translate  → COMPLETED
 
 Speaker labels come from app.services.asr (Gemini comparing voices across
 clips in one request) rather than a dedicated diarization model like MOSS's
-— treat them as an approximate starting point, not ground truth. The user
-splits/reassigns speakers manually in the editor for anything wrong.
+— treat them as an approximate starting point, not ground truth. Once a
+project has characters, each line's voice and speaking face are matched to
+them first (app.services.characters.store.recognise); Gemini's labels then
+only name people not seen before. The user reassigns anything wrong.
 
 TTS synthesis and final mix are triggered separately per-segment / on demand.
 """
@@ -22,8 +24,9 @@ from app.core.config import settings
 from app.models.models import Job, Project, Segment, Speaker, JobStatus
 from app.services.audio_extractor import extract_audio, get_video_duration, video_frame_rate
 from app.services.source_separator import render_bgm_volume, separate_vocals_bgm
+from app.services import line_timing
 from app.services.asr import VOICES, labels_for_spans, transcribe_audio
-from app.services.translator import translate_batch_with_report
+from app.services.translator import EARLIER_LINES, translate_batch_with_report
 from app.services.timeline import actor_span, follow_text, lay_out_new, settle_job
 from app.services.pipeline_common import (
     update_job_status as _update_job,
@@ -170,6 +173,7 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
     how many distinct voices it hears (see app.services.asr).
     """
     from app.core.database import AsyncSessionLocal
+    from app.services.characters import store, upgrade   # here, so the backend starts without the characters package
 
     async with AsyncSessionLocal() as db:
         job, project = await _load_job_and_project(db, job_id)
@@ -198,16 +202,29 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
             await _update_job(db, job, JobStatus.TRANSCRIBING, 55)
             has_text = sum(1 for s in diarized if s.source_text)
             logger.info(f"Transcription: {has_text}/{len(diarized)} segments have text")
+            # Lines start where their first word is heard, not just at the nearest pause (before recognition, so
+            # each voice print is taken where the actor speaks)
+            await db.commit()   # no connection held while the speech model runs
+            await line_timing.refine(vocals_path, diarized, project.source_lang or "zh")
+
+            # Who speaks each line, before translating: Khmer politeness and pronouns depend on it
+            await _update_job(db, job, JobStatus.RECOGNIZING, 60)
+            spans = [(seg.start_time, seg.end_time) for seg in diarized]
+            gemini_labels = [seg.speaker_label for seg in diarized]
+            kept = await store.kept_characters(db, job, spans)
+            labels, who_checks, prints = await store.recognise(
+                db, job, spans, gemini_labels, kept, refresh_kept=lambda: store.kept_characters(db, job, spans))
 
             story = await translation_story(db, project.id, job.id)
-            heard = {s.speaker_label: s.gender for s in diarized if s.gender in VOICES}
-            cast = await translation_cast(db, job, [s.speaker_label for s in diarized], heard)
+            heard = store.heard_by_label(labels, gemini_labels, who_checks, kept,
+                                         [seg.gender if seg.gender in VOICES else None for seg in diarized])
+            cast = await translation_cast(db, job, labels, heard)
             memory = await translation_memory(db, project.id, job.id)
             await _update_job(db, job, JobStatus.TRANSLATING, 65)
             source_texts = [seg.source_text for seg in diarized]
             segments_context = [
-                {"speaker_label": seg.speaker_label, "source_text": seg.source_text}
-                for seg in diarized
+                {"speaker_label": label, "source_text": seg.source_text}
+                for label, seg in zip(labels, diarized)
             ]
             # Translate Chinese → target (Khmer) DIRECTLY — no English pivot.
             logger.info(f"Translating {len(source_texts)} segments {project.source_lang} → {project.target_lang}...")
@@ -218,26 +235,31 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
 
             # Atomic swap: speakers, old-segment removal, new segments and the
             # COMPLETED status are all written in the one commit below.
-            speaker_map = await ensure_speakers(db, project.id, [seg.speaker_label for seg in diarized], heard)
+            speaker_map = await ensure_speakers(db, project.id, labels, heard)
             lane_by_speaker: dict = {}   # each speaker starts on its own lane (user can rearrange)
             new_segments = []
             for i, seg in enumerate(diarized):
+                km = km_texts[i] if i < len(km_texts) else ""
                 new_segments.append(Segment(
                     job_id=job.id,
-                    speaker_id=speaker_map[seg.speaker_label].id,
-                    lane_index=lane_by_speaker.setdefault(seg.speaker_label, len(lane_by_speaker)),
+                    speaker_id=speaker_map[labels[i]].id,
+                    lane_index=lane_by_speaker.setdefault(labels[i], len(lane_by_speaker)),
                     start_time=seg.start_time,
                     end_time=seg.end_time,
                     source_start=seg.start_time,
                     source_end=seg.end_time,
                     source_text=seg.source_text,
                     english_text="",
-                    khmer_text=km_texts[i] if i < len(km_texts) else "",
+                    khmer_text=km,
+                    khmer_machine=km,
+                    who_check=store.who_check_json(who_checks[i]),
+                    who_confirmed=bool(kept[i]),   # a confirmed old line's character stays confirmed
                 ))
             # Each line is as long as its Khmer text takes to say; the
             # detected span stays as where the actor spoke
             lay_out_new(new_segments)
             await replace_job_segments(db, job.id, new_segments)
+            await store.save_prints(db, job.id, [s.id for s in new_segments], prints, store.faces_dir(job))
             await remove_unused_auto_speakers(db, project.id)
 
             # used_mock: Gemini failed for some clips — their timing is real
@@ -254,9 +276,10 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
             if job.duck_music is None:
                 job.duck_music = True   # analysed from 0.3.1 on: the music dips under the voices
             await _update_job(db, job, JobStatus.COMPLETED, 100, " ".join(warnings))
+            await upgrade.refresh_faces_safely(db, project.id)   # the new lines' faces may now be a thumbnail
             logger.info(
                 f"Analysis complete for job {job_id[:8]} — {len(diarized)} segments, "
-                f"{len(set(speaker_map[s.speaker_label].id for s in diarized))} speakers"
+                f"{len(set(speaker_map[label].id for label in labels))} speakers"
             )
 
         except Exception as e:
@@ -311,7 +334,7 @@ async def run_translation(job_id: str) -> None:
                 for (seg_id, _, _), text in zip(todo, texts):
                     seg = current.get(seg_id)
                     if seg is not None and text and needs_translation(seg):
-                        seg.khmer_text = text
+                        seg.khmer_text = seg.khmer_machine = text
                         follow_text(seg)    # a line with no voice is as long as its text
                         filled.append(seg_id)
                 await db.commit()
@@ -325,6 +348,72 @@ async def run_translation(job_id: str) -> None:
             await restore_or_fail_job(db, job_id, f"Translation failed: {e}")
 
 
+def is_machine_khmer(segment: Segment) -> bool:
+    """The Khmer is still what translation wrote: nobody edited it. Lines from before 0.5.0 (no
+    khmer_machine) count as edited."""
+    return segment.khmer_machine is not None and segment.khmer_text == segment.khmer_machine
+
+
+async def retranslate_line(db: AsyncSession, segment_id: str) -> bool:
+    """
+    Translate one line again for the speaker it now has (picking a character): one Gemini call
+    with the same Story notes, WHO IS SPEAKING cast and memory as the episode's translation, and
+    the lines before it with their Khmer. Only an unedited line, only by Gemini: the free fallback
+    ignores who is speaking and would replace better Khmer. Returns whether the Khmer changed;
+    never raises — the pick has been saved already and must stand.
+    """
+    try:
+        seg = (await db.execute(select(Segment).where(Segment.id == segment_id)
+                                .execution_options(populate_existing=True))).scalar_one_or_none()
+        if seg is None or not is_machine_khmer(seg) or not (seg.source_text or "").strip():
+            return False
+        if settings.TRANSLATION_BACKEND.lower() != "gemini" or not settings.GEMINI_API_KEY:
+            return False
+        job, project = await _load_job_and_project(db, seg.job_id)
+        if not project:
+            return False
+        label = (await db.execute(select(Speaker.label).where(Speaker.id == seg.speaker_id))).scalar_one_or_none() \
+            if seg.speaker_id else None
+        label = label or "SPEAKER"
+        machine, source = seg.khmer_machine, seg.source_text
+        before = (await db.execute(
+            select(Segment.source_text, Segment.khmer_text, Speaker.label)
+            .outerjoin(Speaker, Speaker.id == Segment.speaker_id)
+            .where(Segment.job_id == seg.job_id, Segment.id != seg.id, Segment.start_time <= seg.start_time)
+            .order_by(Segment.start_time.desc()).limit(EARLIER_LINES * 2)
+        )).all()
+        earlier = [{"speaker_label": lab or "SPEAKER", "source_text": zh, "translation": km}
+                   for zh, km, lab in reversed(before) if (zh or "").strip() and (km or "").strip()][-EARLIER_LINES:]
+        story = await translation_story(db, project.id, job.id)
+        cast = await translation_cast(db, job, [label] + [e["speaker_label"] for e in earlier])
+        memory = await translation_memory(db, project.id, job.id)
+        await db.commit()   # release the connection before the Gemini call
+
+        texts, report = await translate_batch_with_report(
+            [source], project.source_lang, project.target_lang,
+            segments_context=[{"speaker_label": label, "source_text": source}],
+            story=story, cast=cast, memory=memory, earlier=earlier,
+        )
+        text = texts[0] if texts else ""
+        if not text or report.fallback or report.failed:
+            return False   # the free fallback knows nothing of who speaks; keep Gemini's earlier Khmer
+
+        # Fresh from the database (not this session's earlier copy): a Khmer edit made meanwhile wins
+        seg = (await db.execute(select(Segment).where(Segment.id == segment_id)
+                                .execution_options(populate_existing=True))).scalar_one_or_none()
+        if seg is None or seg.khmer_text != machine or seg.khmer_machine != machine:
+            return False
+        seg.khmer_text = seg.khmer_machine = text
+        follow_text(seg)    # a line with no voice is as long as its text
+        await db.commit()
+        await settle_job(db, seg.job_id, [seg.id])
+        return True
+    except Exception as e:
+        logger.warning(f"Re-translating line {segment_id[:8]} for its new speaker failed: {e}")
+        await db.rollback()
+        return False
+
+
 # ── Speaker detection on existing segments ────────────────────────────────────
 
 async def run_speaker_detection(job_id: str) -> None:
@@ -335,6 +424,7 @@ async def run_speaker_detection(job_id: str) -> None:
     existed, or whose speakers came out wrong.
     """
     from app.core.database import AsyncSessionLocal
+    from app.services.characters import store, upgrade
 
     async with AsyncSessionLocal() as db:
         job, project = await _load_job_and_project(db, job_id)
@@ -349,9 +439,29 @@ async def run_speaker_detection(job_id: str) -> None:
                 raise RuntimeError("This session has no segments yet — run Analyze first.")
             if not vocals_path:
                 raise RuntimeError("No extracted audio found for this session.")
+            # Characters first: lines are checked against the project's characters, locally, no Gemini
+            outcome = await store.identify(db, job, segments)
+            if outcome == "done":
+                await remove_unused_auto_speakers(db, project.id)
+                await _update_job(db, job, JobStatus.COMPLETED, 100, "")
+                await upgrade.refresh_faces_safely(db, project.id)
+                logger.info(f"Speaker detection done for job {job_id[:8]} — checked against the characters")
+                return
+            if not settings.GEMINI_API_KEY and outcome != "no_profiles":   # the fallback below needs it
+                raise RuntimeError(
+                    "This episode's voices weren't separated, so Movelo can't recognise them, and no Gemini key is "
+                    "set — add one in Settings → AI models." if outcome == "no_vocals" else
+                    "Movelo can't recognise voices on this Mac and no Gemini key is set — add one in Settings → "
+                    "AI models.")
+
+            # Lines the user confirmed are never relabelled
+            segments = [s for s in segments if not store.is_confirmed(s, job)]
             segment_ids = [s.id for s in segments]
             # Where the actor spoke, not where the (perhaps moved) clip is
             spans = [actor_span(s) for s in segments]
+            if not segments:
+                await _update_job(db, job, JobStatus.COMPLETED, 100, "")
+                return
 
             taken_labels = await project_speaker_labels(db, project.id)
             with tempfile.TemporaryDirectory(prefix="speaker_refs_") as ref_dir:
@@ -372,12 +482,14 @@ async def run_speaker_detection(job_id: str) -> None:
 
             heard = {p.speaker_label: p.gender for p in pieces if p.gender in VOICES}
             speaker_map = await ensure_speakers(db, project.id, labels, heard)
-            # Re-read: the user may have deleted segments while Gemini was listening.
+            # Re-read: the user may have deleted segments, picked their characters or marked the episode finished
+            # while Gemini was listening (populate_existing: the session still holds them as they were before).
             current = {s.id: s for s in (await db.execute(
-                select(Segment).where(Segment.id.in_(segment_ids))
+                select(Segment).where(Segment.id.in_(segment_ids)).execution_options(populate_existing=True)
             )).scalars().all()}
+            await db.refresh(job)
             for segment_id, label in zip(segment_ids, labels):
-                if segment_id in current:
+                if segment_id in current and not store.is_confirmed(current[segment_id], job):
                     current[segment_id].speaker_id = speaker_map[label].id
             await db.flush()
             await remove_unused_auto_speakers(db, project.id)

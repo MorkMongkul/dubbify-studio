@@ -3,7 +3,7 @@
 
 import axios, { type AxiosProgressEvent } from 'axios'
 import type {
-  MediaAsset, MediaClip, MediaClipList, MediaTemplate, MediaTrackFlagMap, Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, SpeakerMergeResponse, Segment, SegmentUpdate, SegmentCreate, LayoutChange, SplitResult, Stem, StemPiece, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView, TrackFlagMap,
+  MediaAsset, MediaClip, MediaClipList, MediaTemplate, MediaTrackFlagMap, Project, ProjectCreate, ProjectUpdate, Job, PipelineStartResponse, Speaker, SpeakerUpdate, SpeakerCreate, SpeakerMergeResponse, CharacterSuggestion, Segment, SegmentUpdate, SegmentCreate, LayoutChange, SplitResult, CharacterPicked, Stem, StemPiece, TTSResponse, HealthResponse, Voice, VoiceMode, VoiceGender, VoiceAgeGroup, Overlay, OverlayUpdate, OverlayTemplate, ChatMessage, ChatSendResponse, ChatProposedEdit, ChatThread, AppSettings, AppSettingsUpdate, GeminiModelChoice, GeminiModelSetting, GeminiModelTestResult, StoryEdit, StoryView, TrackFlagMap,
 } from '@/types'
 import type { StemPieceLists } from '@/lib/stemPieces'
 
@@ -194,6 +194,14 @@ export const speakers = {
   /** Undo a merge into `speakerId` in one step: the removed speaker comes back as it was, with its lines. */
   unmerge: (speakerId: string, merged: SpeakerMergeResponse) =>
     api.post<Speaker>(`/speakers/${speakerId}/unmerge`, merged).then((r) => r.data),
+
+  /** Characters that may be one person (nothing is merged by asking). */
+  suggestions: (projectId: string) =>
+    api.get<CharacterSuggestion[]>(`/projects/${projectId}/character-suggestions`).then((r) => r.data),
+
+  /** Not the same: the pair (either order) is never suggested again. */
+  dismissSuggestion: (projectId: string, a: string, b: string) =>
+    api.post<void>(`/projects/${projectId}/character-suggestions/dismiss`, { a, b }).then(() => undefined),
 }
 
 // ── Segments ──────────────────────────────────────────────────
@@ -218,6 +226,12 @@ export const segments = {
 
   split: (segmentId: string, at: number) =>
     api.post<SplitResult>(`/segments/${segmentId}/split`, { at }).then((r) => r.data),
+
+  /** The pick is saved first, then the line's Khmer is rewritten by Gemini (retries and waits
+   *  included) — the answer can take minutes, so this outlives the default 30 s. */
+  pickCharacter: (segmentId: string, speakerId: string) =>
+    api.post<CharacterPicked>(`/segments/${segmentId}/character`, { speaker_id: speakerId }, { timeout: 200_000 })
+      .then((r) => r.data),
 
   duplicate: (segmentId: string) =>
     api.post<Segment>(`/segments/${segmentId}/duplicate`).then((r) => r.data),

@@ -10,12 +10,14 @@ import { AudioLines, ChevronLeft, Merge, RefreshCw, Users } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
-  useAnalyzeJob, useDetectSpeakers, useJob, useMergeSpeaker, useSegments, useSpeakers, useVoices, useUpdateSpeaker,
+  useAnalyzeJob, useCharacterSuggestions, useDetectSpeakers, useDismissCharacterSuggestion, useJob, useMergeSpeaker, useSegments, useSpeakers, useVoices, useUpdateSpeaker,
 } from '@/hooks/useApi'
 import { getSpeakerColor, getSpeakerDisplayName, isJobRunning } from '@/lib/utils'
 import { recordSpeakerChange, recordSpeakerMerge } from '@/lib/historyHelpers'
 import { voiceUsers } from '@/lib/voiceTags'
-import type { Speaker } from '@/types'
+import { CharacterFace } from '@/components/speakers/CharacterFace'
+import { SameCharacter } from '@/components/speakers/SameCharacter'
+import type { Speaker, SpeakerMergeResponse } from '@/types'
 import { useHistoryStore } from '@/store/historyStore'
 import { PanelHeader, PanelEmptyState } from './PanelShell'
 
@@ -38,10 +40,15 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
   const [confirmReanalyze, setConfirmReanalyze] = useState(false)
   // The speaker whose voice is being chosen: the voice browser covers the list meanwhile
   const [browsingId, setBrowsingId] = useState<string | null>(null)
-  // "Same person as…": the card choosing, then the speaker chosen (waiting for the confirm)
-  const mergeSpeaker = useMergeSpeaker()
+  // "Same person as…": the card choosing, then the speaker chosen (waiting for the confirm).
+  // mutateAsync, never mutate's own callbacks: TanStack calls those for the last call only, so
+  // the first of two quick Merges ("Same character?" offers several) lost its undo step and toast
+  const { mutateAsync: mergeSpeaker } = useMergeSpeaker()
   const [mergingId, setMergingId] = useState<string | null>(null)
   const [mergeIntoId, setMergeIntoId] = useState<string | null>(null)
+  // "Same character?": pairs Movelo thinks are one; only a click merges
+  const { data: suggestions = [] } = useCharacterSuggestions(projectId ?? null)
+  const dismissSuggestion = useDismissCharacterSuggestion()
 
   // Speakers actually present in this session, each keeping the index it has
   // in the FULL project speaker list: that index is what getSpeakerColor() is
@@ -75,17 +82,21 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
 
   const nameOf = (speaker: Speaker) => getSpeakerDisplayName(speaker, spks.findIndex((sp) => sp.id === speaker.id))
 
-  const runMerge = (source: Speaker, into: Speaker) => {
+  const runMerge = async (source: Speaker, into: Speaker) => {
     setMergingId(null)
     setMergeIntoId(null)
-    mergeSpeaker.mutate({ speakerId: source.id, into: into.id, projectId: projectId! }, {
-      onSuccess: (result) => {
-        recordSpeakerMerge(qc, projectId!, result, into.id)
-        toast.success(`${nameOf(source)} merged into ${nameOf(into)}`)
-      },
-      onError: (e) => toast.error((e as Error).message || 'Could not merge the speakers'),
-    })
+    let result: SpeakerMergeResponse
+    try {
+      result = await mergeSpeaker({ speakerId: source.id, into: into.id, projectId: projectId! })
+    } catch (e) {
+      toast.error((e as Error).message || 'Could not merge the speakers')
+      return
+    }
+    recordSpeakerMerge(qc, projectId!, result, into.id)
+    toast.success(`${nameOf(source)} merged into ${nameOf(into)}`)
   }
+
+  const colorOf = (speaker: Speaker) => speaker.color ?? getSpeakerColor(Math.max(0, spks.findIndex((sp) => sp.id === speaker.id)))
 
   const runDetectSpeakers = () => {
     if (!jobId) return
@@ -171,6 +182,17 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
             )}
           </div>
         )}
+        <SameCharacter
+          suggestions={suggestions}
+          speakers={spks}
+          disabled={busy}
+          nameOf={nameOf}
+          colorOf={colorOf}
+          onMerge={runMerge}
+          onDismiss={(a, b) => dismissSuggestion.mutate({ projectId, a, b }, {
+            onError: (e) => toast.error((e as Error).message || "Couldn't dismiss the suggestion"),
+          })}
+        />
         {sessionSpeakers.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-6 text-center">
             <Users size={18} className="text-ink-700 mb-2" />
@@ -182,12 +204,13 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
             return (
               <div key={speaker.id} className="p-2 rounded bg-ink-800/30 border border-ink-800/40 space-y-1.5">
                 <div className="flex items-center gap-1.5">
-                  <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                  <CharacterFace speaker={speaker} color={color} size={22} />
                   {editingSpeakerId === speaker.id ? (
                     <input
                       autoFocus
                       className="bg-ink-950 text-[11px] text-ink-200 rounded px-1 py-0.5 flex-1 min-w-0 focus:outline-none border border-brand-500/50"
                       value={editingSpeakerName}
+                      placeholder={getSpeakerDisplayName(speaker, projectIndex)}
                       onChange={(e) => setEditingSpeakerName(e.target.value)}
                       onBlur={() => {
                         const trimmed = editingSpeakerName.trim()
@@ -209,7 +232,8 @@ export function SpeakersPanel({ projectId, jobId }: SpeakersPanelProps) {
                       className="text-[11px] font-medium text-ink-200 truncate flex-1 cursor-text hover:text-white transition-colors"
                       onClick={() => {
                         setEditingSpeakerId(speaker.id)
-                        setEditingSpeakerName(speaker.display_name || getSpeakerDisplayName(speaker, projectIndex))
+                        // the name only: an unnamed character's label is the placeholder, never saved as a name
+                        setEditingSpeakerName(speaker.display_name || '')
                       }}
                       title="Click to rename"
                     >

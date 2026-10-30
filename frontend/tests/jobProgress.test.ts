@@ -47,7 +47,7 @@ test('nothing to show when no step is running that this progress covers', () => 
 // ── The ring's percentage ───────────────────────────────────────────────────
 
 const NEW_VIDEO = ['pending', 'extracting', 'separating']
-const ANALYZE = ['diarizing', 'transcribing', 'translating']
+const ANALYZE = ['diarizing', 'transcribing', 'recognizing', 'translating']
 
 test("the ring only moves forward within a step, and a step never finishes by itself", () => {
   for (const status of [...NEW_VIDEO, ...ANALYZE]) {
@@ -84,9 +84,9 @@ test('a step that runs long waits near its end instead of claiming to be done', 
 })
 
 test('it moves at the pace the step usually takes for a video that long', () => {
-  // About halfway through transcription (0–80%) at half its usual time
+  // About halfway through listening (0–55%) at half its usual time
   const usual = 15 + 0.3 * 180
-  assert.equal(stagePercent('diarizing', usual / 2, 180), 40)
+  assert.equal(stagePercent('diarizing', usual / 2, 180), 27)
   // The same wait on a longer episode has got less far
   assert.ok(stagePercent('separating', 60, 45 * 60)! < stagePercent('separating', 60, 180)!)
   // An unknown length counts as a short episode
@@ -107,3 +107,43 @@ test('what the ring shows never goes down within a step, and holds while the est
   assert.deepEqual(shown, { status: 'translating', percent: 85 })
 })
 
+
+// ── Recognizing characters ──────────────────────────────────────────────────
+
+test('recognizing characters has its own words and its slice of the ring', () => {
+  const p = stagePercent('recognizing', 30, 100)!
+  assert.ok(p >= 60 && p <= 85, `recognizing for 30 s of a 100 s video showed ${p}%`)
+  assert.equal(jobProgress('recognizing', false)!.title, 'Recognizing characters…')
+  assert.equal(jobProgress('recognizing', true)!.title, 'Recognizing characters…')
+  assert.equal(jobProgress('recognizing', true, 'detect-speakers')!.title, 'Recognizing characters…')
+  assert.equal(jobProgress('recognizing', true, 'analyze')!.title, 'Analyzing again: recognizing characters…')
+  assert.equal(jobProgress('recognizing', true, 'translate-missing')!.title, 'Recognizing characters…')
+})
+
+test('transcribing, recognizing and translating run in that order and the ring never goes back', () => {
+  for (const [a, b] of [['diarizing', 'transcribing'], ['transcribing', 'recognizing'], ['recognizing', 'translating']]) {
+    assert.ok(stagePercent(a, 1e6, 129)! <= stagePercent(b, 0, 129)!, `${a} → ${b}`)
+  }
+  assert.equal(stagePercent('translating', 0, 129), 85)
+})
+
+test("recognizing goes at the pace measured by voice only (3 s + 0.07 s per second of video)", () => {
+  const usual = 3 + 0.07 * 129
+  const half = stagePercent('recognizing', usual / 2, 129)!
+  assert.equal(half, 60 + Math.floor(0.5 * 25))
+  assert.ok(stagePercent('recognizing', usual * 5, 129)! < 85)
+})
+
+test("Detect speakers' recognizing fills the whole ring", () => {
+  assert.equal(stagePercent('recognizing', 0, 129, 'detect-speakers'), 0)
+  const mid = stagePercent('recognizing', (3 + 0.07 * 129) / 2, 129, 'detect-speakers')!
+  assert.ok(mid >= 45 && mid <= 55, String(mid))
+  assert.ok(stagePercent('recognizing', 1e6, 129, 'detect-speakers')! <= 99)
+  // Re-analysis keeps the analysis ring
+  assert.equal(stagePercent('recognizing', 0, 129, 'analyze'), 60)
+})
+
+test("transcribing includes line timing: 2 s + 0.04 s per second of video (6.4 s measured for 113 s)", () => {
+  const usual = 2 + 0.04 * 113
+  assert.equal(stagePercent('transcribing', usual / 2, 113), 55 + Math.floor(0.5 * 5))
+})

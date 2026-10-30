@@ -34,6 +34,29 @@ export function recordSegmentChange(
   })
 }
 
+/**
+ * A character picked for a line ("Who is this?", the line's speaker list) or
+ * the line unassigned: one undo step. Undo PATCHes the speaker, the check,
+ * whether it was confirmed and — when the pick rewrote the Khmer — the Khmer
+ * and its track back together (lib/whoCheck pickUndoPatches); redo PATCHes the
+ * pick's result, so it doesn't ask Gemini again. Speakers refresh too: their
+ * line counts and faces follow the lines.
+ */
+export function recordCharacterPick(
+  qc: QueryClient,
+  jobId: string,
+  segmentId: string,
+  patches: { before: SegmentUpdate; after: SegmentUpdate },
+  label = 'Pick character',
+) {
+  const send = async (patch: SegmentUpdate) => {
+    putSegments(qc, jobId, [await segmentsApi.update(segmentId, patch)])
+    qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    qc.invalidateQueries({ queryKey: ['speakers'] })
+  }
+  useHistoryStore.getState().push({ label, undo: () => send(patches.before), redo: () => send(patches.after) })
+}
+
 // Undo of a delete re-creates the segment, which always gets a new
 // server-generated id — the box keeps redo/undo cycling targeting whichever
 // id is currently live instead of the one captured at record-time.

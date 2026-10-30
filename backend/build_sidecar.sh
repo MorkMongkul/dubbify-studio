@@ -81,6 +81,16 @@ trap 'rm -rf "$WORK"' EXIT
   --collect-data opencc \
   "$PWD/sidecar_entry.py"
 
+# The app ships only an LGPL ffmpeg: stop if a library pulled in a GPL or non-free codec
+# (OpenCV's macOS wheel bundles a whole FFmpeg with x264, x265 and others).
+BAD="$(find "$WORK/dist/movelo-backend" \( -iname '*libx264*' -o -iname '*libx265*' -o -iname '*libpostproc*' \
+  -o -iname '*libvidstab*' -o -iname '*librubberband*' -o -iname '*libxvidcore*' -o -iname '*libfdk-aac*' \) | head -5)"
+if [ -n "$BAD" ]; then
+  echo "error: the build contains GPL or non-free libraries:" >&2
+  echo "$BAD" >&2
+  exit 1
+fi
+
 rm -rf "$OUT_DIR"
 mkdir -p "$(dirname "$OUT_DIR")"
 mv "$WORK/dist/movelo-backend" "$OUT_DIR"

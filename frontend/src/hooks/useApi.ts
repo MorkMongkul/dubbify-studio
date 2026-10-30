@@ -115,7 +115,7 @@ export function useJob(jobId: string | null) {
       const data = query.state.data
       const status = data?.status
       // Active pipeline stages — poll every 2s
-      const running = ['pending', 'extracting', 'separating', 'diarizing', 'transcribing', 'translating', 'synthesizing', 'mixing']
+      const running = ['pending', 'extracting', 'separating', 'diarizing', 'transcribing', 'recognizing', 'translating', 'synthesizing', 'mixing']
       if (status && running.includes(status)) return 2000
       // stems_ready: paused, waiting for user — poll slowly to pick up any changes
       if (status === 'stems_ready') return 5000
@@ -196,6 +196,7 @@ export function invalidateSpeakerLines(qc: ReturnType<typeof useQueryClient>, pr
   qc.invalidateQueries({ queryKey: ['speakers', projectId] })
   qc.invalidateQueries({ queryKey: ['segments'] })
   qc.invalidateQueries({ queryKey: ['story', projectId] })
+  qc.invalidateQueries({ queryKey: ['character-suggestions', projectId] })   // a merge or its undo changes who may be one
 }
 
 export function useMergeSpeaker() {
@@ -204,6 +205,24 @@ export function useMergeSpeaker() {
     mutationFn: ({ speakerId, into }: { speakerId: string; into: string; projectId: string }) =>
       speakers.merge(speakerId, into),
     onSuccess: (_result, { projectId }) => invalidateSpeakerLines(qc, projectId),
+  })
+}
+
+export function useCharacterSuggestions(projectId: string | null) {
+  return useQuery({
+    queryKey: ['character-suggestions', projectId],
+    queryFn: () => speakers.suggestions(projectId!),
+    enabled: !!projectId,
+    staleTime: 10000,
+  })
+}
+
+export function useDismissCharacterSuggestion() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ projectId, a, b }: { projectId: string; a: string; b: string }) =>
+      speakers.dismissSuggestion(projectId, a, b),
+    onSuccess: (_result, { projectId }) => qc.invalidateQueries({ queryKey: ['character-suggestions', projectId] }),
   })
 }
 
@@ -282,6 +301,20 @@ export function useSplitSegment() {
     onSuccess: (result, { jobId }) => {
       putSegments(qc, jobId, [result.first, result.second])
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    },
+  })
+}
+
+export function usePickCharacter() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ segmentId, speakerId }: { segmentId: string; speakerId: string; jobId: string }) =>
+      segments.pickCharacter(segmentId, speakerId),
+    onSuccess: (picked, { jobId }) => {
+      putSegments(qc, jobId, [picked.segment])
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      // Line counts follow the pick, and the line's face may now be its character's best
+      qc.invalidateQueries({ queryKey: ['speakers'] })
     },
   })
 }
@@ -602,9 +635,14 @@ export function useDetectSpeakers() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (jobId: string) => jobs.detectSpeakers(jobId),
-    onSuccess: (_, jobId) => {
+    onSuccess: async (_, jobId) => {
       useEditorStore.getState().setJobAction(jobId, 'detect-speakers')
-      qc.invalidateQueries({ queryKey: ['job', jobId] })
+      await qc.invalidateQueries({ queryKey: ['job', jobId] })
+      // Checking stored prints against the characters can end before the job is fetched again: its status
+      // then never seems to change (EditorPage refetches on a change), so the lines and characters are fetched
+      // here too. Still running: the change to completed fetches them again.
+      qc.invalidateQueries({ queryKey: ['segments', jobId] })
+      qc.invalidateQueries({ queryKey: ['speakers'] })
     },
   })
 }

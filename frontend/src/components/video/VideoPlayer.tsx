@@ -228,7 +228,7 @@ export function VideoPlayer({ videoUrl, segments, className, jobId, projectId, j
 
   // Separated stems exist from stems_ready onwards (demucs ran in Stage 1)
   const hasStemAudio = !!jobStatus && [
-    'stems_ready', 'diarizing', 'transcribing', 'translating',
+    'stems_ready', 'diarizing', 'transcribing', 'recognizing', 'translating',
     'synthesizing', 'mixing', 'completed',
   ].includes(jobStatus)
 

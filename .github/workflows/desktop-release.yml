@@ -9,8 +9,8 @@ name: Desktop release
 # build artifacts.
 #
 # A push to main builds too, only to save the caches (ffmpeg, FriBiDi, the
-# Rust build): a run can read caches saved on its own tag or on main, never a
-# previous tag's, so every release rebuilt them (12 and 7 of the Intel build's
+# character models, the Rust build): a run can read caches saved on its own tag
+# or on main, never a previous tag's, so every release rebuilt them (12 and 7 of the Intel build's
 # 26 minutes in 0.2.8). Release builds read main's caches and save none.
 #
 # The website's download buttons point at
@@ -114,10 +114,43 @@ jobs:
           path: vendor/fribidi/${{ matrix.target }}
           key: ${{ steps.fribidi.outputs.cache-primary-key }}
 
+      # The voice and face models that are too big for git (backend/app/assets/models/
+      # models.json; the backend bundles that folder and its self-test loads them).
+      - name: Restore the character models
+        id: models
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            backend/app/assets/models/3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx
+            backend/app/assets/models/face_recognition_sface_2021dec.onnx
+          key: models-${{ hashFiles('backend/app/assets/models/models.json') }}
+
+      # The script returns at once when the restored files are the right ones.
+      - name: Fetch the character models
+        run: scripts/fetch-models.sh
+
+      - name: Save the character models
+        if: github.ref == 'refs/heads/main' && steps.models.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            backend/app/assets/models/3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx
+            backend/app/assets/models/face_recognition_sface_2021dec.onnx
+          key: ${{ steps.models.outputs.cache-primary-key }}
+
       - name: Backend build environment
         run: |
           python -m venv backend/venv_clean
           backend/venv_clean/bin/pip install -r backend/requirements.txt -r backend/requirements-build.txt
+
+      # Prints how long the face step of character recognition would take on this chip (the app measures the same on
+      # every Mac and uses voices only when it is slow). Informational: it never fails the build.
+      - name: Character speed on this chip
+        continue-on-error: true
+        working-directory: backend
+        env:
+          FFMPEG_PATH: ${{ github.workspace }}/vendor/ffmpeg/${{ matrix.target }}/ffmpeg
+        run: venv_clean/bin/python ../scripts/bench-characters.py || echo "::warning::The character speed bench could not run"
 
       - name: Frontend dependencies
         working-directory: frontend

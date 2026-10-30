@@ -19,6 +19,7 @@ from app.services.pipeline_common import recover_orphaned_jobs
 from app.services.builtin_voices import seed_builtin_voices
 from app.services.timeline import convert_old_jobs
 from app.services.media_assets import resume_interrupted
+from app.services import line_timing
 import app.core.database as core_db
 from app.api.routes import health, projects, jobs, segments, tts, voices, overlays, chat, story, stem_pieces, media
 from app.api.routes import settings as settings_routes
@@ -62,8 +63,27 @@ async def lifespan(app: FastAPI):
         # Not fatal: an episode not converted yet still plays the same in the
         # preview and the export; the next launch retries.
         logger.exception("Couldn't convert older episodes to the new timeline")
+    # Characters (0.5.0): the projects whose lines move to the characters of the voices they were made with, and
+    # the episodes whose prints the backfill will make, queued before it starts — until then no line of their
+    # projects is sure (an analysis can't come in before the lifespan yields). Quick database work.
+    try:
+        from app.services.characters import upgrade
+        await upgrade.queue_backfill(core_db.AsyncSessionLocal)
+        # then, in the background (the voice model hears each line's audio) and at every start: stray face crops
+        # swept, each project converted once before its prints, missing prints made, thumbnails set
+        task = asyncio.create_task(upgrade.finish_upgrade(core_db.AsyncSessionLocal))
+        _background.add(task)
+        task.add_done_callback(_background.discard)
+    except Exception:
+        # Not fatal: the editor works without characters; the next launch retries.
+        logger.exception("Couldn't upgrade older projects to characters")
     # Media left preparing when the app quit: prepared again, in the background
     task = asyncio.create_task(resume_interrupted(core_db.AsyncSessionLocal))
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    # The speech model line timing uses: downloaded once into the data folder, in the background (until then lines
+    # keep the pauses' timing)
+    task = asyncio.create_task(line_timing.ensure_model())
     _background.add(task)
     task.add_done_callback(_background.discard)
     yield

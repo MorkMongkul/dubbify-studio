@@ -12,6 +12,7 @@ export type JobStatus =
   | 'stems_ready'
   | 'diarizing'
   | 'transcribing'
+  | 'recognizing'
   | 'translating'
   | 'synthesizing'
   | 'mixing'
@@ -154,6 +155,8 @@ export interface Speaker {
   voice_id?: string
   /** The app picked voice_id because nobody chose one (backend auto_voice.py). */
   voice_auto?: boolean
+  /** A thumbnail of the speaker's face, when one was made. */
+  face_crop_url?: string | null
   voice_design_prompt?: string
   gender?: string
   age_group?: string
@@ -250,6 +253,16 @@ export interface Segment {
   /** Linear fades on the clip as trimmed, in seconds. */
   fade_in_secs: number
   fade_out_secs: number
+  /** The two speakers Movelo can't choose between for this line; null = sure. */
+  who_check?: WhoGuess[] | null
+  /** The user picked the speaker. */
+  who_confirmed?: boolean
+}
+
+export interface WhoGuess {
+  speaker_id: string
+  /** What the guess rests on. */
+  basis: string
 }
 
 export interface SegmentUpdate {
@@ -273,6 +286,38 @@ export interface SegmentUpdate {
   voice_text?: string | null
   fade_in_secs?: number
   fade_out_secs?: number
+  who_check?: WhoGuess[] | null
+  who_confirmed?: boolean
+  /** Only undo sends it: puts a re-translated line's machine Khmer back, so it still counts as unedited. */
+  khmer_machine?: string | null
+}
+
+/** GET /projects/{id}/character-suggestions: two characters (a < b) that may be one. Only the user's click merges. */
+/** A stretch of an episode's original voices to hear (▶ in Same character?). */
+export interface SampleLine {
+  url: string
+  start: number
+  end: number
+}
+
+export interface CharacterSuggestion {
+  a: string
+  b: string
+  reason: 'same voice' | 'same voice and face'
+  /** Lines each has in the whole project (every episode) */
+  a_lines: number
+  b_lines: number
+  /** A line of each to hear, from any episode; null when they speak in no episode whose voices were separated */
+  a_sample?: SampleLine | null
+  b_sample?: SampleLine | null
+}
+
+/** POST /segments/{id}/character: the pick, and whether the line's Khmer was translated again for the new speaker. */
+export interface CharacterPicked {
+  segment: Segment
+  retranslated: boolean
+  /** The Khmer before the pick, even when nothing changed. */
+  previous_khmer: string
 }
 
 /** One clip's new place on the timeline (PUT /jobs/{id}/segments/layout). */
@@ -431,6 +476,7 @@ export const JOB_STATUS_CONFIG: Record<JobStatus, {
   stems_ready:  { label: 'Stems Ready',  color: 'green',  description: 'Audio split — click Analyze to detect speakers' },
   diarizing:    { label: 'Diarizing',    color: 'brand', description: 'Detecting speakers' },
   transcribing: { label: 'Transcribing', color: 'brand', description: 'AI speech recognition' },
+  recognizing:  { label: 'Recognizing',  color: 'brand', description: 'Recognizing characters' },
   translating:  { label: 'Translating',  color: 'blue',   description: 'Translating dialogue' },
   synthesizing: { label: 'Synthesizing', color: 'brand', description: 'Generating AI voices' },
   mixing:       { label: 'Mixing',       color: 'blue',   description: 'Mixing dubbed audio' },
@@ -452,6 +498,7 @@ export const PIPELINE_STEPS: { key: JobStatus; label: string; icon: string }[] =
   { key: 'separating',   label: 'Separate',  icon: 'scissors' },
   { key: 'diarizing',    label: 'Speakers',  icon: 'users' },
   { key: 'transcribing', label: 'Transcribe', icon: 'file-text' },
+  { key: 'recognizing',  label: 'Characters', icon: 'users' },
   { key: 'translating',  label: 'Translate', icon: 'globe' },
   { key: 'synthesizing', label: 'Synthesize', icon: 'mic' },
   { key: 'mixing',       label: 'Mix',       icon: 'music' },

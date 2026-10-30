@@ -9,6 +9,9 @@
 import { useState, type ReactNode } from 'react'
 import { BookOpen, Check, Loader2, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { useQueryClient } from '@tanstack/react-query'
+import { segments as segmentsApi } from '@/api/client'
+import { toCheck } from '@/lib/whoCheck'
 import { useLearnStory, useSetEpisodeFinished, useStory, useUpdateStory } from '@/hooks/useApi'
 import { useEditorStore } from '@/store/editorStore'
 import { cn } from '@/lib/utils'
@@ -242,29 +245,63 @@ function LearningLine({ story, projectId }: { story: StoryView; projectId: strin
 
 function FinishedEpisodes({ episodes, jobId }: { episodes: StoryEpisode[]; jobId?: string }) {
   const setFinished = useSetEpisodeFinished()
+  const qc = useQueryClient()
+  // An episode with lines whose character is still a guess: ask before marking it finished
+  const [asking, setAsking] = useState<{ episode: StoryEpisode; lines: number } | null>(null)
+  const change = (e: StoryEpisode, finished: boolean) => setFinished.mutate(
+    { jobId: e.job_id, finished },
+    { onError: (err) => toast.error((err as Error).message || "Couldn't change the episode") },
+  )
+  const onClick = async (e: StoryEpisode) => {
+    if (e.finished) return change(e, false)
+    let lines = 0
+    try {
+      const segs = await qc.fetchQuery({ queryKey: ['segments', e.job_id], queryFn: () => segmentsApi.listByJob(e.job_id), staleTime: 5000 })
+      lines = toCheck(segs).length
+    } catch { /* the lines can't be read: don't hold the user back */ }
+    if (lines > 0) setAsking({ episode: e, lines })
+    else change(e, true)
+  }
   if (episodes.length === 0) return <p className="text-[10px] text-ink-600">No episodes yet</p>
   return (
-    <div className="flex flex-wrap gap-1">
-      {episodes.map((e) => (
-        <button
-          key={e.job_id}
-          type="button"
-          aria-pressed={e.finished}
-          onClick={() => setFinished.mutate(
-            { jobId: e.job_id, finished: !e.finished },
-            { onError: (err) => toast.error((err as Error).message || "Couldn't change the episode") },
-          )}
-          title={e.finished ? `Episode ${e.number} is finished. Click to undo.` : `Mark episode ${e.number} finished`}
-          className={cn(
-            'flex items-center gap-0.5 rounded-full px-2 py-0.5 text-[10px] tabular-nums transition-colors',
-            e.finished ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20' : 'bg-white/5 text-ink-400 hover:bg-white/10 hover:text-white',
-            e.job_id === jobId && 'ring-1 ring-brand-500/60',
-          )}
-        >
-          {e.number}
-          {e.finished && <Check size={10} />}
-        </button>
-      ))}
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap gap-1">
+        {episodes.map((e) => (
+          <button
+            key={e.job_id}
+            type="button"
+            aria-pressed={e.finished}
+            onClick={() => void onClick(e)}
+            title={e.finished ? `Episode ${e.number} is finished. Click to undo.` : `Mark episode ${e.number} finished`}
+            className={cn(
+              'flex items-center gap-0.5 rounded-full px-2 py-0.5 text-[10px] tabular-nums transition-colors',
+              e.finished ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20' : 'bg-white/5 text-ink-400 hover:bg-white/10 hover:text-white',
+              e.job_id === jobId && 'ring-1 ring-brand-500/60',
+            )}
+          >
+            {e.number}
+            {e.finished && <Check size={10} />}
+          </button>
+        ))}
+      </div>
+      {asking && (
+        <div className="flex items-center gap-2 rounded bg-amber-950/20 px-2 py-1.5">
+          <span className="flex-1 text-[10px] leading-snug text-amber-200">
+            Episode {asking.episode.number}: {asking.lines} line{asking.lines === 1 ? '' : 's'} still to check
+          </span>
+          <button
+            type="button"
+            onClick={() => { change(asking.episode, true); setAsking(null) }}
+            className="shrink-0 rounded bg-brand-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-brand-500"
+            title="Mark it finished anyway"
+          >
+            OK
+          </button>
+          <button type="button" onClick={() => setAsking(null)} className="shrink-0 px-1 text-[10px] text-ink-400 hover:text-white">
+            Cancel
+          </button>
+        </div>
+      )}
     </div>
   )
 }

@@ -3,7 +3,7 @@ app/services/subtitle_pipeline.py
 Subtitle-based pipeline — two user-controlled stages.
 
 Stage 1  run_subtitle_pipeline()          → parse subtitles + extract + separate → STEMS_READY
-Stage 2  run_subtitle_analysis_pipeline() → speaker-label + translate           → COMPLETED
+Stage 2  run_subtitle_analysis_pipeline() → speaker-label + recognise + translate → COMPLETED
 
 Skips ASR entirely — subtitles are always more accurate than ASR. Speaker
 labels come from app.services.asr.label_speech, sliced at each subtitle
@@ -142,6 +142,7 @@ async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None =
     app.services.asr — Gemini decides how many voices it hears).
     """
     from app.core.database import AsyncSessionLocal
+    from app.services.characters import store, upgrade   # here, so the backend starts without the characters package
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(Job).where(Job.id == job_id))
@@ -183,20 +184,27 @@ async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None =
                 )
             if not labels:
                 labels = [DEFAULT_SPEAKER] * len(existing_segments)
+            await _update_job(db, job, JobStatus.TRANSCRIBING, 50)
+
+            # Who speaks each line, before translating; a line the user confirmed keeps its character
+            await _update_job(db, job, JobStatus.RECOGNIZING, 60)
+            kept = await store.confirmed_labels(db, job, existing_segments)
+            labels, who_checks, prints = await store.recognise(db, job, spans, labels, kept)
 
             # Subtitle text/timing is kept as-is; only the speaker assignment changes.
             speaker_map = await ensure_speakers(db, project.id, labels)
 
-            await _update_job(db, job, JobStatus.TRANSCRIBING, 50)
-
             lane_by_speaker: dict = {}
-            for db_seg, label in zip(existing_segments, labels):
+            for db_seg, label, check in zip(existing_segments, labels, who_checks):
                 speaker = speaker_map.get(label)
                 db_seg.speaker_id = speaker.id if speaker else None
+                db_seg.who_check = store.who_check_json(check)
                 db_seg.lane_index = lane_by_speaker.setdefault(label, len(lane_by_speaker))
+            await store.save_prints(db, job.id, [s.id for s in existing_segments], prints, store.faces_dir(job))
             await db.flush()
             await remove_unused_auto_speakers(db, project.id)
             await db.commit()
+            await upgrade.refresh_faces_safely(db, project.id)
 
             # Translate
             story = await translation_story(db, project.id, job.id)
@@ -236,6 +244,7 @@ async def run_subtitle_analysis_pipeline(job_id: str, max_speakers: int | None =
                     db_seg.voice_text = None
                 db_seg.english_text = ""
                 db_seg.khmer_text   = new_text
+                db_seg.khmer_machine = new_text
             # A line with no voice is as long as its text takes to say
             for db_seg in existing_segments:
                 follow_text(db_seg)

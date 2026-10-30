@@ -237,11 +237,16 @@ class SpeakerResponse(BaseModel):
     reference_audio_path: str
     voice_id: Optional[str]
     voice_auto: bool = False         # the app picked voice_id; nobody chose it
+    face_crop_path: Optional[str] = Field(None, exclude=True)   # a server path: only its URL goes out
 
     @field_validator("voice_auto", mode="before")
     @classmethod
     def _not_picked(cls, value):
         return bool(value)           # NULL on speakers from before 0.2.4
+
+    @computed_field
+    def face_crop_url(self) -> Optional[str]:
+        return _uploads_url(self.face_crop_path)
 
     model_config = {"from_attributes": True}
 
@@ -265,6 +270,24 @@ class SegmentCreate(BaseModel):
     notes: str = ""
 
 
+class WhoGuess(BaseModel):
+    """One of the two speakers Movelo can't choose between for a line."""
+    speaker_id: str
+    basis: str                                  # what the guess rests on: "voice" or "face"
+
+
+def _who_check_list(raw):
+    """A line's guesses from segments.who_check (JSON text, or already parsed); None when absent or unreadable.
+    [] stays []: to check, though Movelo has no guess (nobody known, or no prints)."""
+    if raw is None or raw == "":
+        return None
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+        return [WhoGuess.model_validate(g) for g in data]
+    except (TypeError, ValueError):
+        return None
+
+
 class SegmentUpdate(BaseModel):
     speaker_id: Optional[str] = None
     voice_id: Optional[str] = None
@@ -286,6 +309,13 @@ class SegmentUpdate(BaseModel):
     voice_text: Optional[str] = None
     fade_in_secs: Optional[float] = Field(None, ge=0)
     fade_out_secs: Optional[float] = Field(None, ge=0)
+    who_check: Optional[List[WhoGuess]] = None     # null clears it
+    who_confirmed: Optional[bool] = None
+    khmer_machine: Optional[str] = None            # only undo sends it: it puts a re-translated line back
+
+
+class CharacterPick(BaseModel):
+    speaker_id: str
 
 
 class SegmentResponse(BaseModel):
@@ -313,6 +343,18 @@ class SegmentResponse(BaseModel):
     voice_text: Optional[str] = None
     fade_in_secs: float = 0.0
     fade_out_secs: float = 0.0
+    who_check: Optional[List[WhoGuess]] = None
+    who_confirmed: bool = False
+
+    @field_validator("who_check", mode="before")
+    @classmethod
+    def _who_check(cls, v):
+        return _who_check_list(v)
+
+    @field_validator("who_confirmed", mode="before")
+    @classmethod
+    def _who_confirmed(cls, v):
+        return bool(v)               # NULL on lines from before 0.5.0
 
     # Rows from before 0.3.0 / 0.3.1 hold NULL
     @field_validator("fade_in_secs", "fade_out_secs", mode="before")
@@ -377,6 +419,37 @@ class SplitRequest(BaseModel):
 class SplitResponse(BaseModel):
     first: SegmentResponse
     second: SegmentResponse
+
+
+class CharacterPicked(BaseModel):
+    segment: SegmentResponse
+    retranslated: bool          # the line's Khmer was translated again for the new speaker
+    previous_khmer: str         # the Khmer before the pick, given even when nothing changed (undo puts it back)
+
+
+class SampleLine(BaseModel):
+    """A stretch of an episode's original voices to hear (▶ in Same character?)."""
+    url: str
+    start: float
+    end: float
+
+
+class CharacterSuggestion(BaseModel):
+    """Two characters that may be one (a < b): the user decides, with Same person as… or Not the same."""
+    a: str
+    b: str
+    reason: Literal["same voice", "same voice and face"]
+    # Lines each has in the whole project: Merge keeps the one with more
+    a_lines: int = 0
+    b_lines: int = 0
+    # A line of each to hear, from any episode (None: no line in an episode whose voices were separated)
+    a_sample: Optional[SampleLine] = None
+    b_sample: Optional[SampleLine] = None
+
+
+class CharacterDismiss(BaseModel):
+    a: str
+    b: str                                      # either order
 
 
 class StemPieceIn(BaseModel):
