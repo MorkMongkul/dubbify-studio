@@ -31,7 +31,7 @@ from app.services.translator import TranslationReport
 
 
 def voice(k: int) -> np.ndarray:
-    v = np.zeros(192, np.float32)
+    v = np.zeros(store.VOICE_SIZE, np.float32)
     v[k] = 1.0
     return v
 
@@ -116,7 +116,7 @@ def _transcribe(monkeypatch, lines):
 
 
 def _prints(monkeypatch, result, calls=None):
-    def fake(video_path, vocals_path, spans, with_faces=True):
+    def fake(video_path, vocals_path, spans):
         if calls is not None:
             calls.append(list(spans))
         if isinstance(result, Exception):
@@ -459,7 +459,7 @@ async def test_prints_made_while_the_analysis_waits_for_the_models_count(monkeyp
     _transcribe(monkeypatch, [("SPEAKER_07", 0.0, 1.0, "你好")])
     loop = asyncio.get_running_loop()
 
-    def fake(video_path, vocals_path, spans, with_faces=True):
+    def fake(video_path, vocals_path, spans):
         async def backfill_meanwhile():   # ...which makes them while this analysis waits its turn
             async with background_db() as s:
                 lines = (await s.execute(select(Segment).where(Segment.speaker_id.in_(ids.values())))).scalars()
@@ -571,7 +571,7 @@ async def test_analysis_without_vocals_keeps_gemini_speakers(monkeypatch, upload
     (RuntimeError("ffmpeg could not read the video"), "failed"),
     (OSError(24, "Too many open files"), "failed"),          # not "can't run here": the Mac can run them
     (ImportError("onnxruntime needs macOS 13.4"), "can't run here"),
-    (models.ModelMissing("face_recognition_sface_2021dec.onnx is missing"), "can't run here"),
+    (models.ModelMissing("3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx is missing"), "can't run here"),
 ])
 @pytest.mark.asyncio
 async def test_recognition_that_fails_keeps_gemini_speakers(error, says, monkeypatch, uploads, background_db,
@@ -637,7 +637,7 @@ async def test_status_goes_recognizing_between_transcribing_and_translating(monk
     during = []
     pool = file_db.kw["bind"].pool      # the app's own pool: one connection
 
-    def prints_while(video_path, vocals_path, spans, with_faces=True):
+    def prints_while(video_path, vocals_path, spans):
         # Recorded, not asserted here: recognition would swallow the AssertionError and carry on
         during.append((statuses[-1][0], pool.checkedout()))
         return [LinePrints(voice(0), None, None, None)]
@@ -758,7 +758,7 @@ async def test_a_line_confirmed_during_the_analysis_is_still_carried_over(monkey
     _transcribe(monkeypatch, [("SPEAKER_09", 2.1, 3.9, "新")])
     loop = asyncio.get_running_loop()
 
-    def fake(video_path, vocals_path, spans, with_faces=True):
+    def fake(video_path, vocals_path, spans):
         async def user_confirms():   # the user picks the old line's character while the models run
             async with background_db() as s:
                 seg = await s.get(Segment, old_id)
@@ -846,7 +846,7 @@ async def test_two_analyses_never_run_the_models_at_once(monkeypatch, uploads, f
         _vocals(uploads, project_id, job_id)
     running, most = [], []
 
-    def slow_prints(video_path, vocals_path, spans, with_faces=True):
+    def slow_prints(video_path, vocals_path, spans):
         running.append(1)
         most.append(len(running))
         time.sleep(0.1)
@@ -865,30 +865,29 @@ async def test_two_analyses_never_run_the_models_at_once(monkeypatch, uploads, f
 
 
 def _load_models():
-    """Load the models' sessions as a run does (the voice model only once fetched)."""
-    from app.services.characters import faces, lips, voiceprint
-    faces._session("yunet")
-    lips._session()
+    """Load the voice models as a run does (the real ones when fetched, else stand-ins in their loaders' caches)."""
+    from app.services.characters import voiceprint
     try:
-        models.path("eres2netv2")
+        models.path("eres2netv2"), models.path("campplus")
     except models.ModelMissing:
         return
     voiceprint._extractor()
+    voiceprint._campplus()
 
 
 def _loaded() -> list[int]:
-    from app.services.characters import faces, lips, voiceprint
-    return [loader.cache_info().currsize for loader in (faces._session, lips._session, voiceprint._extractor)]
+    from app.services.characters import voiceprint
+    return [loader.cache_info().currsize for loader in (voiceprint._extractor, voiceprint._campplus)]
 
 
 def test_the_models_are_released_after_a_run_nobody_waits_for():
-    """About 0.5 GB stays resident otherwise, for the backend's life, on an 8 GB Mac. The next run loads them again
-    (about a second)."""
+    """They'd stay resident otherwise, for the backend's life, on an 8 GB Mac. The next run loads them again (about a
+    second)."""
     assert store._one_at_a_time(lambda: (_load_models(), "made")[1]) == "made"
-    assert _loaded() == [0, 0, 0]
+    assert _loaded() == [0, 0]
     with pytest.raises(RuntimeError):                 # a failed run releases them too
         store._one_at_a_time(lambda: (_load_models(), (_ for _ in ()).throw(RuntimeError("ffmpeg died"))))
-    assert _loaded() == [0, 0, 0]
+    assert _loaded() == [0, 0]
 
 
 def test_the_models_stay_loaded_while_another_run_waits():
@@ -912,5 +911,5 @@ def test_the_models_stay_loaded_while_another_run_waits():
     first_run.join(10)
     second_run.join(10)
     assert seen == [[1, 1]]               # still loaded for the run that waited
-    assert _loaded() == [0, 0, 0]         # released after the last one
+    assert _loaded() == [0, 0]            # released after the last one
 

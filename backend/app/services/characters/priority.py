@@ -1,8 +1,7 @@
 """macOS priorities (QoS classes) for the threads that run character recognition's models.
 
 The start-up's work runs at BACKGROUND (store.at_background_priority): on Apple Silicon that is the efficiency cores, so
-a fanless Mac stays cool. Timing this Mac's face step (characters.speed) always runs at DEFAULT: a timing taken on the
-efficiency cores would turn faces off for the whole app version."""
+a fanless Mac stays cool."""
 import ctypes
 import sys
 from contextlib import contextmanager

@@ -352,7 +352,7 @@ async def test_an_episode_whose_prints_fail_does_not_stop_the_others(monkeypatch
     good = await _episode_needing_prints(db, uploads, project_id, datetime(2026, 10, 1), at=1.0)
     calls = []
 
-    def fake(video_path, vocals_path, spans, with_faces=True):
+    def fake(video_path, vocals_path, spans):
         calls.append(list(spans))
         if spans == [(20.0, 21.0)]:
             raise RuntimeError("ffmpeg could not read vocals.wav")
@@ -395,7 +395,7 @@ async def test_queued_jobs_wait_until_their_prints_are_saved_or_fail(monkeypatch
 
     seen = []
 
-    def fake(video_path, vocals_path, spans, with_faces=True):
+    def fake(video_path, vocals_path, spans):
         seen.append(list(store.backfill_pending()))   # a job stays queued while its prints are being made
         if spans == [(1.0, 2.0)]:
             raise RuntimeError("ffmpeg could not read vocals.wav")
@@ -436,8 +436,8 @@ async def test_below_macos_13_4_the_backfill_never_imports_the_models(monkeypatc
     for name in [n for n in sys.modules if n.split(".")[0] in guard.names]:
         monkeypatch.delitem(sys.modules, name)
     monkeypatch.setattr(sys, "meta_path", [guard, *sys.meta_path])
-    from app.services.characters import faces, lips, voiceprint
-    for loader in (faces._session, lips._session, voiceprint._extractor):
+    from app.services.characters import voiceprint
+    for loader in (voiceprint._extractor, voiceprint._campplus):
         loader.cache_clear()     # nothing loaded before: a run would have to import
     monkeypatch.setattr(platform, "mac_ver", lambda: ("13.3.1", ("", "", ""), "arm64"))
 
@@ -578,7 +578,7 @@ async def _voices_with_clips(db, uploads, n=4) -> tuple[list[str], dict]:
             rows.append(Voice(name=f"Voice {k}", mode="ultimate", reference_audio_path=str(clip)))
         s.add_all(rows)
         await s.commit()
-        return [r.id for r in rows], {r.reference_audio_path: voice(k) for k, r in enumerate(rows)}
+        return [r.id for r in rows], {r.reference_audio_path: _heard((k, 1.0)) for k, r in enumerate(rows)}   # file prints: ERes2NetV2's 192
 
 
 async def _voiced(db, uploads, project_id, job_id, lines) -> list[str]:
@@ -1130,7 +1130,7 @@ async def test_a_project_is_converted_before_its_prints_are_made(monkeypatch, up
     from app.services.characters import voiceprint
     monkeypatch.setattr(voiceprint, "file_print", file_print)
 
-    def prints(video_path, vocals_path, spans, with_faces=True):
+    def prints(video_path, vocals_path, spans):
         order.append(("prints", [k for k in store.conversions_pending()]))
         return [LinePrints(voice(5), None, None, None) for _ in spans]
     monkeypatch.setattr(prints_module, "prints_for_spans", prints)

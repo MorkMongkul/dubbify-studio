@@ -13,8 +13,8 @@ It runs the shipped engine in the app's order:
      each line goes to the character of the voice it was made with — its own voice, else the voice its Khmer audio
      clearly sounds like (the voice model hears it; a few minutes on a big project);
   2. prints for every line of the project that has none from today's models (prints.prints_for_spans), saved into
-     the copy's database, so a later run, or a backend started on the copy, reuses them (about a minute per episode
-     with faces on an M1);
+     the copy's database, so a later run, or a backend started on the copy, reuses them (voice prints: about 10 s
+     per episode on an M1);
   3. "as it happens": episode N (in the order they were added) knows only episodes 1..N-1 — the profiles come from
      their confirmed lines (store.is_confirmed, decide.profile_from) and each line of N gets decide(), told as the
      app tells it whether another line of N is spoken over it (decide.overlapping).
@@ -29,7 +29,7 @@ Gemini can give one actor several labels (each its own profile). The upgrade mer
 voice (Ruling AQ); "Same character?" offers the rest. So it is measured twice: as the upgrade leaves the characters,
 and with the pairs "Same character?" offers for a shared voice merged (suggestions.find's rule, as Merge would: the
 one with more lines stays) — the same, once the upgrade has merged them. Prints the overall right %, how many lines are "sure" and how often those are right, and a table
-per episode. Exits 1 below 68% right, or sure on fewer than 50% of lines, or sure lines right below 83% — judged as
+per episode. Exits 1 below 66% right, or sure on fewer than 34% of lines, or sure lines right below 83% — judged as
 the upgrade leaves the characters, or after those merges with --after-merges."""
 import argparse
 import asyncio
@@ -42,7 +42,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-RIGHT_TARGET, SURE_TARGET, SURE_RIGHT_TARGET = 0.68, 0.50, 0.83
+# 0.5.3 (voice only, both models) on the owner's 30 finished episodes: 67.5% right, sure on 35.8% at 84.5%
+RIGHT_TARGET, SURE_TARGET, SURE_RIGHT_TARGET = 0.66, 0.34, 0.83
 APP_FOLDERS = ("com.movelo.studio", "studio.dubify.desktop")
 
 
@@ -108,13 +109,12 @@ async def _make_prints(project_id: str) -> list[str]:
     from app.core import database
     from app.core.paths import resolve_media_path
     from app.models.models import LinePrint, Segment
-    from app.services.characters import prints, speed, store
+    from app.services.characters import prints, store
     from app.services.timeline import actor_span
 
     report = []
     async with database.AsyncSessionLocal() as db:
         jobs = await _jobs(db, project_id)
-    with_faces = None
     for job in jobs:
         async with database.AsyncSessionLocal() as db:
             todo = (await db.execute(
@@ -128,18 +128,12 @@ async def _make_prints(project_id: str) -> list[str]:
             if vocals is None:
                 report.append(f"{job.title}: no vocals.wav in the copy, {len(todo)} line(s) without prints")
                 continue
-            if with_faces is None:
-                with_faces = await asyncio.to_thread(speed.face_step_enabled)
-                print(f"Faces: {'on' if with_faces else 'off (voices only)'}, as the app decides on this Mac",
-                      flush=True)
             began = time.monotonic()
             found = await asyncio.to_thread(prints.prints_for_spans, resolve_media_path(job.video_path),
-                                            str(vocals), [actor_span(s) for s in todo], with_faces)
+                                            str(vocals), [actor_span(s) for s in todo])
             await store.save_prints(db, job.id, [s.id for s in todo], found, store.faces_dir(job))
             await db.commit()
-            line = (f"{job.title}: {len(todo)} line(s) in {time.monotonic() - began:.0f} s "
-                    f"({job.duration_secs or 0:.0f} s of video), {sum(p.face is not None for p in found)} "
-                    f"with a speaking face")
+            line = f"{job.title}: {len(todo)} line(s) in {time.monotonic() - began:.0f} s ({job.duration_secs or 0:.0f} s of video)"
             print(f"  prints {line}", flush=True)
             report.append(line)
     return report

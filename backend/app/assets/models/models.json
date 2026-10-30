@@ -1,34 +1,18 @@
 [
-  {
-    "name": "eres2netv2",
-    "file": "3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx",
-    "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx",
-    "sha256": "bf1a75b9930474cf3389ef415e6e5d38ca96fea4a3a00f7e301d080a58ee2239",
-    "bytes": 71441526,
-    "licence": "Apache-2.0"
-  },
-  {
-    "name": "sface",
-    "file": "face_recognition_sface_2021dec.onnx",
-    "url": "https://media.githubusercontent.com/media/opencv/opencv_zoo/ba91a3b91d00d76e86540d4013f944bd6b514e39/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
-    "sha256": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
-    "bytes": 38696353,
-    "licence": "Apache-2.0"
-  },
-  {
-    "name": "yunet",
-    "file": "face_detection_yunet_2023mar_dynamic.onnx",
-    "url": "",
-    "sha256": "85260e29ac9c2546c0f4dcb9f98ad5b754e986f76592473013aa6cfd8c0e446b",
-    "bytes": 229770,
-    "licence": "MIT"
-  },
-  {
-    "name": "lightasd",
-    "file": "lightasd-ava.onnx",
-    "url": "",
-    "sha256": "f540dad024ad8cbe1bcbfd96fc7a786c747d68d94d89dbf58def563cbebf5903",
-    "bytes": 4106147,
-    "licence": "MIT"
-  }
+    {
+        "name": "eres2netv2",
+        "file": "3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx",
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx",
+        "sha256": "bf1a75b9930474cf3389ef415e6e5d38ca96fea4a3a00f7e301d080a58ee2239",
+        "bytes": 71441526,
+        "licence": "Apache-2.0"
+    },
+    {
+        "name": "campplus",
+        "file": "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
+        "sha256": "aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2",
+        "bytes": 28281164,
+        "licence": "Apache-2.0"
+    }
 ]

@@ -32,19 +32,22 @@ from app.services.timeline import actor_span
 
 logger = logging.getLogger(__name__)
 
-VOICE_SIZE = 192
+VOICE_SIZE = 384   # characters.voiceprint.SIZE: ERes2NetV2's print, then CAM++'s (0.5.3; 192 before)
 FACE_SIZE = 128
 # One episode's models at a time: they share their sessions (lru_cache) and took 1.5 GB at peak in the spike
 _ONE_AT_A_TIME = threading.Lock()
 _COUNTING = threading.Lock()
 _runs = 0   # runs waiting for the models or running them: the last one out releases them
 _BACKGROUND: ContextVar[bool] = ContextVar("characters_background", default=False)   # at_background_priority
-# The models' cached loaders, by module: about 0.5 GB while loaded
-_LOADERS = (("faces", "_session"), ("lips", "_session"), ("voiceprint", "_extractor"))
-# The models can't run here: a Mac below macOS 13.4 (onnxruntime), or a dev checkout without scripts/fetch-models.sh
+# Detect speakers while a project's checked lines all wait for new prints (the first start-up after new print models)
+UPDATING_PRINTS = ("Movelo is still hearing this project's checked lines with its new voice models — a one-time job "
+                   "after an update. Try Detect speakers again in a few minutes.")
+# The models' cached loaders, by module
+_LOADERS = (("voiceprint", "_extractor"), ("voiceprint", "_campplus"))
+# The models can't run here: a Mac below macOS 13.4 (models.MIN_MACOS), or a dev checkout without scripts/fetch-models.sh
 CANT_RUN = (ImportError, models.ModelMissing)
-# How prints are made, beside the models themselves: bump it when that changes (1: 0.5.0, frames at most
-# faces.MAX_SIDE long), so every print is made again
+# How prints are made, beside the models themselves: bump it when that changes (1: 0.5.0), so every print is made again
+# (0.5.3's CAM++ changed models.json, which does that by itself)
 PRINTS_VERSION = 1
 
 # Ruling AL: the jobs the start-up backfill will give today's prints (job id -> None, in its order). Only their
@@ -238,20 +241,27 @@ async def project_profiles(db: AsyncSession, project_id: str, exclude_job_id: st
 
 async def save_prints(db: AsyncSession, job_id: str, segment_ids: list[str], prints: list[LinePrints],
                       crops_dir: Path) -> None:
-    """Keep each line's prints, replacing any it had, and its speaking face as crops_dir/<segment id>.jpg.
-    Flushes; the caller commits (with the lines, so prints never outlive a failed swap)."""
+    """Keep each line's prints, replacing any it had, and its speaking face as crops_dir/<segment id>.jpg. Prints made
+    without a face (voice only since 0.5.2) keep the face an older print of the line had — the characters' thumbnails
+    (upgrade.refresh_faces) and the face half of "Same character?" come from them. Flushes; the caller commits (with
+    the lines, so prints never outlive a failed swap)."""
     pairs = list(zip(segment_ids, prints))
     if not pairs:
         return
-    await db.execute(delete(LinePrint).where(LinePrint.segment_id.in_([sid for sid, _ in pairs])))
+    ids = [sid for sid, _ in pairs]
+    older = {row.segment_id: (row.face_print, row.speaking_score, row.face_crop_path) for row in (await db.execute(
+        select(LinePrint).where(LinePrint.segment_id.in_(ids)))).scalars()}
+    await db.execute(delete(LinePrint).where(LinePrint.segment_id.in_(ids)))
     rows, written = [], []
     for segment_id, p in pairs:
         crop = _write_crop(crops_dir, segment_id, p.face_crop) if p.face_crop else None
         if crop is not None:
             written.append(crop)
-        rows.append(LinePrint(segment_id=segment_id, job_id=job_id, voice_print=_blob(p.voice),
-                              face_print=_blob(p.face), speaking_score=p.speaking_score,
-                              face_crop_path=str(crop) if crop else None, model_version=model_version()))
+        face, score, crop_path = _blob(p.face), p.speaking_score, str(crop) if crop else None
+        if face is None and crop_path is None and segment_id in older:
+            face, score, crop_path = older[segment_id]
+        rows.append(LinePrint(segment_id=segment_id, job_id=job_id, voice_print=_blob(p.voice), face_print=face,
+                              speaking_score=score, face_crop_path=crop_path, model_version=model_version()))
     _removed_on_rollback(db, written)
     db.add_all(rows)
     await db.flush()
@@ -337,12 +347,12 @@ def release_models() -> None:
 
 def _prints_of(video: Path, vocals: str, spans: list[tuple[float, float]]) -> list[LinePrints]:
     """Worker thread, one analysis at a time: the lines' voice prints. Below macOS 13.4 it stops before anything imports
-    the models' libraries (onnxruntime's wheels need 13.4)."""
+    the models' libraries (models.MIN_MACOS)."""
     if not models.runtime_supported():
         raise ImportError(f"character recognition needs macOS {'.'.join(map(str, models.MIN_MACOS))} or later "
                           f"(this Mac has {platform.mac_ver()[0]})")
     from app.services.characters import prints
-    return prints.prints_for_spans(video, vocals, spans, with_faces=False)   # voice only since 0.5.2 (decide)
+    return prints.prints_for_spans(video, vocals, spans)
 
 
 def vocals_path(job: Job) -> Path:
@@ -457,11 +467,13 @@ async def identify(db: AsyncSession, job: Job, segments: list[Segment]) -> str:
     characters are read again after the models ran.
 
     Returns "done", or — nothing changed, the caller falls back to Gemini — why it couldn't run: "no_profiles" (the
-    project has no characters yet), "no_vocals", or "cant_run" (the models can't run; logged). Commits before the
-    models run; the lines are read again afterwards (the user may have edited or deleted some). Flushes; the
-    caller commits."""
-    if not await project_profiles(db, job.project_id, exclude_job_id=job.id):
-        return "no_profiles"
+    project has no characters yet), "no_vocals", or "cant_run" (the models can't run; logged). "waiting": no profile
+    yet only because every checked line waits for the backfill's prints — nothing changed, and the caller must not
+    fall back to Gemini (its fresh labels would move every open line). Commits before the models run; the lines are
+    read again afterwards (the user may have edited or deleted some). Flushes; the caller commits."""
+    known = await known_characters(db, job.project_id, exclude_job_id=job.id)
+    if not known.profiles:
+        return "waiting" if known.waiting else "no_profiles"
     open_ids = [s.id for s in segments if not is_confirmed(s, job)]
     if not open_ids:
         return "done"

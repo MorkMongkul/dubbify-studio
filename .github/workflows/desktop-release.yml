@@ -114,15 +114,15 @@ jobs:
           path: vendor/fribidi/${{ matrix.target }}
           key: ${{ steps.fribidi.outputs.cache-primary-key }}
 
-      # The voice and face models that are too big for git (backend/app/assets/models/
-      # models.json; the backend bundles that folder and its self-test loads them).
+      # The voice models, too big for git (backend/app/assets/models/models.json; the backend bundles that folder
+      # and its self-test loads them).
       - name: Restore the character models
         id: models
         uses: actions/cache/restore@v6
         with:
           path: |
             backend/app/assets/models/3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx
-            backend/app/assets/models/face_recognition_sface_2021dec.onnx
+            backend/app/assets/models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx
           key: models-${{ hashFiles('backend/app/assets/models/models.json') }}
 
       # The script returns at once when the restored files are the right ones.
@@ -135,22 +135,13 @@ jobs:
         with:
           path: |
             backend/app/assets/models/3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx
-            backend/app/assets/models/face_recognition_sface_2021dec.onnx
+            backend/app/assets/models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx
           key: ${{ steps.models.outputs.cache-primary-key }}
 
       - name: Backend build environment
         run: |
           python -m venv backend/venv_clean
           backend/venv_clean/bin/pip install -r backend/requirements.txt -r backend/requirements-build.txt
-
-      # Prints how long the face step of character recognition would take on this chip (the app measures the same on
-      # every Mac and uses voices only when it is slow). Informational: it never fails the build.
-      - name: Character speed on this chip
-        continue-on-error: true
-        working-directory: backend
-        env:
-          FFMPEG_PATH: ${{ github.workspace }}/vendor/ffmpeg/${{ matrix.target }}/ffmpeg
-        run: venv_clean/bin/python ../scripts/bench-characters.py || echo "::warning::The character speed bench could not run"
 
       - name: Frontend dependencies
         working-directory: frontend

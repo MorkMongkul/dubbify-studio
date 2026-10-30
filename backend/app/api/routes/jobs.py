@@ -456,8 +456,11 @@ async def detect_speakers(
         raise HTTPException(status_code=400, detail="This session has no segments yet — run Analyze first.")
     _require_audio(job)
     from app.services.characters import store   # here, so the backend starts without the characters package
+    known = await store.known_characters(db, job.project_id, exclude_job_id=job.id)
+    if not known.profiles and known.waiting:   # Gemini's fresh labels would move every open line meanwhile
+        raise HTTPException(status_code=409, detail=store.UPDATING_PRINTS)
     # With characters to check against, no Gemini is needed (it is the fallback if the models can't run)
-    if not settings.GEMINI_API_KEY and not await store.project_profiles(db, job.project_id, exclude_job_id=job.id):
+    if not settings.GEMINI_API_KEY and not known.profiles:
         raise HTTPException(
             status_code=400,
             detail="Speaker detection uses Gemini — add GEMINI_API_KEY to backend/.env and restart the backend.",
