@@ -152,3 +152,35 @@ async def test_a_job_left_recognizing_is_recovered(monkeypatch, db_sessionmaker)
     async with db_sessionmaker() as s:
         assert (await s.get(Job, ids[0])).status == JobStatus.COMPLETED
         assert (await s.get(Job, ids[1])).status == JobStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_new_prints_keep_the_face_an_older_print_had(db_sessionmaker, tmp_path):
+    """0.5.3 re-makes every voice print (CAM++ joined the print); the face found by 0.5.0/0.5.1 stays with the line, so
+    the characters keep their thumbnails (refresh_faces) and the face half of "Same character?"."""
+    import numpy as np
+    from app.services.characters import store
+    from app.services.characters.types import LinePrints
+    async with db_sessionmaker() as s:
+        project = Project(name="P")
+        s.add(project)
+        await s.flush()
+        job = Job(project_id=project.id, status=JobStatus.COMPLETED)
+        s.add(job)
+        await s.flush()
+        seg = Segment(job_id=job.id, start_time=0.0, end_time=1.0)
+        s.add(seg)
+        await s.flush()
+        face = np.ones(128, np.float32) / np.sqrt(128)
+        s.add(LinePrint(segment_id=seg.id, job_id=job.id, voice_print=np.ones(192, np.float32).tobytes(),
+                        face_print=face.tobytes(), speaking_score=0.8, face_crop_path="/faces/seg.jpg",
+                        model_version="older"))
+        await s.commit()
+        seg_id, job_id = seg.id, job.id
+    voice = np.ones(384, np.float32) / np.sqrt(384)
+    async with db_sessionmaker() as s:
+        await store.save_prints(s, job_id, [seg_id], [LinePrints(voice, None, None, None)], tmp_path)
+        await s.commit()
+    [row] = await _prints(db_sessionmaker)
+    assert row.model_version == store.model_version() and np.frombuffer(row.voice_print, np.float32).shape == (384,)
+    assert row.face_print == face.tobytes() and row.speaking_score == 0.8 and row.face_crop_path == "/faces/seg.jpg"

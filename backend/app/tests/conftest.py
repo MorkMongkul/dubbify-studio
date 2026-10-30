@@ -122,11 +122,3 @@ def _no_backfill_queue_left():
     yield
     store.clear_backfill()
 
-
-@pytest.fixture(autouse=True)
-def _no_speed_measuring(monkeypatch):
-    """The face step's speed test (characters.speed) runs the real models: no test may start it, and each starts
-    without an answer left by another. A fast machine unless a test says otherwise."""
-    from app.services.characters import speed
-    monkeypatch.setattr(speed, "_memo", None)
-    monkeypatch.setattr(speed, "measure", lambda: speed.Parts(1.0, 1.0, 1.0, 1.0, 1.0))

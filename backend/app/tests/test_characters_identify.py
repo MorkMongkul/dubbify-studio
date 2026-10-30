@@ -234,7 +234,7 @@ def _while_the_models_run(monkeypatch, result, edit):
     session (as the user does while the models take their minutes)."""
     loop = asyncio.get_running_loop()
 
-    def fake(video_path, vocals_path, spans, with_faces=True):
+    def fake(video_path, vocals_path, spans):
         async def user_edit():
             async with edit.sessionmaker() as s:
                 await edit.work(s)

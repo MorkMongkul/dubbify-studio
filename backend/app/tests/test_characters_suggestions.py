@@ -10,6 +10,8 @@ from app.models.models import Job, JobStatus, LinePrint, Project, Segment, Speak
 from app.services.characters import store, suggestions
 from app.tests.test_characters_pipeline import face, voice  # noqa: F401
 
+VOICE = store.VOICE_SIZE   # a line's voice print (0.5.3: both models' 384)
+
 
 async def _voice(db_sessionmaker) -> str:
     async with db_sessionmaker() as s:
@@ -93,8 +95,8 @@ async def test_profiles_that_match_in_voice_and_face_are_suggested(client, db_se
     assert (suggestions.SAME_VOICE, suggestions.SAME_FACE) == (0.75, 0.75)
     project_id, ids = await _cast(db_sessionmaker, [
         ("SPEAKER_00", None, False, voice(0), face(0)),
-        ("SPEAKER_01", None, False, _near(0, 1, 0.9, 192), _near(0, 1, 0.8, 128)),
-        ("SPEAKER_02", None, False, _near(0, 2, 0.9, 192), face(7))])   # voice alone is not enough
+        ("SPEAKER_01", None, False, _near(0, 1, 0.9, VOICE), _near(0, 1, 0.8, 128)),
+        ("SPEAKER_02", None, False, _near(0, 2, 0.9, VOICE), face(7))])   # voice alone is not enough
     got = await _get(client, project_id)
     a, b = sorted([ids["SPEAKER_00"], ids["SPEAKER_01"]])
     assert got == [{"a": a, "b": b, "reason": "same voice and face", "a_lines": 1, "b_lines": 1, "a_sample": None, "b_sample": None}]
@@ -106,7 +108,7 @@ def test_a_face_as_close_as_two_actors_on_one_label_is_not_enough(face_cosine, s
     from app.services.characters.decide import Profile
     speakers = [Speaker(id="a", label="SPEAKER_00"), Speaker(id="b", label="SPEAKER_01")]
     profiles = {"a": Profile(voice(0), face(0), 5),
-                "b": Profile(_near(0, 1, 0.9, 192), _near(0, 1, face_cosine, 128), 5)}
+                "b": Profile(_near(0, 1, 0.9, VOICE), _near(0, 1, face_cosine, 128), 5)}
     got = suggestions.find(speakers, profiles, set())
     assert [g["reason"] for g in got] == (["same voice and face"] if suggested else [])
 
@@ -123,7 +125,7 @@ def test_two_characters_a_person_cast_with_different_voices_are_never_the_same(a
     speakers = [Speaker(id="a", label="SPEAKER_00", voice_id="kim", voice_auto=auto_a),
                 Speaker(id="b", label="SPEAKER_01", voice_id="sokunthea", voice_auto=auto_b)]
     profiles = {"a": Profile(voice(0), face(0), 5),
-                "b": Profile(_near(0, 1, 0.95, 192), _near(0, 1, 0.95, 128), 5)}
+                "b": Profile(_near(0, 1, 0.95, VOICE), _near(0, 1, 0.95, 128), 5)}
     got = suggestions.find(speakers, profiles, set())
     assert [g["reason"] for g in got] == (["same voice and face"] if suggested else [])
 
@@ -198,7 +200,7 @@ async def test_dismissals_are_checked(client, db_sessionmaker):
 async def test_a_character_without_a_face_profile_is_not_suggested_by_face(client, db_sessionmaker):
     project_id, _ = await _cast(db_sessionmaker, [
         ("SPEAKER_00", None, False, voice(0), face(0)),
-        ("SPEAKER_01", None, False, _near(0, 1, 0.9, 192), None)])
+        ("SPEAKER_01", None, False, _near(0, 1, 0.9, VOICE), None)])
     assert await _get(client, project_id) == []
 
 
@@ -207,8 +209,8 @@ async def test_suggestions_are_ordered_same_voice_first_then_voice_cosine(client
     kim = await _voice(db_sessionmaker)
     project_id, ids = await _cast(db_sessionmaker, [
         ("SPEAKER_00", None, False, voice(0), face(0)),
-        ("SPEAKER_01", None, False, _near(0, 1, 0.8, 192), _near(0, 1, 0.9, 128)),
-        ("SPEAKER_02", None, False, _near(0, 2, 0.95, 192), _near(0, 2, 0.9, 128)),
+        ("SPEAKER_01", None, False, _near(0, 1, 0.8, VOICE), _near(0, 1, 0.9, 128)),
+        ("SPEAKER_02", None, False, _near(0, 2, 0.95, VOICE), _near(0, 2, 0.9, 128)),
         ("SPEAKER_05", kim, False, voice(20), None), ("SPEAKER_06", kim, False, voice(21), None)])
     got = await _get(client, project_id)
     assert got[0]["reason"] == "same voice"

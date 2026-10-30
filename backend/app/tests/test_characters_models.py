@@ -16,7 +16,7 @@ def _manifest():
 
 def test_every_model_matches_its_manifest():
     entries = _manifest()
-    assert {e["name"] for e in entries} == {"eres2netv2", "sface", "yunet", "lightasd"}
+    assert {e["name"] for e in entries} == {"eres2netv2", "campplus"}
     for entry in entries:
         file = models.DIR / entry["file"]
         if not file.exists():
@@ -36,7 +36,7 @@ def test_every_fetched_model_comes_from_a_fixed_version():
 def test_a_missing_model_says_how_to_get_it(monkeypatch, tmp_path):
     monkeypatch.setattr(models, "DIR", tmp_path)
     with pytest.raises(models.ModelMissing, match="scripts/fetch-models.sh"):
-        models.path("sface")
+        models.path("campplus")
     with pytest.raises(KeyError):
         models.path("nope")
 
@@ -68,7 +68,7 @@ def test_a_url_licence_or_layout_edit_keeps_the_model_version(manifest_copy):
     """Ruling AM: a version change re-makes every print (and nothing is sure until that ends), so only what makes
     the prints may change it."""
     before = store.model_version()
-    _edited(manifest_copy, "sface", url="https://example.com/sface.onnx", licence="other", bytes=1)
+    _edited(manifest_copy, "campplus", url="https://example.com/campplus.onnx", licence="other", bytes=1)
     store.model_version.cache_clear()
     assert store.model_version() == before
     manifest_copy.write_text(json.dumps(list(reversed(json.loads(manifest_copy.read_text()))), indent=4))
@@ -78,7 +78,7 @@ def test_a_url_licence_or_layout_edit_keeps_the_model_version(manifest_copy):
 
 def test_another_model_or_another_way_of_printing_changes_the_model_version(monkeypatch, manifest_copy):
     shipped, before = manifest_copy.read_text(), store.model_version()
-    _edited(manifest_copy, "sface", sha256="0" * 64)
+    _edited(manifest_copy, "campplus", sha256="0" * 64)
     store.model_version.cache_clear()
     assert store.model_version() != before and len(store.model_version()) == 12
     manifest_copy.write_text(shipped)
