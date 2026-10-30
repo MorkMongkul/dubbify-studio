@@ -447,6 +447,8 @@ async def run_speaker_detection(job_id: str) -> None:
                 await upgrade.refresh_faces_safely(db, project.id)
                 logger.info(f"Speaker detection done for job {job_id[:8]} — checked against the characters")
                 return
+            if outcome == "waiting":
+                raise RuntimeError(store.UPDATING_PRINTS)
             if not settings.GEMINI_API_KEY and outcome != "no_profiles":   # the fallback below needs it
                 raise RuntimeError(
                     "This episode's voices weren't separated, so Movelo can't recognise them, and no Gemini key is "

@@ -254,7 +254,7 @@ def _voices_made_with(reference_clips: dict[str, str], line_audio: dict[str, str
     """Worker thread, through store's one-at-a-time lock: {segment id: the voice its audio was made with}, for the
     lines whose audio (`line_audio`, {segment id: file}) sounds like one voice's reference clip (`reference_clips`,
     {voice id: file}) by at least VOICE_MARGIN more than like any other — ERes2NetV2 prints of the whole files,
-    16 kHz mono, as the line prints are made. `reference_prints` keeps the clips' prints for the start-up's run
+    16 kHz mono (voiceprint.file_print; the margin was measured on them, before a line's print had CAM++'s too). `reference_prints` keeps the clips' prints for the start-up's run
     ({(file, modified): print}). A line or reference clip that can't be read is left out (logged once); raises
     CANT_RUN when the models can't run here (below macOS 13.4 before anything imports them), and the first error when
     no reference clip could be read."""

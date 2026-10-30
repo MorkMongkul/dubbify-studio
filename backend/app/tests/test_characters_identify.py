@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from app.models.models import Job, JobStatus, LinePrint, Segment, Speaker
 from app.services import pipeline
-from app.services.characters import models, store
+from app.services.characters import models, store, upgrade
 from app.services.characters import prints as prints_module
 from app.services.characters.types import LinePrints
 from app.services.diarizer import DiarizedSegment
@@ -351,3 +351,46 @@ async def test_no_gemini_key_and_no_characters_is_not_blamed_on_this_mac(monkeyp
     await pipeline.run_speaker_detection(job_id)   # directly: the route would have refused with a 400
 
     assert "on this Mac" not in (await store_job(background_db, job_id)).error_msg
+
+
+async def _all_prints_stale(background_db, uploads, project_id):
+    """Right after an update to new print models (0.5.3): every stored print is from older models, and the start-up
+    queued their episodes (with their vocals) for the backfill, which hasn't reached them."""
+    async with background_db() as s:
+        for row in (await s.execute(select(LinePrint))).scalars():
+            row.model_version = "older-models"
+            _vocals(uploads, project_id, row.job_id)
+        await s.commit()
+    await upgrade.queue_backfill(background_db)
+
+
+@pytest.mark.asyncio
+async def test_detect_speakers_waits_while_every_checked_line_waits_for_new_prints(client, monkeypatch, uploads,
+                                                                                    background_db):
+    """No profile yet only because the re-print hasn't reached them: Gemini's fresh labels would move every open line
+    (and a line 0.5.2 was sure of would stay "sure" on Gemini's label), so it says to try again in a few minutes."""
+    project_id, job_id, ids, _ = await _detect_setup(background_db, uploads, [(0.0, 2.0, {})])
+    await _all_prints_stale(background_db, uploads, project_id)
+    _no_gemini(monkeypatch)
+    calls = []
+    _prints(monkeypatch, [_p(0)], calls)
+
+    resp = await client.post(f"/api/v1/jobs/{job_id}/detect-speakers")
+    assert resp.status_code == 409 and "new voice models" in resp.json()["detail"]
+    assert calls == []
+    assert (await store_job(background_db, job_id)).status == JobStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_speaker_detection_never_falls_back_to_gemini_while_checked_lines_wait(monkeypatch, uploads,
+                                                                                      background_db):
+    project_id, job_id, ids, _ = await _detect_setup(background_db, uploads, [(0.0, 2.0, {})])
+    await _all_prints_stale(background_db, uploads, project_id)
+    _no_gemini(monkeypatch)
+    _prints(monkeypatch, [_p(1)])
+    await pipeline.run_speaker_detection(job_id)   # directly: as if the re-print fell behind after the route's check
+
+    [(seg, label)] = await _lines(background_db, job_id)
+    assert label is None and seg.who_check is None   # untouched
+    job = await store_job(background_db, job_id)
+    assert job.status == JobStatus.COMPLETED and "new voice models" in job.error_msg

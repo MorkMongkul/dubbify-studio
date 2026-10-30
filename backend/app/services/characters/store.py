@@ -39,6 +39,9 @@ _ONE_AT_A_TIME = threading.Lock()
 _COUNTING = threading.Lock()
 _runs = 0   # runs waiting for the models or running them: the last one out releases them
 _BACKGROUND: ContextVar[bool] = ContextVar("characters_background", default=False)   # at_background_priority
+# Detect speakers while a project's checked lines all wait for new prints (the first start-up after new print models)
+UPDATING_PRINTS = ("Movelo is still hearing this project's checked lines with its new voice models — a one-time job "
+                   "after an update. Try Detect speakers again in a few minutes.")
 # The models' cached loaders, by module
 _LOADERS = (("voiceprint", "_extractor"), ("voiceprint", "_campplus"))
 # The models can't run here: a Mac below macOS 13.4 (models.MIN_MACOS), or a dev checkout without scripts/fetch-models.sh
@@ -464,11 +467,13 @@ async def identify(db: AsyncSession, job: Job, segments: list[Segment]) -> str:
     characters are read again after the models ran.
 
     Returns "done", or — nothing changed, the caller falls back to Gemini — why it couldn't run: "no_profiles" (the
-    project has no characters yet), "no_vocals", or "cant_run" (the models can't run; logged). Commits before the
-    models run; the lines are read again afterwards (the user may have edited or deleted some). Flushes; the
-    caller commits."""
-    if not await project_profiles(db, job.project_id, exclude_job_id=job.id):
-        return "no_profiles"
+    project has no characters yet), "no_vocals", or "cant_run" (the models can't run; logged). "waiting": no profile
+    yet only because every checked line waits for the backfill's prints — nothing changed, and the caller must not
+    fall back to Gemini (its fresh labels would move every open line). Commits before the models run; the lines are
+    read again afterwards (the user may have edited or deleted some). Flushes; the caller commits."""
+    known = await known_characters(db, job.project_id, exclude_job_id=job.id)
+    if not known.profiles:
+        return "waiting" if known.waiting else "no_profiles"
     open_ids = [s.id for s in segments if not is_confirmed(s, job)]
     if not open_ids:
         return "done"
