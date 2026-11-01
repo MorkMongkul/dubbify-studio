@@ -85,7 +85,7 @@ test('a step that runs long waits near its end instead of claiming to be done', 
 
 test('it moves at the pace the step usually takes for a video that long', () => {
   // About halfway through listening (0–55%) at half its usual time
-  const usual = 15 + 0.3 * 180
+  const usual = 8 + 0.17 * 180
   assert.equal(stagePercent('diarizing', usual / 2, 180), 27)
   // The same wait on a longer episode has got less far
   assert.ok(stagePercent('separating', 60, 45 * 60)! < stagePercent('separating', 60, 180)!)

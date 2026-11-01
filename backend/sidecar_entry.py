@@ -102,6 +102,10 @@ def self_test() -> int:
 def main() -> None:
     if "--self-test" in sys.argv:
         sys.exit(self_test())
+    if "--transcribe" in sys.argv:   # a child the backend starts to transcribe on this Mac (local_asr)
+        from app.services import local_asr
+        at = sys.argv.index("--transcribe")
+        sys.exit(local_asr.main(sys.argv[at + 1:at + 3]))
     if "--separate" in sys.argv:   # a child the backend starts to separate vocals and music (local_separation)
         from app.services import local_separation
         at = sys.argv.index("--separate")

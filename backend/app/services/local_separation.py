@@ -22,9 +22,7 @@ in a child process (separate): Spleeter's runtime keeps what it took (1.5 GB aft
 runs all day; the child gives it all back and can't take the backend down with it. Without the model, below macOS
 13.4, or when anything fails, the HF Space separates (source_separator)."""
 import asyncio
-import hashlib
 import logging
-import os
 import shutil
 import subprocess
 import sys
@@ -34,7 +32,6 @@ import wave
 from pathlib import Path
 from typing import Callable
 
-import httpx
 import numpy as np
 
 from app.core.binaries import ffmpeg
@@ -70,16 +67,15 @@ def model_dir() -> Path | None:
 
 
 def model_ready() -> bool:
+    from app.services import model_files
     from app.services.characters import models
-    folder = model_dir()
-    return (folder is not None and models.runtime_supported()
-            and all((folder / name).is_file() for name in FILES))
+    return models.runtime_supported() and model_files.ready(model_dir(), FILES)
 
 
 async def ensure_model() -> bool:
-    """Downloads the model's files that aren't there yet. True when it's ready. Never raises: a failed download leaves
-    nothing behind and is tried again at the next start-up — except one whose SHA-256 doesn't match, which this app
-    version never downloads again (the file upstream changed)."""
+    """Downloads the model's files that aren't there yet (model_files.download). True when it's ready; then the
+    folder of a model it replaced is deleted."""
+    from app.services import model_files
     from app.services.characters import models
     folder = model_dir()
     if folder is None or not models.runtime_supported():   # below macOS 13.4 sherpa-onnx can't run it
@@ -87,37 +83,11 @@ async def ensure_model() -> bool:
     async with _download_lock:
         if model_ready():
             return True
-        mismatch = folder.parent / f"{MODEL_DIR}.mismatch"
-        try:
-            folder.mkdir(parents=True, exist_ok=True)
-            if mismatch.is_file() and mismatch.read_text().strip() == settings.version:
-                return False
-            async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(30.0, read=120.0)) as client:
-                for name, sha256 in FILES.items():
-                    if (folder / name).is_file():
-                        continue
-                    part = folder / f"{name}.part"
-                    try:
-                        digest = hashlib.sha256()
-                        async with client.stream("GET", f"{BASE_URL}/{name}") as response:
-                            response.raise_for_status()
-                            with open(part, "wb") as out:
-                                async for chunk in response.aiter_bytes(1 << 20):
-                                    digest.update(chunk)
-                                    out.write(chunk)
-                        if digest.hexdigest() != sha256:
-                            mismatch.write_text(settings.version)
-                            raise ValueError(f"{name}'s SHA-256 is {digest.hexdigest()}, expected {sha256}")
-                        os.replace(part, folder / name)
-                    finally:
-                        part.unlink(missing_ok=True)
-            logger.info(f"Separation: Spleeter ready in {folder}")
-            for old in OLD_MODEL_DIRS:
-                shutil.rmtree(folder.parent / old, ignore_errors=True)
-            return True
-        except Exception as e:   # noqa: BLE001 — offline, a full disk: the HF Space separates meanwhile
-            logger.warning(f"Separation: couldn't download Spleeter, the HF Space separates meanwhile: {e}")
+        if not await model_files.download(folder, BASE_URL, FILES, "Separation (Spleeter)"):
             return False
+        for old in OLD_MODEL_DIRS:
+            shutil.rmtree(folder.parent / old, ignore_errors=True)
+        return True
 
 
 def needs_new_stems(job_dir: Path) -> bool:

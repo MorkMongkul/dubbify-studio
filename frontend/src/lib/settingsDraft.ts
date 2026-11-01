@@ -10,7 +10,7 @@ const GROUP_FIELDS: Record<SettingsGroup, readonly (keyof AppSettingsUpdate)[]> 
   appearance: [],
   keys: ['GEMINI_API_KEY', 'HF_TOKEN'],
   voices: ['VOXCPM2_API_URL', 'VOXCPM2_HF_SPACE_FALLBACK', 'TTS_BATCH_CONCURRENCY'],
-  models: ['TRANSLATION_BACKEND', 'GEMINI_MODEL', 'GEMINI_ASR_MODEL', 'GEMINI_CHAT_MODEL', 'GEMINI_TTS_MODEL'],
+  models: ['AFTER_UPLOAD', 'TRANSCRIPTION', 'TRANSLATION_BACKEND', 'GEMINI_MODEL', 'GEMINI_ASR_MODEL', 'GEMINI_CHAT_MODEL', 'GEMINI_TTS_MODEL'],
   storage: [],
   about: [],
 }

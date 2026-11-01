@@ -19,7 +19,7 @@ from app.services.pipeline_common import recover_orphaned_jobs
 from app.services.builtin_voices import seed_builtin_voices
 from app.services.timeline import convert_old_jobs
 from app.services.media_assets import resume_interrupted
-from app.services import line_timing, local_separation
+from app.services import line_timing, local_asr, local_separation
 import app.core.database as core_db
 from app.api.routes import health, projects, jobs, segments, tts, voices, overlays, chat, story, stem_pieces, media
 from app.api.routes import settings as settings_routes
@@ -98,6 +98,10 @@ async def lifespan(app: FastAPI):
     # Spleeter, which separates vocals and music on this Mac: downloaded once the same way (until then, the HF Space);
     # then the episodes 0.5.4's int8 model separated get new stems, once
     task = asyncio.create_task(_separation_ready())
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    # Qwen3-ASR and the voice-kind model, which transcribe on this Mac (~1 GB, once; until then, Gemini)
+    task = asyncio.create_task(local_asr.ensure_model())
     _background.add(task)
     task.add_done_callback(_background.discard)
     yield

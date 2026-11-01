@@ -27,7 +27,7 @@ EDITABLE = (
     "GEMINI_API_KEY", "HF_TOKEN",
     "VOXCPM2_API_URL", "VOXCPM2_HF_SPACE_FALLBACK",
     "TRANSLATION_BACKEND", "GEMINI_MODEL", "GEMINI_ASR_MODEL", "GEMINI_CHAT_MODEL", "GEMINI_TTS_MODEL",
-    "TTS_BATCH_CONCURRENCY",
+    "TTS_BATCH_CONCURRENCY", "TRANSCRIPTION", "AFTER_UPLOAD",
 )
 
 # Settings → AI models: which Gemini job each model setting is for. An empty
@@ -56,6 +56,8 @@ class SettingsUpdate(BaseModel):
     GEMINI_CHAT_MODEL: Optional[ModelName] = None
     GEMINI_TTS_MODEL: Optional[ModelName] = None
     TTS_BATCH_CONCURRENCY: Annotated[Optional[int], Field(ge=1, le=8)] = None
+    TRANSCRIPTION: Optional[Literal["mac", "gemini"]] = None
+    AFTER_UPLOAD: Optional[Literal["wait", "analyze"]] = None
 
     @field_validator("GEMINI_API_KEY", "HF_TOKEN", "VOXCPM2_API_URL")
     @classmethod

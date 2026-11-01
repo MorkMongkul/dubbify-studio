@@ -90,7 +90,9 @@ const RING_STEPS: Record<string, RingStep> = {
   // On the Mac since 0.5.4: Spleeter + the waveform and playback copies (83 s took 5 s). The HF Space, which separates
   // until the model is downloaded, took 45 + 0.55 v: the ring then slows near its end and waits
   separating:   { from: 12, to: 100, usualSecs: (v) => 3 + 0.04 * v },
-  diarizing:    { from: 0,  to: 55,  usualSecs: (v) => 15 + 0.3 * v },
+  // On this Mac since 0.5.6 (local_asr): 19.4–31.6 s for 10 episodes of ~100 s on an M1 Air. Gemini, used while
+  // the model downloads, took ~45 s (and minutes when busy); the ring then waits near the end.
+  diarizing:    { from: 0,  to: 55,  usualSecs: (v) => 8 + 0.17 * v },
   // Right after listening: line timing finds where each line's words are heard (6.4 s for 113 s on an M1)
   transcribing: { from: 55, to: 60,  usualSecs: (v) => 2 + 0.04 * v },
   // Voice only since 0.5.2, measured on an M1: 11 s for a 129 s video (34 lines; with faces it took 2–3 min)

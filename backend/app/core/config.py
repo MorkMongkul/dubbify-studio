@@ -5,7 +5,7 @@ Loaded once at startup via pydantic-settings.
 """
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
-from typing import List
+from typing import List, Literal
 import os
 from pathlib import Path
 
@@ -106,6 +106,12 @@ class Settings(BaseSettings):
     # Deliberately separate from GEMINI_MODEL, so transcription (audio) and
     # translation (text) can be tuned independently.
     GEMINI_ASR_MODEL: str = "gemini-3.6-flash"
+    # Where an analysis transcribes (0.5.6): "mac" — Qwen3-ASR + voice prints on this Mac (app/services/local_asr.py),
+    # Gemini only while its models download, can't run, or fail — or "gemini" (GEMINI_ASR_MODEL above).
+    TRANSCRIPTION: Literal["mac", "gemini"] = "mac"
+    # After an upload's music is separated (0.5.6): "wait" for Analyze, or "analyze" straight away
+    # (pipeline.run_pipeline), so an upload is ready to check without a click.
+    AFTER_UPLOAD: Literal["wait", "analyze"] = "wait"
     # Hard cap on tool-call round-trips within a single chat turn, so a model
     # stuck in a call/respond/call-again loop can't run away indefinitely.
     CHAT_MAX_TOOL_ROUNDS: int = 6

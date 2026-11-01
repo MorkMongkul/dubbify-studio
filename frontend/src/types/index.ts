@@ -408,6 +408,10 @@ export interface AppSettingsValues {
   GEMINI_CHAT_MODEL: string
   GEMINI_TTS_MODEL: string
   TTS_BATCH_CONCURRENCY: number
+  /** Where an analysis transcribes (0.5.6): Qwen3-ASR on this Mac, or Gemini. */
+  TRANSCRIPTION: 'mac' | 'gemini'
+  /** After an upload's music is separated (0.5.6): wait for Analyze, or analyse straight away. */
+  AFTER_UPLOAD: 'wait' | 'analyze'
 }
 
 export interface AppSettings {

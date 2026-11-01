@@ -18,13 +18,13 @@ import logging
 import tempfile
 from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.core.config import settings
 from app.models.models import Job, Project, Segment, Speaker, JobStatus
 from app.services.audio_extractor import extract_audio, get_video_duration, video_frame_rate
 from app.services.source_separator import render_bgm_volume, separate_vocals_bgm
-from app.services import line_timing
+from app.services import line_timing, local_asr
 from app.services.asr import VOICES, labels_for_spans, transcribe_audio
 from app.services.translator import translate_batch_with_report
 from app.services.timeline import actor_span, follow_text, lay_out_new, settle_job
@@ -104,10 +104,23 @@ async def run_pipeline(job_id: str) -> None:
                 logger.warning(f"Job {job_id[:8]} is STEMS_READY with DEGRADED (unseparated) stems")
             else:
                 logger.info(f"Job {job_id[:8]} is STEMS_READY — waiting for user to click Analyze")
-
         except Exception as e:
             logger.exception(f"Stage 1 failed for job {job_id[:8]}: {e}")
             await _update_job(db, job, JobStatus.FAILED, 0, str(e))
+            return
+
+        # Settings → After upload: analyse straight away — never on music that couldn't be separated (the user may
+        # want Try again first), and claimed like the Analyze button (a click meanwhile has claimed it already)
+        if settings.AFTER_UPLOAD != "analyze" or degraded:
+            return
+        claimed = await db.execute(
+            update(Job).where(Job.id == job_id, Job.status == JobStatus.STEMS_READY)
+            .values(status=JobStatus.DIARIZING, progress=35, error_msg=""))
+        await db.commit()
+        if claimed.rowcount != 1:
+            return
+    logger.info(f"Job {job_id[:8]} — analysing straight after upload (Settings → After upload)")
+    await run_analysis_pipeline(job_id)
 
 
 async def run_separation_retry(job_id: str, return_status: JobStatus) -> None:
@@ -186,6 +199,20 @@ async def separate_old_stems_again() -> int:
 
 # ── STAGE 2: Transcribe + speaker-label + translate ───────────────────────────
 
+async def transcribe_episode(vocals: str, clip_audio: str | None, references, taken_labels, language: str,
+                             names: list[str]):
+    """The episode's lines and speakers: on this Mac when it can (local_asr.use_mac — then Gemini only translates),
+    else — or when that fails — by Gemini (asr.transcribe_audio). Returns (lines, whether some clips failed)."""
+    from app.services import local_asr
+    if local_asr.use_mac(language):
+        try:
+            return await local_asr.transcribe(vocals, clip_audio or vocals, names, taken_labels), False
+        except Exception as e:   # noqa: BLE001 — out of memory, a model file gone: Gemini transcribes
+            logger.warning(f"Transcribing on this Mac failed, asking Gemini: {e}")
+    return await transcribe_audio(vocals, references=references, taken_labels=taken_labels, language=language,
+                                  clip_audio=clip_audio)
+
+
 async def _load_job_and_project(db: AsyncSession, job_id: str):
     job = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
     if not job:
@@ -223,18 +250,17 @@ async def run_analysis_pipeline(job_id: str, max_speakers: int | None = None) ->
 
             await _update_job(db, job, JobStatus.DIARIZING, 35)
             taken_labels = await project_speaker_labels(db, project.id)
+            language = project.source_lang or "zh"
+            names = local_asr.names_from_notes(project.story_notes)
             with tempfile.TemporaryDirectory(prefix="speaker_refs_") as ref_dir:
-                references = await build_speaker_references(db, project.id, ref_dir, exclude_job_id=job.id)
-                # Release the connection before minutes of Gemini calls — the dev
-                # SQLite engine has exactly one.
+                # Gemini's known voices; on this Mac recognition names the characters afterwards (and if this Mac
+                # fails, Gemini transcribes without them)
+                references = [] if local_asr.use_mac(language) else \
+                    await build_speaker_references(db, project.id, ref_dir, exclude_job_id=job.id)
+                # Release the connection before transcribing — the dev SQLite engine has exactly one.
                 await db.commit()
-                diarized, used_mock = await transcribe_audio(
-                    vocals_path,
-                    references=references,
-                    taken_labels=taken_labels,
-                    language=project.source_lang or "zh",
-                    clip_audio=original_sound_for(job),
-                )
+                diarized, used_mock = await transcribe_episode(
+                    vocals_path, original_sound_for(job), references, taken_labels, language, names)
 
             await _update_job(db, job, JobStatus.TRANSCRIBING, 55)
             has_text = sum(1 for s in diarized if s.source_text)

@@ -10,7 +10,7 @@ import httpx
 import numpy as np
 import pytest
 
-from app.services import local_separation, source_separator
+from app.services import local_separation, model_files, source_separator
 from app.services.characters import models
 
 
@@ -53,7 +53,7 @@ def _serve(monkeypatch, bodies: dict[str, bytes], asked: list | None = None):
             asked.append(name)
         return httpx.Response(200, content=bodies[name])
 
-    monkeypatch.setattr(local_separation.httpx, "AsyncClient",
+    monkeypatch.setattr(model_files.httpx, "AsyncClient",
                         lambda **kwargs: real(transport=httpx.MockTransport(handler), **kwargs))
 
 
