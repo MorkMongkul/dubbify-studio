@@ -1,4 +1,4 @@
-"""Vocals and music separated on this Mac: Spleeter's 2 stems (Deezer, MIT; int8 ONNX converted by k2-fsa), run by
+"""Vocals and music separated on this Mac: Spleeter's 2 stems (Deezer, MIT; ONNX converted by k2-fsa), run by
 sherpa-onnx, the library character recognition already uses.
 
 Measured 2026-11-01 on the owner's M1 with 3 minutes of a real episode: 2.3 s (3 CPU-s), against ~2 minutes through
@@ -6,6 +6,13 @@ the HF Space (SEPARATION_HF_SPACE, which runs the same Spleeter on one CPU threa
 vocals match the Space's (correlation 0.96 once aligned), and they line up with the original sound: the Space's came
 back 46 ms late (its MP3). UVR MDX-Net models were tried too: 28 MB took 35 s, the 63 MB Voc_FT 136 s and heated the
 Mac; the owner found Spleeter acceptable.
+
+0.5.5: 0.5.4 shipped k2-fsa's int8 model, and the team heard the actors in the music: measured on a real episode, its
+music kept 5–10 dB more of 3–11 kHz (speech's consonants) than the Space's. The full-precision model (this one) is
+within ~1 dB of the Space there, at the same speed and memory. The Space also scaled both stems by 2/3 (its
+istft(...) * (2 / 3)), so stems were always 3.5 dB under the episode's own sound; music levels and new voices'
+loudness (matched to the actor's line in the vocals) were set at that level, so LEVEL keeps it. Episodes 0.5.4
+separated (needs_new_stems) are separated again once at start-up (pipeline.separate_old_stems_again).
 
 The model isn't in the app (it must not join models.json: that list is the voice prints' version, and a change makes
 every line be heard again): the packaged app downloads its two files once into the data folder (ensure_model, in the
@@ -18,6 +25,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -34,14 +42,17 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-MODEL_DIR = "sherpa-onnx-spleeter-2stems-int8"
-BASE_URL = ("https://huggingface.co/csukuangfj/sherpa-onnx-spleeter-2stems-int8/resolve/"
-            "f315b4e699f7eab644977c7e69988733d877f6ee")
-FILES = {   # 26,238,864 and 26,238,869 bytes; the same files as sherpa-onnx's source-separation-models release
-    "vocals.int8.onnx": "6e9721864c0c1a6d86eaae92de71637b2daeb3df769c9c536053b46be8dd10aa",
-    "accompaniment.int8.onnx": "53a96a0d1520b45b8f3cc53262e3725defb686fc3a17490932f050721f4583f1",
+MODEL_DIR = "sherpa-onnx-spleeter-2stems"
+OLD_MODEL_DIRS = ("sherpa-onnx-spleeter-2stems-int8",)   # 0.5.4's, removed once this one is ready
+BASE_URL = ("https://huggingface.co/csukuangfj/sherpa-onnx-spleeter-2stems/resolve/"
+            "7001ba316a615cacddb3f9ef3ec416661a277e26")
+FILES = {   # 39,318,336 and 39,318,343 bytes
+    "vocals.onnx": "bdc16ab6bf6117ddd4842c19e80e40e2be188fc555295064d424616b0224ac97",
+    "accompaniment.onnx": "671ace17acd3720674a2bc14de32ac6292453dec20d9eb0ba4255d4ad8e3d8c0",
 }
 RATE = 44100
+LEVEL = 2 / 3          # the Space's stems' level (above)
+STAMP = "separated-on-this-mac.txt"   # next to the stems: the model that made them
 PIECE_SECS = 30.0      # separated at a time: Spleeter peaks at ~0.9 GB for 30 s (60 s: 1.3–1.7 GB; one pass of 4 min: 3.2 GB)
 OVERLAP_SECS = 2.0     # neighbouring pieces cross-fade over this
 
@@ -101,10 +112,27 @@ async def ensure_model() -> bool:
                     finally:
                         part.unlink(missing_ok=True)
             logger.info(f"Separation: Spleeter ready in {folder}")
+            for old in OLD_MODEL_DIRS:
+                shutil.rmtree(folder.parent / old, ignore_errors=True)
             return True
         except Exception as e:   # noqa: BLE001 — offline, a full disk: the HF Space separates meanwhile
             logger.warning(f"Separation: couldn't download Spleeter, the HF Space separates meanwhile: {e}")
             return False
+
+
+def needs_new_stems(job_dir: Path) -> bool:
+    """Stems 0.5.4 made with the int8 model (no STAMP; Python's wave module, so no ffmpeg LIST chunk, which every stem
+    the Space or a fallback left has), or ones a model since replaced made (an older STAMP)."""
+    from app.services.source_separator import UNAVAILABLE_MARKER
+    vocals = Path(job_dir) / "vocals.wav"
+    if not vocals.is_file() or (Path(job_dir) / UNAVAILABLE_MARKER).exists():
+        return False
+    stamp = Path(job_dir) / STAMP
+    if stamp.is_file():
+        return stamp.read_text().strip() != MODEL_DIR
+    with open(vocals, "rb") as f:
+        head = f.read(256)
+    return head[:4] == b"RIFF" and b"LIST" not in head
 
 
 def separate_samples(samples: np.ndarray, rate: int,
@@ -173,7 +201,7 @@ def separate_file(audio_path: str, vocals_target: str, bgm_target: str) -> None:
     folder = model_dir()
     config = sherpa_onnx.OfflineSourceSeparationConfig(model=sherpa_onnx.OfflineSourceSeparationModelConfig(
         spleeter=sherpa_onnx.OfflineSourceSeparationSpleeterModelConfig(
-            vocals=str(folder / "vocals.int8.onnx"), accompaniment=str(folder / "accompaniment.int8.onnx")),
+            vocals=str(folder / "vocals.onnx"), accompaniment=str(folder / "accompaniment.onnx")),
         num_threads=models.THREADS, provider="cpu"))
 
     with _model_lock:
@@ -190,8 +218,8 @@ def separate_file(audio_path: str, vocals_target: str, bgm_target: str) -> None:
         if samples.shape[1] == 0:
             raise RuntimeError("the audio is empty")
         vocals, music = separate_samples(samples, RATE, run)
-        _write(vocals_target, vocals)
-        _write(bgm_target, music)
+        _write(vocals_target, vocals * LEVEL)
+        _write(bgm_target, music * LEVEL)
     logger.info(f"Separated on this Mac in {time.monotonic() - began:.1f} s ({samples.shape[1] / RATE:.0f} s of sound)")
 
 

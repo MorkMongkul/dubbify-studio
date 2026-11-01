@@ -147,6 +147,43 @@ async def run_separation_retry(job_id: str, return_status: JobStatus) -> None:
             await _update_job(db, job, return_status, progress, f"Separating music and voices failed: {e}")
 
 
+async def separate_old_stems_again() -> int:
+    """
+    Start-up, once the separation model is ready: episodes whose stems 0.5.4's
+    int8 model made (local_separation.needs_new_stems: it left the actors in
+    the music) are separated again on this Mac. Only episodes at rest
+    (stems ready, completed or failed); the job's status, lines and voices are
+    untouched, the user's music level is applied to the new stem, and an
+    episode that fails keeps its stems. Returns how many got new ones.
+    """
+    from app.core.database import AsyncSessionLocal
+    from app.core.paths import resolve_media_path
+    from app.services import local_separation
+    from app.services.source_separator import separate_again_here
+
+    at_rest = (JobStatus.STEMS_READY, JobStatus.COMPLETED, JobStatus.FAILED)
+    async with AsyncSessionLocal() as db:
+        jobs = (await db.execute(select(Job).where(Job.status.in_(at_rest)))).scalars().all()
+        todo = [(job.id, Path(settings.UPLOAD_DIR) / job.project_id / job.id, job.video_path, job.duration_secs,
+                 job.bgm_volume_db) for job in jobs]
+    done = 0
+    for job_id, job_dir, video, duration, bgm_volume_db in todo:
+        if not local_separation.needs_new_stems(job_dir):
+            continue
+        try:
+            with tempfile.TemporaryDirectory(prefix="extracting-") as tmp:
+                audio = await extract_audio(resolve_media_path(video), output_dir=tmp)
+                if not await separate_again_here(audio, str(job_dir), duration or 0.0):
+                    continue
+            if bgm_volume_db:
+                await render_bgm_volume(job_dir, bgm_volume_db)
+            done += 1
+            logger.info(f"Separated job {job_id[:8]} again with the full-precision model")
+        except Exception as e:   # noqa: BLE001 — a missing video: the episode keeps its stems
+            logger.warning(f"Couldn't separate job {job_id[:8]} again: {e}")
+    return done
+
+
 # ── STAGE 2: Transcribe + speaker-label + translate ───────────────────────────
 
 async def _load_job_and_project(db: AsyncSession, job_id: str):

@@ -189,3 +189,125 @@ async def test_a_failing_child_raises_and_leaves_no_process(monkeypatch, tmp_pat
         await local_separation.separate(str(tmp_path / "missing.wav"), str(tmp_path / "v.wav"),
                                         str(tmp_path / "m.wav"), timeout=120)
     assert not (tmp_path / "v.wav").exists()
+
+
+# ── 0.5.5: the full-precision model, at the Space's level, and 0.5.4's stems made again ──
+
+def test_stems_are_written_at_two_thirds_of_the_split(monkeypatch, tmp_path):
+    """The Space's Spleeter scaled its stems by 2/3: music levels and new voices' loudness were set by that level."""
+    import sys
+    import types
+    import wave
+
+    class Output:
+        def __init__(self, samples):
+            self.sample_rate = local_separation.RATE
+            self.stems = [types.SimpleNamespace(data=samples * 0.25), types.SimpleNamespace(data=samples * 0.75)]
+
+    class Separator:
+        def __init__(self, config):
+            pass
+
+        def process(self, sample_rate, samples):
+            return Output(samples)
+
+    fake = types.SimpleNamespace(
+        OfflineSourceSeparationConfig=lambda **kw: kw, OfflineSourceSeparationModelConfig=lambda **kw: kw,
+        OfflineSourceSeparationSpleeterModelConfig=lambda **kw: kw, OfflineSourceSeparation=Separator)
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", fake)
+    monkeypatch.setattr(local_separation.settings, "DUBIFY_DATA_DIR", str(tmp_path))
+    sound = np.full((2, local_separation.RATE), 0.6, np.float32)
+    monkeypatch.setattr(local_separation, "_read", lambda path: sound)
+
+    local_separation.separate_file("in.wav", str(tmp_path / "v.wav"), str(tmp_path / "m.wav"))
+
+    def level(path):
+        with wave.open(str(path)) as w:
+            return np.frombuffer(w.readframes(w.getnframes()), "<i2").astype(np.float32).mean() / 32767
+    assert level(tmp_path / "v.wav") == pytest.approx(0.6 * 0.25 * 2 / 3, abs=1e-3)
+    assert level(tmp_path / "m.wav") == pytest.approx(0.6 * 0.75 * 2 / 3, abs=1e-3)
+
+
+def test_the_full_precision_model_is_downloaded():
+    """The int8 model left the actors' consonants (3–11 kHz) in the music, 5–10 dB above the Space's."""
+    assert "int8" not in local_separation.MODEL_DIR
+    assert set(local_separation.FILES) == {"vocals.onnx", "accompaniment.onnx"}
+
+
+def test_the_int8_model_is_removed_once_the_new_one_is_ready(monkeypatch, tmp_path):
+    bodies = {name: name.encode() * 10 for name in local_separation.FILES}
+    monkeypatch.setattr(local_separation.settings, "DUBIFY_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(local_separation, "FILES", {n: hashlib.sha256(b).hexdigest() for n, b in bodies.items()})
+    old = tmp_path / "models" / "sherpa-onnx-spleeter-2stems-int8"
+    old.mkdir(parents=True)
+    (old / "vocals.int8.onnx").write_bytes(b"old")
+    _serve(monkeypatch, bodies)
+    assert asyncio.run(local_separation.ensure_model()) is True
+    assert not old.exists()
+
+
+@pytest.mark.asyncio
+async def test_separating_on_this_mac_notes_the_model(monkeypatch, tmp_path):
+    _local_works(monkeypatch, [])
+    _no_copies(monkeypatch)
+    await source_separator.separate_vocals_bgm(str(_audio(tmp_path)), str(tmp_path))
+    assert (tmp_path / local_separation.STAMP).read_text().strip() == local_separation.MODEL_DIR
+
+
+def _python_wave(path: Path):
+    """A stem as 0.5.4 wrote it: Python's wave module, no ffmpeg LIST chunk."""
+    import wave
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(44100)
+        w.writeframes(b"\0" * 400)
+
+
+def _ffmpeg_wave(path: Path):
+    import subprocess
+    from app.core.binaries import ffmpeg
+    subprocess.run([ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=d=0.1", str(path)], check=True)
+
+
+def test_which_episodes_get_new_stems(tmp_path):
+    def episode(name, maker, stamp=None, marker=False):
+        folder = tmp_path / name
+        folder.mkdir()
+        maker(folder / "vocals.wav")
+        maker(folder / "no_vocals.wav")
+        if stamp:
+            (folder / local_separation.STAMP).write_text(stamp)
+        if marker:
+            (folder / source_separator.UNAVAILABLE_MARKER).write_text("no\n")
+        return folder
+
+    assert local_separation.needs_new_stems(episode("0.5.4", _python_wave))
+    assert local_separation.needs_new_stems(episode("old model", _python_wave, stamp="some-older-model"))
+    assert not local_separation.needs_new_stems(episode("today", _python_wave, stamp=local_separation.MODEL_DIR))
+    assert not local_separation.needs_new_stems(episode("the Space", _ffmpeg_wave))
+    assert not local_separation.needs_new_stems(episode("not separated", _ffmpeg_wave, marker=True))
+    assert not local_separation.needs_new_stems(tmp_path / "missing")
+
+
+@pytest.mark.asyncio
+async def test_new_stems_replace_the_old_ones_only_when_made_here(monkeypatch, tmp_path):
+    _no_copies(monkeypatch)
+    monkeypatch.setattr(source_separator, "_hf_separate_call", lambda path: pytest.fail("the Space was asked"))
+    for name in ("vocals.wav", "no_vocals.wav", "no_vocals_raw.wav"):
+        (tmp_path / name).write_bytes(b"RIFFold")
+
+    async def broken(*args):
+        raise RuntimeError("out of memory")
+    monkeypatch.setattr(local_separation, "model_ready", lambda: True)
+    monkeypatch.setattr(local_separation, "separate", broken)
+    assert await source_separator.separate_again_here(str(_audio(tmp_path)), str(tmp_path), 1.0) is False
+    assert (tmp_path / "vocals.wav").read_bytes() == b"RIFFold"
+    assert not (tmp_path / source_separator.UNAVAILABLE_MARKER).exists()
+
+    _local_works(monkeypatch, [])
+    assert await source_separator.separate_again_here(str(_audio(tmp_path)), str(tmp_path), 1.0) is True
+    assert (tmp_path / "vocals.wav").read_bytes() == b"RIFFvocals"
+    assert (tmp_path / "no_vocals.wav").read_bytes() == b"RIFFmusic"
+    assert not (tmp_path / "no_vocals_raw.wav").exists()   # the music level is rendered from the new stem
+    assert (tmp_path / local_separation.STAMP).read_text().strip() == local_separation.MODEL_DIR

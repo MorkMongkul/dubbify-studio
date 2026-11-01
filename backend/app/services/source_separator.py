@@ -113,15 +113,35 @@ async def _separate_again(audio_path: Path, output_dir: Path, duration_secs: flo
             marker.write_text(reason + "\n")
             return str(vocals_target), str(bgm_target), True
 
-        for name in _STEM_FILES:
-            if (work / name).exists():
-                os.replace(work / name, output_dir / name)
-            else:  # e.g. a playback copy that failed to encode: the editor streams the WAV
-                (output_dir / name).unlink(missing_ok=True)
-    # The music level is re-rendered from this file; it still held the old mix.
-    (output_dir / BGM_UNTOUCHED).unlink(missing_ok=True)
+        _swap_in(work, output_dir)
     marker.unlink(missing_ok=True)
     return str(vocals_target), str(bgm_target), False
+
+
+async def separate_again_here(audio_path: str, output_dir: str, duration_secs: float) -> bool:
+    """New stems on this Mac for an episode that has good ones (0.5.4's int8 model: local_separation.needs_new_stems).
+    Like Try again they're made in a temporary folder and swapped in only when complete, but never by the Space and
+    never marked unavailable: when it fails the episode keeps its stems, and False is returned."""
+    output = Path(output_dir)
+    with tempfile.TemporaryDirectory(prefix="separating-", dir=output) as tmp:
+        work = Path(tmp)
+        if not await _separate_here(Path(audio_path), work, work / "vocals.wav", work / "no_vocals.wav",
+                                    separation_timeout(duration_secs)):
+            return False
+        _swap_in(work, output)
+    return True
+
+
+def _swap_in(work: Path, output_dir: Path) -> None:
+    """New stems (and their copies and stamp) made in `work` replace the episode's."""
+    from app.services.local_separation import STAMP
+    for name in (*_STEM_FILES, STAMP):
+        if (work / name).exists():
+            os.replace(work / name, output_dir / name)
+        else:  # e.g. a playback copy that failed to encode: the editor streams the WAV
+            (output_dir / name).unlink(missing_ok=True)
+    # The music level is re-rendered from this file; it still held the old mix.
+    (output_dir / BGM_UNTOUCHED).unlink(missing_ok=True)
 
 
 # The music & effects stem as separated, before the user's level is applied.
@@ -205,6 +225,7 @@ async def _separate_here(audio_path: Path, output_dir: Path, vocals_target: Path
         vocals_target.unlink(missing_ok=True)
         bgm_target.unlink(missing_ok=True)
         return False
+    (output_dir / local_separation.STAMP).write_text(local_separation.MODEL_DIR + "\n")
     await _create_preview(vocals_target, output_dir / "vocals.preview.wav")
     await _create_preview(bgm_target,    output_dir / "no_vocals.preview.wav")
     await _create_playback_m4a(vocals_target, output_dir / "vocals.m4a")

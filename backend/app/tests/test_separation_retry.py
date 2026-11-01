@@ -197,3 +197,62 @@ async def test_export_waits_for_a_separation_retry(client, db_sessionmaker):
         await db.commit()
         job_id = job.id
     assert (await client.post(f"/api/v1/tts/mix/{job_id}", json={})).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_episodes_0_5_4_separated_get_new_stems_once(db_sessionmaker, monkeypatch, tmp_path):
+    """0.5.5: the int8 model left the actors in the music. Their episodes are separated again on this Mac at start-up,
+    keeping the music level the user chose, the job's status and everything else; a busy episode is left alone."""
+    import wave
+    from app.services import local_separation
+
+    monkeypatch.setattr(settings, "UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setattr("app.core.database.AsyncSessionLocal", db_sessionmaker)
+    video = tmp_path / "ep.mp4"
+    subprocess.run([ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "color=s=160x90:d=1",
+                    "-f", "lavfi", "-i", "sine=f=300:d=1", "-shortest", "-c:v", "mpeg4", "-c:a", "aac",
+                    str(video)], check=True)
+
+    def python_wave(path):
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(2)
+            w.setsampwidth(2)
+            w.setframerate(44100)
+            w.writeframes(b"\1" * 4000)
+
+    async with db_sessionmaker() as db:
+        project = Project(name="Ep")
+        db.add(project)
+        await db.flush()
+        done = Job(project_id=project.id, video_path=str(video), status=JobStatus.COMPLETED, duration_secs=1.0,
+                   bgm_volume_db=-6.0)
+        busy = Job(project_id=project.id, video_path=str(video), status=JobStatus.DIARIZING, duration_secs=1.0)
+        db.add_all([done, busy])
+        await db.commit()
+        ids, project_id = (done.id, busy.id), project.id
+    for job_id in ids:
+        folder = tmp_path / "uploads" / project_id / job_id
+        folder.mkdir(parents=True)
+        python_wave(folder / "vocals.wav")
+        python_wave(folder / "no_vocals.wav")
+
+    made = []
+
+    async def separate(audio_path, vocals_target, bgm_target, timeout):
+        made.append(audio_path)
+        _tone(Path(vocals_target))
+        _tone(Path(bgm_target))
+    monkeypatch.setattr(local_separation, "model_ready", lambda: True)
+    monkeypatch.setattr(local_separation, "separate", separate)
+
+    assert await pipeline.separate_old_stems_again() == 1
+    done_dir, busy_dir = (tmp_path / "uploads" / project_id / i for i in ids)
+    assert not local_separation.needs_new_stems(done_dir)
+    assert local_separation.needs_new_stems(busy_dir)              # analysing: next start-up
+    assert (done_dir / "no_vocals_raw.wav").exists()               # the -6 dB music level, on the new stem
+    assert not list(done_dir.glob("source_audio*"))                # the extracted sound isn't kept
+    async with db_sessionmaker() as db:
+        job = (await db.execute(select(Job).where(Job.id == ids[0]))).scalar_one()
+        assert job.status == JobStatus.COMPLETED
+    assert await pipeline.separate_old_stems_again() == 0          # once
+    assert len(made) == 1

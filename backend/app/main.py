@@ -37,6 +37,15 @@ logger = logging.getLogger(__name__)
 _background: set[asyncio.Task] = set()
 
 
+async def _separation_ready() -> None:
+    if await local_separation.ensure_model():
+        try:
+            from app.services.pipeline import separate_old_stems_again
+            await separate_old_stems_again()
+        except Exception:
+            logger.exception("Couldn't separate older episodes again")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.APP_NAME} v{settings.version}")
@@ -86,8 +95,9 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(line_timing.ensure_model())
     _background.add(task)
     task.add_done_callback(_background.discard)
-    # Spleeter, which separates vocals and music on this Mac: downloaded once the same way (until then, the HF Space)
-    task = asyncio.create_task(local_separation.ensure_model())
+    # Spleeter, which separates vocals and music on this Mac: downloaded once the same way (until then, the HF Space);
+    # then the episodes 0.5.4's int8 model separated get new stems, once
+    task = asyncio.create_task(_separation_ready())
     _background.add(task)
     task.add_done_callback(_background.discard)
     yield
