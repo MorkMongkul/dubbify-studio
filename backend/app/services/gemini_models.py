@@ -44,6 +44,8 @@ class _Purpose:
     aliases: tuple[str, ...]     # Google's maintained aliases Settings offers first
 
 
+OFF = "off"   # a job's model setting that means "don't use Gemini for it" (only the voice fallback offers it)
+
 _VERSION = r"gemini-\d+(?:\.\d+)?"
 _TTS = re.compile(rf"^{_VERSION}-flash(?:-lite)?(?:-preview)?-tts(?:-preview)?$")
 PURPOSES: dict[str, _Purpose] = {

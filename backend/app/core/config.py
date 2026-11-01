@@ -126,9 +126,12 @@ class Settings(BaseSettings):
     SEPARATION_HF_SPACE: str = "csukuangfj/music-source-separation"
 
     # Gemini TTS speaking rate: 1.0 = normal, 1.25 = 25% faster, max 4.0
-    # Gemini voice model — only used when VoxCPM2 is unavailable. Retired models are
-    # replaced automatically by the newest listed speech model (app/services/gemini_models.py).
-    GEMINI_TTS_MODEL: str = "gemini-2.5-flash-preview-tts"
+    # Gemini voice model — only used when VoxCPM2 is unavailable, and only when one is chosen in Settings:
+    # "off" (gemini_models.OFF, the default since 0.5.6) means a voice VoxCPM2 can't make fails instead. Gemini's
+    # voices don't sound like the characters' VoxCPM2 voices and each one is paid for (the owner's credits went
+    # to them whenever the Colab link expired). A chosen model that Google retires is replaced automatically by
+    # the newest listed speech model (app/services/gemini_models.py).
+    GEMINI_TTS_MODEL: str = "off"
     GEMINI_TTS_SPEED: float = 1.25
 
     # How many segments to synthesize concurrently during a batch/job TTS

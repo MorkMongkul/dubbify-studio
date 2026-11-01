@@ -165,7 +165,8 @@ class VoxCPM2Client:
           2. Free HF Space (VOXCPM2_HF_SPACE_FALLBACK) — only tried here if step 1
              was a *configured* Gradio app that failed (e.g. Colab URL is stale/
              dead); skipped if step 1 already *was* the HF Space
-          3. Gemini TTS (if GEMINI_API_KEY is set)
+          3. Gemini TTS (if GEMINI_API_KEY is set and a model is chosen: GEMINI_TTS_MODEL "off",
+             the default, makes the voice fail instead)
           4. Mock silence
 
         Voice modes (decided by what's passed):
@@ -218,6 +219,10 @@ class VoxCPM2Client:
                 return fallback
             logger.warning(f"HF Space fallback also failed: {fallback['error']}")
 
+        if gemini_models.current_model("tts") == gemini_models.OFF:
+            return {"success": False, "audio_path": "", "duration_secs": 0, "backend": "none",
+                    "error": f"VoxCPM2 couldn't make this voice ({result['error']}), and Gemini voices are off "
+                             "(Settings → AI models → Voice fallback)."}
         logger.warning("Falling back to Gemini TTS")
         return await self._gemini_synthesize(text, output_path, voice_design=voice_design or description)
 

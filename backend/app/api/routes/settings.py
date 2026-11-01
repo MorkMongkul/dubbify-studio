@@ -230,5 +230,7 @@ async def list_models() -> ModelsView:
 async def test_model(payload: ModelTest) -> ModelTestResult:
     """Check a model with a tiny real request — a listed model can still refuse to work."""
     _require_key()
+    if payload.model == gemini_models.OFF:
+        return ModelTestResult(ok=True, message="Off: Movelo won't ask Gemini for this.")
     ok, message = await gemini_models.probe(MODEL_SETTINGS[payload.setting][0], payload.model)
     return ModelTestResult(ok=ok, message=message)

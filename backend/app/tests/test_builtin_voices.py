@@ -193,6 +193,10 @@ async def test_the_backup_voice_follows_the_description_when_cloning(monkeypatch
     async def down(*args, **kwargs):
         return {"success": False, "audio_path": "", "duration_secs": 0, "error": "down", "backend": "voxcpm_hf_space"}
 
+    from app.core.config import settings
+    from app.services import gemini_models
+    monkeypatch.setattr(settings, "GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")   # a voice fallback chosen
+    gemini_models.reset()
     monkeypatch.setattr(tts_client, "backend", "hf_space")
     monkeypatch.setattr(tts_client, "_hf_space_synthesize", down)
     monkeypatch.setattr(tts_client, "_gemini_synthesize", gemini)

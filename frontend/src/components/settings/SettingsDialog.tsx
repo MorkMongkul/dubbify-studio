@@ -137,6 +137,9 @@ function SecretRow({
   )
 }
 
+/** "off" (the voice fallback's default since 0.5.6) means the job never asks Gemini. */
+const modelLabel = (model: string) => (model === 'off' ? 'Off — never use Gemini voices' : model)
+
 /**
  * One row per AI job, filled with the models the saved key can use. Picking a
  * model runs a tiny real request (a listed model can still refuse to work);
@@ -204,8 +207,8 @@ function ModelRows({
               value={selected}
               onChange={(e) => pick(choice, e.target.value)}
             >
-              <option value="">Automatic — {choice.automatic}</option>
-              {options.map((m) => <option key={m} value={m}>{m}</option>)}
+              <option value="">Automatic — {modelLabel(choice.automatic)}</option>
+              {options.map((m) => <option key={m} value={m}>{modelLabel(m)}</option>)}
             </select>
             {result === 'testing' && <Note>Checking {selected}…</Note>}
             {result && result !== 'testing' && <Note tone={result.ok ? 'ok' : 'warn'}>{result.message}</Note>}

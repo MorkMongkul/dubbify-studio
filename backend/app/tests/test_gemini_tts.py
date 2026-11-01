@@ -33,6 +33,8 @@ def _audio_reply(data: bytes, mime: str) -> httpx.Response:
 @pytest.fixture
 def gemini_tts(monkeypatch):
     monkeypatch.setattr(tts.settings, "GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(tts.settings, "GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")   # chosen in Settings
+    gemini_models.reset()
     calls = []
 
     def answer(reply):
@@ -68,3 +70,44 @@ async def test_raw_pcm_is_still_wrapped_into_a_wav(gemini_tts, tmp_path):
     result = await tts.VoxCPM2Client()._gemini_synthesize("សួស្តី", str(out))
     assert result["success"]
     assert _duration(out) == pytest.approx(1.0, abs=0.01)
+
+
+# ── 0.5.6: off unless a model is chosen in Settings ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_gemini_voices_are_off_by_default(monkeypatch, tmp_path):
+    """They don't sound like the characters' VoxCPM2 voices, and each one is paid for: when VoxCPM2 can't make a voice,
+    the voice fails and says why, instead of a Gemini voice taking its place."""
+    monkeypatch.setattr(tts.settings, "GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(tts.settings, "GEMINI_TTS_MODEL", type(tts.settings).model_fields["GEMINI_TTS_MODEL"].default)
+    gemini_models.reset()
+
+    async def asked(*args, **kwargs):
+        pytest.fail("Gemini was asked for a voice")
+    monkeypatch.setattr(gemini_models, "generate_content", asked)
+
+    async def down(*args, **kwargs):
+        return {"success": False, "audio_path": "", "duration_secs": 0, "error": "Space is sleeping",
+                "backend": "voxcpm_hf_space"}
+    client = tts.VoxCPM2Client()
+    monkeypatch.setattr(client, "_gradio_synthesize", down)
+    monkeypatch.setattr(client, "_hf_space_synthesize", down)
+    result = await client.synthesize("សួស្តី", output_path=str(tmp_path / "line.wav"))
+    assert not result["success"]
+    assert "Gemini voices are off" in result["error"]
+    assert not (tmp_path / "line.wav").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_chosen_gemini_voice_model_still_stands_in(gemini_tts, monkeypatch, tmp_path):
+    answer, calls = gemini_tts
+    answer(_audio_reply(_wav_bytes(1.0), "audio/wav"))
+
+    async def down(*args, **kwargs):
+        return {"success": False, "audio_path": "", "duration_secs": 0, "error": "Space is sleeping",
+                "backend": "voxcpm_hf_space"}
+    client = tts.VoxCPM2Client()
+    monkeypatch.setattr(client, "_gradio_synthesize", down)
+    monkeypatch.setattr(client, "_hf_space_synthesize", down)
+    result = await client.synthesize("សួស្តី", output_path=str(tmp_path / "line.wav"))
+    assert result["success"] and calls == ["tts"]
