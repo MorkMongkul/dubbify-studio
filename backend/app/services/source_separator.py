@@ -1,9 +1,10 @@
 """
 app/services/source_separator.py
 
-Splits audio into Vocals and Background (BGM + SFX) stems via a HuggingFace
-Space (see SEPARATION_HF_SPACE) — the compute happens in the cloud, nothing
-runs locally.
+Splits audio into Vocals and Background (BGM + SFX) stems: on this Mac with
+Spleeter once its model is downloaded (app.services.local_separation, a few
+seconds), else — or when that fails — via a HuggingFace Space
+(SEPARATION_HF_SPACE, the same Spleeter in the cloud, ~2 minutes).
 
 Produces in the job dir:
   vocals.wav      — isolated human voice (used for diarization / ASR)
@@ -11,7 +12,7 @@ Produces in the job dir:
   *.preview.wav   — 8kHz mono copies for fast waveform rendering
   *.m4a           — AAC copies for in-editor playback
 
-Falls back to no-op (returns the original audio path) if the Space fails.
+Falls back to no-op (returns the original audio path) if both fail.
 """
 import asyncio
 import logging
@@ -78,15 +79,13 @@ async def separate_vocals_bgm(
         logger.info("Stem files already present — skipping separation")
         return str(vocals_target), str(bgm_target), marker.exists()
 
-    result, reason = await _separate_via_hf(
-        audio_path_obj, output_dir_obj, vocals_target, bgm_target,
-        timeout=separation_timeout(duration_secs),
-    )
+    result, reason = await _separate(
+        audio_path_obj, output_dir_obj, vocals_target, bgm_target, duration_secs)
     if result:
         marker.unlink(missing_ok=True)
         return result[0], result[1], False
 
-    logger.warning("HF separation failed — using original mixed audio as both stems")
+    logger.warning("Separation failed — using original mixed audio as both stems")
     vocals_path, bgm_path = await _write_fallback_stems(
         audio_path_obj, output_dir_obj, vocals_target, bgm_target
     )
@@ -106,10 +105,8 @@ async def _separate_again(audio_path: Path, output_dir: Path, duration_secs: flo
 
     with tempfile.TemporaryDirectory(prefix="separating-", dir=output_dir) as tmp:
         work = Path(tmp)
-        result, reason = await _separate_via_hf(
-            audio_path, work, work / "vocals.wav", work / "no_vocals.wav",
-            timeout=separation_timeout(duration_secs),
-        )
+        result, reason = await _separate(
+            audio_path, work, work / "vocals.wav", work / "no_vocals.wav", duration_secs)
         if not result:
             if not (vocals_target.exists() and bgm_target.exists()):
                 await _write_fallback_stems(audio_path, output_dir, vocals_target, bgm_target)
@@ -181,6 +178,38 @@ async def _write_fallback_stems(
     await _create_playback_m4a(vocals_target, output_dir / "vocals.m4a")
     await _create_playback_m4a(bgm_target,    output_dir / "no_vocals.m4a")
     return str(vocals_target), str(bgm_target)
+
+
+async def _separate(
+    audio_path: Path, output_dir: Path, vocals_target: Path, bgm_target: Path, duration_secs: float,
+) -> Tuple[Tuple[str, str] | None, str]:
+    """On this Mac when the model is there, else (or when that fails) via the HF Space.
+    Returns ((vocals, bgm), "") or (None, why it failed)."""
+    if await _separate_here(audio_path, output_dir, vocals_target, bgm_target, separation_timeout(duration_secs)):
+        return (str(vocals_target), str(bgm_target)), ""
+    return await _separate_via_hf(
+        audio_path, output_dir, vocals_target, bgm_target, timeout=separation_timeout(duration_secs))
+
+
+async def _separate_here(audio_path: Path, output_dir: Path, vocals_target: Path, bgm_target: Path,
+                         timeout: float) -> bool:
+    """Spleeter on this Mac (local_separation). False, with nothing left behind, when the model isn't downloaded
+    yet or it fails — the caller then asks the Space."""
+    from app.services import local_separation
+    if not local_separation.model_ready():
+        return False
+    try:
+        await local_separation.separate(str(audio_path), str(vocals_target), str(bgm_target), timeout)
+    except Exception as e:   # noqa: BLE001 — out of memory, an unreadable file: the Space separates
+        logger.warning(f"Separating on this Mac failed, asking the HF Space: {e}", exc_info=True)
+        vocals_target.unlink(missing_ok=True)
+        bgm_target.unlink(missing_ok=True)
+        return False
+    await _create_preview(vocals_target, output_dir / "vocals.preview.wav")
+    await _create_preview(bgm_target,    output_dir / "no_vocals.preview.wav")
+    await _create_playback_m4a(vocals_target, output_dir / "vocals.m4a")
+    await _create_playback_m4a(bgm_target,    output_dir / "no_vocals.m4a")
+    return True
 
 
 # ── HuggingFace Space separation (gradio_client) ──────────────

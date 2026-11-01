@@ -102,6 +102,10 @@ def self_test() -> int:
 def main() -> None:
     if "--self-test" in sys.argv:
         sys.exit(self_test())
+    if "--separate" in sys.argv:   # a child the backend starts to separate vocals and music (local_separation)
+        from app.services import local_separation
+        at = sys.argv.index("--separate")
+        sys.exit(local_separation.main(sys.argv[at + 1:at + 4]))
 
     import platform
 

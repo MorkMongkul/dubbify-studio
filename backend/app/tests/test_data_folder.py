@@ -112,6 +112,7 @@ async def test_startup_follows_a_moved_folder_and_survives_a_failure(monkeypatch
     monkeypatch.setattr(main, "recover_orphaned_jobs", nothing)
     monkeypatch.setattr(main, "seed_builtin_voices", nothing)
     monkeypatch.setattr(main.line_timing, "ensure_model", nothing)   # never downloads the speech model
+    monkeypatch.setattr(main.local_separation, "ensure_model", nothing)   # nor Spleeter
     monkeypatch.setattr(main.settings, "DUBIFY_DATA_DIR", NEW)
     monkeypatch.setattr(main.settings, "DUBIFY_PREVIOUS_DATA_DIR", OLD)
 
