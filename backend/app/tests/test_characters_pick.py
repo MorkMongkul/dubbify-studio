@@ -1,8 +1,9 @@
 """
 Picking a character (0.5.0): POST /segments/{id}/character confirms the line for
-that speaker and, when nobody has edited its Khmer, translates it again for the
-new speaker (one Gemini call, the same cast / Story notes / memory as the
-translation). A pick never fails because of translation.
+that speaker. Until 0.5.6 a pick also translated an unedited line again for the
+new speaker; that one Gemini call per pick sent the whole translation prompt
+(~5,400 tokens for one line: 51 picks against 43 whole-episode translations on
+the owner's data), so the owner had it removed: the Khmer stays as it is.
 
 Translation is replaced at the service boundary (pipeline.translate_batch_with_report).
 """
@@ -82,20 +83,17 @@ async def test_a_pick_confirms_the_line_and_clears_its_check(client, db_sessionm
     assert row.speaker_id == sp["b"] and row.who_confirmed is True and row.who_check is None
 
 
-async def test_a_pick_retranslates_an_unedited_line(client, db_sessionmaker, monkeypatch):
+
+async def test_a_pick_never_asks_gemini_and_keeps_the_khmer(client, db_sessionmaker, monkeypatch):
     seg_id, sp, _ = await _setup(db_sessionmaker)
     seen = {}
     _translator(monkeypatch, text="បាទ", seen=seen)
     body = (await client.post(f"/api/v1/segments/{seg_id}/character", json={"speaker_id": sp["b"]})).json()
-    assert body["retranslated"] is True
-    assert body["previous_khmer"] == "ចាស"
-    assert body["segment"]["khmer_text"] == "បាទ"
+    assert body["retranslated"] is False and not seen
+    assert body["segment"]["khmer_text"] == "ចាស"
     row = await _seg(db_sessionmaker, seg_id)
-    assert row.khmer_text == row.khmer_machine == "បាទ"
-    # the new speaker is who is speaking; the earlier line gives context
-    assert seen["source"] == ["好的"] and seen["labels"] == ["SPEAKER_01"]
-    assert "SPEAKER_01: Mei" in seen["cast"]
-    assert seen["earlier"] == [{"speaker_label": "SPEAKER_00", "source_text": "你好", "translation": "សួស្តី"}]
+    assert row.speaker_id == sp["b"] and row.who_confirmed is True and row.who_check is None
+    assert row.khmer_text == row.khmer_machine == "ចាស"
 
 
 async def test_picking_the_current_speaker_only_confirms_the_line(client, db_sessionmaker, monkeypatch):
@@ -111,39 +109,7 @@ async def test_picking_the_current_speaker_only_confirms_the_line(client, db_ses
     assert row.khmer_text == row.khmer_machine == "ចាស"
 
 
-async def test_a_pick_never_rewrites_an_edited_line(client, db_sessionmaker, monkeypatch):
-    seg_id, sp, _ = await _setup(db_sessionmaker, khmer="my edit", machine="ចាស")
-    seen = {}
-    _translator(monkeypatch, seen=seen)
-    body = (await client.post(f"/api/v1/segments/{seg_id}/character", json={"speaker_id": sp["b"]})).json()
-    assert body["retranslated"] is False and body["previous_khmer"] == "my edit"
-    assert not seen   # Gemini was not even asked
-    assert (await _seg(db_sessionmaker, seg_id)).khmer_text == "my edit"
 
-
-async def test_a_line_from_before_0_5_is_treated_as_edited(client, db_sessionmaker, monkeypatch):
-    seg_id, sp, _ = await _setup(db_sessionmaker, khmer="ចាស", machine=None)
-    seen = {}
-    _translator(monkeypatch, seen=seen)
-    body = (await client.post(f"/api/v1/segments/{seg_id}/character", json={"speaker_id": sp["b"]})).json()
-    assert body["retranslated"] is False and not seen
-    assert (await _seg(db_sessionmaker, seg_id)).khmer_text == "ចាស"
-
-
-async def test_a_khmer_edit_made_during_retranslation_wins(client, file_db, monkeypatch):
-    seg_id, sp, _ = await _setup(file_db)
-    gate, entered = asyncio.Event(), asyncio.Event()
-    _translator(monkeypatch, text="បាទ", gate=gate, entered=entered)
-    pick = asyncio.create_task(client.post(f"/api/v1/segments/{seg_id}/character", json={"speaker_id": sp["b"]}))
-    await asyncio.wait_for(entered.wait(), 5)
-    edit = await client.patch(f"/api/v1/segments/{seg_id}", json={"khmer_text": "typed by hand"})
-    assert edit.status_code == 200
-    gate.set()
-    body = (await asyncio.wait_for(pick, 5)).json()
-    assert body["retranslated"] is False
-    row = await _seg(file_db, seg_id)
-    assert row.khmer_text == "typed by hand"
-    assert row.speaker_id == sp["b"] and row.who_confirmed is True   # the pick itself stood
 
 
 async def test_patch_restores_who_check_for_undo(client, db_sessionmaker):
@@ -172,33 +138,7 @@ async def test_changing_a_lines_voice_is_casting_only(client, db_sessionmaker):
     assert not row.who_confirmed and json.loads(row.who_check) == []
 
 
-async def test_a_pick_saves_even_when_translation_fails(client, db_sessionmaker, monkeypatch):
-    seg_id, sp, _ = await _setup(db_sessionmaker)
-    _translator(monkeypatch, error=RuntimeError("boom"))
-    r = await client.post(f"/api/v1/segments/{seg_id}/character", json={"speaker_id": sp["b"]})
-    assert r.status_code == 200
-    assert r.json()["retranslated"] is False
-    row = await _seg(db_sessionmaker, seg_id)
-    assert row.speaker_id == sp["b"] and row.who_confirmed is True and row.khmer_text == "ចាស"
 
-
-async def test_a_pick_ignores_a_google_fallback_line(client, db_sessionmaker, monkeypatch):
-    seg_id, sp, _ = await _setup(db_sessionmaker)
-    _translator(monkeypatch, text="google", report=TranslationReport(fallback=1))
-    body = (await client.post(f"/api/v1/segments/{seg_id}/character", json={"speaker_id": sp["b"]})).json()
-    assert body["retranslated"] is False and body["segment"]["khmer_text"] == "ចាស"
-    _translator(monkeypatch, text="", report=TranslationReport(failed=1))
-    body = (await client.post(f"/api/v1/segments/{seg_id}/character", json={"speaker_id": sp["a"]})).json()
-    assert body["retranslated"] is False and body["segment"]["khmer_text"] == "ចាស"
-
-
-async def test_a_pick_without_gemini_keeps_the_khmer(client, db_sessionmaker, monkeypatch):
-    seg_id, sp, _ = await _setup(db_sessionmaker)
-    monkeypatch.setattr(pipeline.settings, "GEMINI_API_KEY", "")
-    seen = {}
-    _translator(monkeypatch, seen=seen)
-    body = (await client.post(f"/api/v1/segments/{seg_id}/character", json={"speaker_id": sp["b"]})).json()
-    assert body["retranslated"] is False and not seen
 
 
 async def test_a_pick_rejects_unknown_things(client, db_sessionmaker):
@@ -215,21 +155,3 @@ async def test_a_pick_rejects_unknown_things(client, db_sessionmaker):
         stranger_id = stranger.id
     assert (await client.post(f"/api/v1/segments/{seg_id}/character",
                               json={"speaker_id": stranger_id})).status_code == 400
-
-
-async def test_undo_restores_khmer_machine(client, db_sessionmaker, monkeypatch):
-    seg_id, sp, _ = await _setup(db_sessionmaker)
-    _translator(monkeypatch, text="បាទ")
-    body = (await client.post(f"/api/v1/segments/{seg_id}/character", json={"speaker_id": sp["b"]})).json()
-    assert body["retranslated"] is True
-    r = await client.patch(f"/api/v1/segments/{seg_id}", json={
-        "speaker_id": sp["a"], "who_check": [], "who_confirmed": False,
-        "khmer_text": body["previous_khmer"], "khmer_machine": body["previous_khmer"]})
-    assert r.status_code == 200
-    row = await _seg(db_sessionmaker, seg_id)
-    assert row.khmer_text == row.khmer_machine == "ចាស"
-    assert row.speaker_id == sp["a"] and not row.who_confirmed
-    # still counts as unedited: a new pick translates it again
-    _translator(monkeypatch, text="ចាស៎")
-    again = (await client.post(f"/api/v1/segments/{seg_id}/character", json={"speaker_id": sp["b"]})).json()
-    assert again["retranslated"] is True and again["segment"]["khmer_text"] == "ចាស៎"

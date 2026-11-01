@@ -433,3 +433,26 @@ async def test_an_approved_edit_on_a_voiceless_line_sizes_it_by_its_text(client,
     assert (await client.post(f"/api/v1/chat/pending-edits/{edit_id}/approve")).status_code == 200
     seg = await _get_segment(db_sessionmaker, seg_id)
     assert (seg["start_time"], seg["end_time"]) == (0.0, pytest.approx(1.95))
+
+
+@pytest.mark.asyncio
+async def test_the_assistant_uses_the_cheapest_flash_lite_without_thinking(client, db_sessionmaker, monkeypatch):
+    """0.5.6: chat and suggested edits aren't maths or code; the owner chose the cheapest model and no thinking."""
+    from app.services import gemini_models
+    project_id, _ = await _make_project_with_segment(db_sessionmaker)
+    monkeypatch.setattr(chat_agent.settings, "GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(chat_agent.settings, "GEMINI_CHAT_MODEL",
+                        type(chat_agent.settings).model_fields["GEMINI_CHAT_MODEL"].default)
+    gemini_models.reset()
+    asked: list = []
+
+    async def fake_generate(purpose, payload, *, timeout):
+        asked.append((purpose, gemini_models.current_model(purpose), payload["generationConfig"]))
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "OK"}]}}]})
+
+    monkeypatch.setattr(chat_agent.gemini_models, "generate_content", fake_generate)
+    await client.post(f"/api/v1/chat/{project_id}/messages", json={"text": "hello"})
+    purpose, model, config = asked[0]
+    assert purpose == "chat" and model == "gemini-3.1-flash-lite"
+    assert config["thinkingConfig"] == {"thinkingLevel": "minimal"}
+    assert gemini_models.PURPOSES["chat"].fallbacks[0] == "gemini-flash-lite-latest"   # never a pricier Flash first

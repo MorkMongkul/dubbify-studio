@@ -98,7 +98,10 @@ class Settings(BaseSettings):
     # gemini-2.5-flash returns a hard 404 for new API keys as of this build
     # ("no longer available to new users" — confirmed live against the real
     # API, not just docs) — Google's own error pointed at gemini-3.6-flash.
-    GEMINI_CHAT_MODEL: str = "gemini-3.6-flash"
+    # 0.5.6: the cheapest Flash-Lite ($0.25 / $1.50 per 1M tokens against 3.6 Flash's $1.50 / $7.50), asked to think
+    # as little as it can (chat_agent): the Assistant answers questions and suggests line edits — no maths or code
+    # (the owner's choice). Story notes learn with translation's model instead (story_learning.PURPOSE).
+    GEMINI_CHAT_MODEL: str = "gemini-3.1-flash-lite"
     # ── ASR (speech-to-text) ────────────────────────────────────
     # Deliberately separate from GEMINI_MODEL, so transcription (audio) and
     # translation (text) can be tuned independently.

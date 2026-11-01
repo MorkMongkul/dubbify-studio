@@ -33,7 +33,7 @@ EDITABLE = (
 # Settings → AI models: which Gemini job each model setting is for. An empty
 # value means "Automatic" — the built-in choice (see gemini_models).
 MODEL_SETTINGS = {
-    "GEMINI_MODEL": ("translation", "Translation"),
+    "GEMINI_MODEL": ("translation", "Translation and Story notes"),
     "GEMINI_ASR_MODEL": ("asr", "Transcription and speakers"),
     "GEMINI_CHAT_MODEL": ("chat", "Assistant"),
     "GEMINI_TTS_MODEL": ("tts", "Voice fallback (when VoxCPM is unavailable)"),
