@@ -23,6 +23,7 @@
 # Usage:
 #   ./build_sidecar.sh                                              # Apple Silicon
 #   VENV=venv_clean_x86_64 ./build_sidecar.sh x86_64-apple-darwin   # Intel
+#   ./build_sidecar.sh x86_64-unknown-linux-gnu                     # Linux (see scripts/release-linux.sh)
 # SKIP_FRONTEND_BUILD=1 skips rebuilding frontend/dist (the caller just did).
 #
 # No secrets go into the build: API keys are entered in the app's Settings
@@ -33,13 +34,15 @@ cd "$(dirname "$0")"
 TARGET_TRIPLE="${1:-aarch64-apple-darwin}"
 VENV="${VENV:-venv_clean}"
 OUT_DIR="../frontend/src-tauri/backend"
-FRIBIDI="$(cd .. && pwd)/vendor/fribidi/$TARGET_TRIPLE/libfribidi.dylib"
 
 case "$TARGET_TRIPLE" in
-  aarch64-apple-darwin) WANT_ARCH=arm64 ;;
-  x86_64-apple-darwin)  WANT_ARCH=x86_64 ;;
+  aarch64-apple-darwin) WANT_ARCH=arm64;  FRIBIDI_FILE=libfribidi.dylib ;;
+  x86_64-apple-darwin)  WANT_ARCH=x86_64; FRIBIDI_FILE=libfribidi.dylib ;;
+  # Linux: ffmpeg is the system's (the .deb/.rpm depend on it), only FriBiDi is bundled.
+  x86_64-unknown-linux-gnu) WANT_ARCH=x86_64; FRIBIDI_FILE=libfribidi.so.0 ;;
   *) echo "Unsupported target: $TARGET_TRIPLE" >&2; exit 1 ;;
 esac
+FRIBIDI="$(cd .. && pwd)/vendor/fribidi/$TARGET_TRIPLE/$FRIBIDI_FILE"
 PY_ARCH="$("$VENV/bin/python" -c 'import platform; print(platform.machine())')"
 if [ "$PY_ARCH" != "$WANT_ARCH" ]; then
   echo "error: $VENV runs $PY_ARCH Python, but $TARGET_TRIPLE needs $WANT_ARCH." >&2

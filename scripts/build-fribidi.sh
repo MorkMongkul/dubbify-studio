@@ -23,6 +23,7 @@ MIN_MACOS="11.0"
 
 TARGET="${1:-aarch64-apple-darwin}"
 case "$TARGET" in
+  x86_64-unknown-linux-gnu) ARCH=x86_64 ;;
   aarch64-apple-darwin) ARCH=arm64 ;;
   x86_64-apple-darwin)  ARCH=x86_64 ;;
   *) echo "Unsupported target: $TARGET" >&2; exit 1 ;;
@@ -33,7 +34,8 @@ OUT="$ROOT/vendor/fribidi/$TARGET"
 WORK="${FRIBIDI_WORK_DIR:-${TMPDIR:-/tmp}/movelo-fribidi}"
 SRC="$WORK/fribidi-$FRIBIDI_VERSION-$TARGET"
 
-if [ -f "$OUT/libfribidi.dylib" ] && grep -q "^version: $FRIBIDI_VERSION$" "$OUT/BUILD.txt" 2>/dev/null; then
+LIB=libfribidi.dylib; [ "$TARGET" = x86_64-unknown-linux-gnu ] && LIB=libfribidi.so.0
+if [ -f "$OUT/$LIB" ] && grep -q "^version: $FRIBIDI_VERSION$" "$OUT/BUILD.txt" 2>/dev/null; then
   echo "FriBiDi $FRIBIDI_VERSION for $TARGET is already built in $OUT"
   exit 0
 fi
@@ -45,11 +47,36 @@ if [ ! -f "$TARBALL" ]; then
     "https://github.com/fribidi/fribidi/releases/download/v$FRIBIDI_VERSION/fribidi-$FRIBIDI_VERSION.tar.xz"
   mv "$TARBALL.part" "$TARBALL"
 fi
-echo "$FRIBIDI_SHA256  $TARBALL" | shasum -a 256 -c -
+echo "$FRIBIDI_SHA256  $TARBALL" | { command -v sha256sum >/dev/null && sha256sum -c - || shasum -a 256 -c -; }
 
 rm -rf "$SRC" && mkdir -p "$SRC"
 tar -xf "$TARBALL" -C "$SRC" --strip-components 1
 cd "$SRC"
+
+if [ "$TARGET" = x86_64-unknown-linux-gnu ]; then
+  # Linux: built on the machine itself (a build runner with the oldest glibc you
+  # want to support). Pillow finds libfribidi.so.0 next to the backend's libraries.
+  ./configure --prefix="$SRC/_prefix" --enable-shared --disable-static --disable-dependency-tracking
+  make -j"$(nproc)" -C lib
+  make -C lib install
+  mkdir -p "$OUT"
+  cp -L "$SRC/_prefix/lib/libfribidi.so.0" "$OUT/libfribidi.so.0"
+  # Portable means: only glibc.
+  if ldd "$OUT/libfribidi.so.0" | grep -vE 'linux-vdso|libc\.so|ld-linux'; then
+    echo "error: libfribidi links a library outside glibc (above)" >&2
+    exit 1
+  fi
+  cp COPYING "$OUT/LICENSE.txt"
+  {
+    echo "FriBiDi for Movelo Studio ($TARGET)"
+    echo "version: $FRIBIDI_VERSION"
+    echo "license: GNU LGPL 2.1 or later (see LICENSE.txt)"
+    echo "source: https://github.com/fribidi/fribidi/releases/download/v$FRIBIDI_VERSION/fribidi-$FRIBIDI_VERSION.tar.xz (sha256 $FRIBIDI_SHA256)"
+    echo "built with: scripts/build-fribidi.sh"
+  } > "$OUT/BUILD.txt"
+  echo "Built FriBiDi $FRIBIDI_VERSION for $TARGET → $OUT"
+  exit 0
+fi
 
 export CC="clang -arch $ARCH"
 export CFLAGS="-O2 -mmacosx-version-min=$MIN_MACOS"
