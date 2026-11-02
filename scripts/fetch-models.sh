@@ -18,7 +18,7 @@ DIR="${MODELS_DIR:-$ROOT/backend/app/assets/models}"
 MANIFEST="$ROOT/backend/app/assets/models/models.json"
 mkdir -p "$DIR"
 
-sha256_of() { shasum -a 256 "$1" | cut -d' ' -f1; }
+sha256_of() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
 
 python3 - "$MANIFEST" <<'PY' | while IFS=$'\t' read -r name file sha url; do
 import json, sys

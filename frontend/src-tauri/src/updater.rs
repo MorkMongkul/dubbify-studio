@@ -36,6 +36,30 @@ enum Failure {
 }
 
 pub fn check(app: &AppHandle, trigger: Trigger) {
+    // Linux has no update feed: the .deb updates with the package manager and
+    // the AppImage by downloading the new one.
+    #[cfg(target_os = "linux")]
+    {
+        if trigger == Trigger::Menu {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                tell(
+                    &app,
+                    "Updates",
+                    format!("Download the latest version from {WEBSITE}"),
+                    MessageDialogKind::Info,
+                )
+                .await;
+            });
+        }
+        return;
+    }
+    #[cfg(not(target_os = "linux"))]
+    check_and_install(app, trigger);
+}
+
+#[cfg(not(target_os = "linux"))]
+fn check_and_install(app: &AppHandle, trigger: Trigger) {
     if BUSY.swap(true, Ordering::SeqCst) {
         return;
     }

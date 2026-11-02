@@ -1,0 +1,81 @@
+name: Linux build
+
+# Builds the Linux app (.deb + AppImage, x86_64). It is NOT part of the macOS
+# release and never runs by itself: start it from the Actions tab
+# ("Run workflow"). Leave "tag" empty to get the files as build artifacts; give
+# an existing version tag (e.g. v0.5.3) to also add them to that tag's draft
+# GitHub Release.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to attach the files to (empty = artifacts only)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (x86_64-unknown-linux-gnu)
+    runs-on: ubuntu-22.04   # oldest glibc we support
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249  # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          workspaces: frontend/src-tauri
+          save-if: false
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev libssl-dev patchelf xdg-utils
+
+      - name: Fetch the character models
+        run: scripts/fetch-models.sh
+
+      - name: Backend build environment
+        run: |
+          python -m venv backend/venv_clean
+          backend/venv_clean/bin/pip install --quiet -r backend/requirements.txt -r backend/requirements-build.txt
+
+      - name: Build
+        run: |
+          cd frontend && npm ci && cd ..
+          scripts/release-linux.sh
+
+      - name: Name the files
+        run: |
+          mkdir out
+          bundle=frontend/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle
+          cp "$bundle"/deb/*.deb out/Movelo-Studio-Linux.deb
+          cp "$bundle"/appimage/*.AppImage out/Movelo-Studio-Linux.AppImage
+          ls -l out
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: movelo-studio-linux
+          path: out/*
+
+      - name: Add to the release
+        if: inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ inputs.tag }}" out/* --clobber --repo "$GITHUB_REPOSITORY"
