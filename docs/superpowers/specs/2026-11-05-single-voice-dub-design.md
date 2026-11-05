@@ -6,13 +6,13 @@ approval of this document.
 ## Why
 
 Creators who post many dubbed dramas and movies (the "MMO" way of working) don't cast characters at all: one
-text-to-speech voice reads every line of the whole video, and a full movie is dubbed in one sitting. Movelo today is
+text-to-speech voice reads every line of the whole video, and many episodes are dubbed in one sitting. Movelo today is
 built for careful, character-by-character dubbing (speaker detection, "Who is this?", casting VoxCPM2 voices), which
 is the slow part for this kind of work. The owner wants a second way of working inside Movelo for that volume work.
 
-Success: a team member adds an episode or a whole movie, checks the Khmer once, clicks one button, and gets a finished
-dubbed video — every line spoken by one Edge TTS voice, the actors' own voices muted, the music kept — with no speaker
-work at all. A full movie should finish in well under an hour on the owner's M1 Air (8 GB) once the text is approved.
+Success: a team member adds an episode, or about ten episodes joined into one video (15–20 minutes), checks the Khmer
+once, clicks one button, and gets a finished dubbed video — every line spoken by one Edge TTS voice, the actors' own
+voices muted, the music kept — with no speaker work at all, on the owner's M1 Air (8 GB).
 
 ## Goals
 
@@ -35,8 +35,9 @@ work at all. A full movie should finish in well under an hour on the owner's M1 
    **Generate voices & export**, which voices every line and exports the finished video.
 8. **Optional — fully automatic**: a per-project switch that goes straight from upload to the finished video. The
    editor stays available afterwards to fix a line, voice it again and export again.
-9. **Episodes and full movies**: a project holds episodes as today (a series, episode by episode, Story notes carrying
-   across); a full movie is a project with one long episode (1½–2 hours). Both must work on the owner's 8 GB M1 Air.
+9. **Videos up to ~20 minutes**: a project holds episodes as today (a series, Story notes carrying across). The owner
+   joins about ten episodes into one video himself (15–20 minutes); whole 2-hour movies are not a goal
+   (owner, 2026-11-05).
 10. The actors' voices are **muted** (as Movelo's export does today); the music & effects stem stays.
 
 ## Non-goals
@@ -45,12 +46,13 @@ work at all. A full movie should finish in well under an hour on the owner's M1 
 - Several voices, voice per character, VoxCPM2 in this mode (could come later; not now).
 - Changing how normal (character) projects work.
 - Lip sync, subtitles.
+- Videos longer than ~40 minutes (2-hour movies): no long-video engine. Such a file gets a clear warning at upload.
 
 ## Anti-goals (failure even if it "works")
 
 - A project where the team still has to touch speakers or casting.
 - Khmer that reads like a literal translation.
-- A full movie that freezes or crashes the app on an 8 GB Mac (memory), in the pipeline or when it's opened.
+- A 20-minute video that freezes or crashes the app on an 8 GB Mac (memory), in the pipeline or when it's opened.
 - Movelo silently paying for something the owner didn't choose (Gemini credits ran out on 2026-10-29; see
   `memory: gemini-cost-local-asr-0.5.6`).
 
@@ -58,7 +60,7 @@ work at all. A full movie should finish in well under an hour on the owner's M1 
 
 - Edge TTS, not VoxCPM2, for this mode (fast, free, light). No light local Khmer model is more natural (checked
   2026-11-05: Meta MMS Khmer is robotic and CC-BY-NC; VoxCPM2 is the most natural but heavy).
-- Full-length videos, not recaps. Actors' voices muted.
+- Full-length videos (not recaps), up to ~20 minutes. Actors' voices muted.
 - Default stops after translation for a check; fully automatic is a per-project switch.
 - Translation: free, understandable, casual/funny is fine.
 
@@ -68,7 +70,7 @@ work at all. A full movie should finish in well under an hour on the owner's M1 
   dubbing lives in its own modules (backend and frontend) and its own routes; normal projects must behave exactly as
   they do in 0.5.6 — same code paths, same tests passing unchanged. Shared code is reused only as it is (separation,
   `local_asr`'s Mac transcription, translator's Gemini plumbing, the export's mixing, the editor); where this mode
-  needs a different rule (translation style, what counts as checked Khmer, long-video handling) it gets its own
+  needs a different rule (translation style, what counts as checked Khmer) it gets its own
   function, never a changed existing one. The only touch points in existing code are the ones needed to route a
   single-voice project to its pipeline (e.g. at upload and Analyze) and to show its own UI.
 
@@ -80,8 +82,8 @@ work at all. A full movie should finish in well under an hour on the owner's M1 
   Gemini voice. It sends only the Khmer text to Microsoft.
 - Edge TTS returns MP3 and takes a speaking rate: only the project's chosen speed is used. **A voice is kept exactly as
   generated** — no automatic fitting or speeding up (owner, 2026-11-05: "I can apply [speed] if it feels slow"); a voice
-  longer than its line simply runs on and, as today, moves to another track rather than in time. Many lines (a movie
-  has ~1,500) must be voiced with bounded concurrency and retry/backoff; the service throttles bursts.
+  longer than its line simply runs on and, as today, moves to another track rather than in time. Many lines (a 20-minute video
+  has ~300) must be voiced with bounded concurrency and retry/backoff; the service throttles bursts.
 - **Transcription** uses the Mac path of 0.5.6 (`local_asr`), without speaker grouping, man/woman or recognition (the
   child can skip the voice-kind and print work). Gemini transcribes only where it does today (model not downloaded,
   etc.), and then its speaker labels are ignored.
@@ -89,14 +91,10 @@ work at all. A full movie should finish in well under an hour on the owner's M1 
   roughly the same length / never add words" rules give way to free adaptation, no WHO IS SPEAKING block, no
   per-speaker politeness, and lines written for the one voice. Story notes and the team's earlier checked lines
   (translation memory) still go with it. The free Google Translate fallback stays as today.
-- **Long videos on 8 GB**: today separation reads a whole episode's sound into memory (≈4 GB for 2 hours: input plus
-  both stems as float32), and the editor's preview decodes both whole stems into memory (`usePreviewAudio`, ≈1.3 GB
-  each for 2 hours), and the stem waveforms decode whole stems too (`useStemPeaks`). Each must work on a 2-hour movie
-  on an 8 GB Mac: separation streams through the file in pieces, and the preview/waveforms must not hold whole
-  2-hour stems in memory. The transcript panel and timeline must stay usable with ~1,500 lines.
-- **Disk**: Movelo copies every upload into its data folder (`source.mp4`); for a 2–4 GB movie that doubles disk use.
-  Using the file in place is preferred for long videos, but a file the user moves or deletes afterwards must give a
-  clear message, not a broken episode.
+- **Length**: today's separation, preview and waveforms load the whole video's sound into memory — fine for a
+  20-minute video by estimate (separation ~2 GB peak in its child process; the preview's two decoded stems ~1 GB), not
+  for 2 hours. No long-video code is built; the plan must measure a real ~20-minute file end to end on the owner's 8 GB
+  M1 (memory, time) before release, and a file over ~40 minutes gets a clear warning at upload.
 - **Columns** on existing tables need both an alembic migration and an `add_missing_columns` entry (CLAUDE.md).
   API shape changes follow models → schemas → route → `types/index.ts` → `client.ts` → `useApi.ts`.
 - Mac only; transcription on the Mac needs macOS 13.4+ (else Gemini). Intel Macs must work too, more slowly.
@@ -108,8 +106,6 @@ work at all. A full movie should finish in well under an hour on the owner's M1 
   owner likes to see two options for UI changes — `memory: ui-mockups-feedback`).
 - The exact wording of the translation prompt; it should be measured on a few of the owner's episodes before release
   (a few cents of Gemini; ask the owner first — credits).
-- How the preview handles long stems (streaming, windows, or media elements for long videos), and how the transcript
-  panel handles ~1,500 lines (virtualised list or similar).
 - Concurrency and retry numbers for Edge TTS.
 - Whether "Generate voices & export" asks where to save the file (as Export does today) or saves next to the source.
 
@@ -125,9 +121,6 @@ work at all. A full movie should finish in well under an hour on the owner's M1 
 - **Unchecked Khmer doesn't teach.** In single-voice projects a line counts as checked Khmer for translation memory and
   Story notes learning only when someone edited or approved it, or its episode is marked finished — being voiced
   doesn't count (in fully automatic mode every line is voiced unread).
-- **Long-video work is for single-voice projects.** Streaming separation, a preview and waveforms that don't hold
-  whole stems, a long transcript panel, and using the movie file in place apply to single-voice projects; normal
-  projects keep today's engine (their episodes are short), so its WebKit-tuned preview isn't reworked.
 - **Line length:** Gemini is told each line's length and asked to fit it (free adaptation can, unlike the faithful
   translation measured before). The voice is then kept as generated (owner's decision above); a line whose voice runs
   long is marked in the text check so the team can shorten the Khmer or speed it up themselves.
