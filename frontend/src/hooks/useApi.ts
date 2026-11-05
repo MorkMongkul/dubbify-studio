@@ -3,7 +3,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { AxiosError } from 'axios'
-import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions, chat, appSettings, story, stemPieces, media } from '@/api/client'
+import { projects, jobs, speakers, segments, tts, health, voices, overlays, overlayTemplates, timelineActions, chat, appSettings, story, stemPieces, media, singleVoice } from '@/api/client'
 import type { VoiceCreateInput } from '@/api/client'
 import { useEditorStore } from '@/store/editorStore'
 import { standInMessage, withTurn } from '@/lib/chatMessages'
@@ -680,6 +680,18 @@ export function useSynthesizeBatch() {
       tts.synthesizeBatch(segmentIds),
     onSuccess: (_, { jobId }) => {
       qc.invalidateQueries({ queryKey: ['segments', jobId] })
+    },
+  })
+}
+
+/** Single-voice dub: Generate voices & export (the job goes synthesizing → mixing → completed). */
+export function useSingleVoiceExport() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ jobId, exportPath }: { jobId: string; exportPath?: string }) =>
+      singleVoice.exportJob(jobId, exportPath),
+    onSuccess: (_, { jobId }) => {
+      qc.invalidateQueries({ queryKey: ['job', jobId] })
     },
   })
 }

@@ -23,7 +23,7 @@ import {
   useJob, useSegments, useSpeakers,
   useProjectJobs,
   useCreateProject, useUploadVideo, useUploadWithSubtitle,
-  useAnalyzeJob, useMixFinalAudio,
+  useAnalyzeJob, useMixFinalAudio, useSingleVoiceExport,
   useProject, useUpdateProject, useMediaClips,
 } from '@/hooks/useApi'
 import { useEditorStore } from '@/store/editorStore'
@@ -229,6 +229,7 @@ export default function EditorPage() {
   const { data: spks = []  } = useSpeakers(projectId ?? null)
   const { data: projectJobs = [], isLoading: loadingJobs, refetch: refetchJobs } = useProjectJobs(projectId ?? null)
   const { data: currentProject } = useProject(projectId ?? null)
+  const singleVoiceProject = currentProject?.dub_mode === 'single_voice'
   const { data: mediaClips } = useMediaClips(jobId ?? null)
   const updateProject = useUpdateProject()
   // Inline project rename in the header — null = not editing.
@@ -261,6 +262,7 @@ export default function EditorPage() {
   // ── Mutations ─────────────────────────────────────────────────────────────
   const { mutate: analyze,   isPending: analyzing  } = useAnalyzeJob()
   const { mutate: mix,       isPending: mixing      } = useMixFinalAudio()
+  const { mutate: singleVoiceExport, isPending: voicing } = useSingleVoiceExport()
   const { mutateAsync: createProject,  isPending: creatingProject  } = useCreateProject()
   const { mutateAsync: uploadVideo,    isPending: uploadingVideo   } = useUploadVideo()
   const { mutateAsync: uploadWithSub,  isPending: uploadingWithSub } = useUploadWithSubtitle()
@@ -281,6 +283,8 @@ export default function EditorPage() {
     !!job && job.status !== 'failed' && !isJobRunning(job.status) && !job.error_msg)
   // Mixing runs in the background — the editor stays fully usable during it
   const isMixing     = job?.status === 'mixing'
+  // Single-voice dub (0.5.7): Export first makes every line's Edge voice
+  const isMakingVoices = job?.status === 'synthesizing'
 
   // ── Upload state ──────────────────────────────────────────────────────────
   const [videoFile,       setVideoFile]       = useState<File | null>(null)
@@ -290,7 +294,7 @@ export default function EditorPage() {
   const [targetLang,      setTargetLang]      = useState('km')
   const [uploadProgress,  setUploadProgress]  = useState(0)
   const [uploadError,     setUploadError]     = useState<string | null>(null)
-  const exporting = mixing || isMixing
+  const exporting = mixing || isMixing || voicing || isMakingVoices
 
   const isUploading    = uploadingVideo || uploadingWithSub
   const isSetupLoading = creatingProject || isUploading
@@ -391,6 +395,17 @@ export default function EditorPage() {
   const startMix = useCallback((destination: string) => {
     if (!jobId) return
     exportPathRef.current = destination
+    if (singleVoiceProject) {
+      exportToastRef.current = toast.loading('Making the voices…')
+      singleVoiceExport({ jobId, exportPath: destination }, {
+        onError: (err) => {
+          toast.error(`Couldn't start: ${err.message}`, { id: exportToastRef.current ?? undefined })
+          exportToastRef.current = null
+          exportPathRef.current = null
+        },
+      })
+      return
+    }
     exportToastRef.current = toast.loading(`Exporting ${destination.split('/').pop()}…`)
     mix({ jobId, muteOriginal: false, exportPath: destination }, {
       // The backend echoes back the destination it actually resolved (with any
@@ -404,7 +419,7 @@ export default function EditorPage() {
         exportPathRef.current = null
       },
     })
-  }, [jobId, mix])
+  }, [jobId, mix, singleVoiceProject, singleVoiceExport])
 
   const handleExport = () => {
     if (!jobId) return
@@ -461,7 +476,8 @@ export default function EditorPage() {
   useEffect(() => {
     const prev = prevJobStatusRef.current
     prevJobStatusRef.current = job?.status
-    if (prev !== 'mixing' || job?.status !== 'completed' || exportToastRef.current == null) return
+    // (single-voice dub: making the voices can end the run before the mix, when a line got no voice)
+    if ((prev !== 'mixing' && prev !== 'synthesizing') || job?.status !== 'completed' || exportToastRef.current == null) return
     const tid = exportToastRef.current
     const savedTo = exportPathRef.current
     exportToastRef.current = null
@@ -520,7 +536,8 @@ export default function EditorPage() {
 
   const hasTtsAudio  = segs.some(s => s.tts_audio_path !== '')
   // Not while the episode is busy (e.g. separating again: its music track is about to change)
-  const canExport    = hasTtsAudio && !exporting && !isRunning
+  // A single-voice dub project makes its voices on Export, so it only needs lines
+  const canExport    = (hasTtsAudio || (singleVoiceProject && segs.length > 0)) && !exporting && !isRunning
   const videoUrl     = job?.video_url ?? undefined
   // A failed job that still has segments (e.g. an interrupted re-run) stays
   // editable; only a session with nothing to show hides the editor.
@@ -831,14 +848,16 @@ export default function EditorPage() {
             loading={exporting}
             disabled={!canExport}
             title={
-              !hasTtsAudio ? 'Generate voices for some lines first'
+              !hasTtsAudio && !singleVoiceProject ? 'Generate voices for some lines first'
                 : isRunning && !exporting ? 'Available when the current step finishes'
                 : undefined
             }
             icon={<Download size={11} />}
             className={cn('shadow-glow transition-all', canExport ? 'bg-brand text-white hover:bg-brand-hover' : '')}
           >
-            {exportProgress != null ? `Exporting ${exportProgress}%` : 'Export'}
+            {isMakingVoices ? 'Making voices…'
+              : exportProgress != null ? `Exporting ${exportProgress}%`
+              : singleVoiceProject ? 'Generate voices & export' : 'Export'}
           </Button>
           </div>
         </header>

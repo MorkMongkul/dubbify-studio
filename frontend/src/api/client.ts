@@ -72,6 +72,13 @@ export const health = {
 }
 
 // ── Projects ──────────────────────────────────────────────────
+/** Single-voice dub (0.5.7): voice every line with the project's Edge voice, then export. */
+export const singleVoice = {
+  exportJob: (jobId: string, exportPath?: string) =>
+    api.post<{ job_id: string; status: string }>(`/single-voice/jobs/${jobId}/export`,
+      exportPath ? { export_path: exportPath } : {}).then((r) => r.data),
+}
+
 export const projects = {
   list: () =>
     api.get<Project[]>('/projects/').then((r) => r.data),

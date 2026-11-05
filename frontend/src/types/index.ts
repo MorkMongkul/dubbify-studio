@@ -38,12 +38,29 @@ export interface Project {
   logo_path?: string
   logo_url?: string | null
   chat_edit_mode: ChatEditMode
+  /** Single-voice dub (0.5.7): one Edge voice for every line, no speaker work. Chosen at creation only. */
+  dub_mode: DubMode
+  voice_name: SingleVoiceName
+  /** Edge's speaking rate, in percent (−50…+50). */
+  voice_rate: number
+  /** Go straight from upload to the finished export, without stopping to check the Khmer. */
+  auto_export: boolean
 }
+
+export type DubMode = 'characters' | 'single_voice'
+export type SingleVoiceName = 'km-KH-PisethNeural' | 'km-KH-SreymomNeural'
+export const SINGLE_VOICES: { value: SingleVoiceName; label: string }[] = [
+  { value: 'km-KH-PisethNeural', label: 'Piseth (man)' },
+  { value: 'km-KH-SreymomNeural', label: 'Sreymom (woman)' },
+]
 
 export interface ProjectUpdate {
   name?: string
   description?: string
   chat_edit_mode?: ChatEditMode
+  voice_name?: SingleVoiceName
+  voice_rate?: number
+  auto_export?: boolean
 }
 
 export type OverlayType = 'image' | 'subtitle' | 'shape'
@@ -101,6 +118,10 @@ export interface ProjectCreate {
   target_lang: string
   /** Optional "About this drama"; it starts the project's story notes. */
   story_intro?: string
+  dub_mode?: DubMode
+  voice_name?: SingleVoiceName
+  voice_rate?: number
+  auto_export?: boolean
 }
 
 export interface Job {
