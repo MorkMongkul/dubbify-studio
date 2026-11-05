@@ -5,7 +5,7 @@ Loaded once at startup via pydantic-settings.
 """
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
-from typing import List
+from typing import List, Literal
 import os
 from pathlib import Path
 
@@ -98,11 +98,20 @@ class Settings(BaseSettings):
     # gemini-2.5-flash returns a hard 404 for new API keys as of this build
     # ("no longer available to new users" — confirmed live against the real
     # API, not just docs) — Google's own error pointed at gemini-3.6-flash.
-    GEMINI_CHAT_MODEL: str = "gemini-3.6-flash"
+    # 0.5.6: the cheapest Flash-Lite ($0.25 / $1.50 per 1M tokens against 3.6 Flash's $1.50 / $7.50), asked to think
+    # as little as it can (chat_agent): the Assistant answers questions and suggests line edits — no maths or code
+    # (the owner's choice). Story notes learn with translation's model instead (story_learning.PURPOSE).
+    GEMINI_CHAT_MODEL: str = "gemini-3.1-flash-lite"
     # ── ASR (speech-to-text) ────────────────────────────────────
     # Deliberately separate from GEMINI_MODEL, so transcription (audio) and
     # translation (text) can be tuned independently.
     GEMINI_ASR_MODEL: str = "gemini-3.6-flash"
+    # Where an analysis transcribes (0.5.6): "mac" — Qwen3-ASR + voice prints on this Mac (app/services/local_asr.py),
+    # Gemini only while its models download, can't run, or fail — or "gemini" (GEMINI_ASR_MODEL above).
+    TRANSCRIPTION: Literal["mac", "gemini"] = "mac"
+    # After an upload's music is separated (0.5.6): "wait" for Analyze, or "analyze" straight away
+    # (pipeline.run_pipeline), so an upload is ready to check without a click.
+    AFTER_UPLOAD: Literal["wait", "analyze"] = "wait"
     # Hard cap on tool-call round-trips within a single chat turn, so a model
     # stuck in a call/respond/call-again loop can't run away indefinitely.
     CHAT_MAX_TOOL_ROUNDS: int = 6
@@ -126,9 +135,12 @@ class Settings(BaseSettings):
     SEPARATION_HF_SPACE: str = "csukuangfj/music-source-separation"
 
     # Gemini TTS speaking rate: 1.0 = normal, 1.25 = 25% faster, max 4.0
-    # Gemini voice model — only used when VoxCPM2 is unavailable. Retired models are
-    # replaced automatically by the newest listed speech model (app/services/gemini_models.py).
-    GEMINI_TTS_MODEL: str = "gemini-2.5-flash-preview-tts"
+    # Gemini voice model — only used when VoxCPM2 is unavailable, and only when one is chosen in Settings:
+    # "off" (gemini_models.OFF, the default since 0.5.6) means a voice VoxCPM2 can't make fails instead. Gemini's
+    # voices don't sound like the characters' VoxCPM2 voices and each one is paid for (the owner's credits went
+    # to them whenever the Colab link expired). A chosen model that Google retires is replaced automatically by
+    # the newest listed speech model (app/services/gemini_models.py).
+    GEMINI_TTS_MODEL: str = "off"
     GEMINI_TTS_SPEED: float = 1.25
 
     # How many segments to synthesize concurrently during a batch/job TTS

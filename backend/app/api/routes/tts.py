@@ -3,6 +3,7 @@ app/api/routes/tts.py
 TTS synthesis endpoints — trigger VoxCPM2 for individual segments or entire jobs.
 """
 import asyncio
+import functools
 import logging
 import os
 import shutil
@@ -17,12 +18,12 @@ from pydantic import BaseModel
  
 from app.core.database import get_db
 from app.core.config import settings
-from app.models.models import Segment, Speaker, Job, JobStatus, Voice, VoiceMode, StemPiece, MediaAsset, MediaClip
+from app.models.models import Segment, Speaker, Job, JobStatus, Project, Voice, VoiceMode, StemPiece, MediaAsset, MediaClip
 from app.schemas.schemas import TTSResponse
 from app.services.tts_client import tts_client
 from app.services.audio_extractor import mix_dubbed_audio, probe_video
 from app.services.pipeline_common import RUNNING_STATUSES
-from app.services import stem_pieces, timeline, voice_level
+from app.services import single_voice, stem_pieces, timeline, voice_level
 from app.services import media as media_rules
 from app.services import auto_voice
 from app.core.paths import resolve_media_path, resolve_existing
@@ -109,7 +110,7 @@ def _real_tts_configured() -> bool:
 
 
 async def _render_segment_audio(seg: Segment, tts_dir: Path, voice_kwargs: dict,
-                                db: AsyncSession) -> tuple[str, float, str]:
+                                db: AsyncSession, synthesize=None) -> tuple[str, float, str]:
     """
     Synthesize a segment and render its final clip; returns (final_path,
     duration, backend). The new audio is written to a temp file and only
@@ -125,7 +126,9 @@ async def _render_segment_audio(seg: Segment, tts_dir: Path, voice_kwargs: dict,
     final_path = tts_dir / f"seg_{seg.id}.wav"
     tmp_path = tts_dir / f".seg_{seg.id}_{uuid4().hex}.wav"
     try:
-        result = await tts_client.synthesize(text=seg.khmer_text, output_path=str(tmp_path), **voice_kwargs)
+        # synthesize: a single-voice dub project's Edge voice (0.5.7); else the usual engines
+        result = await (synthesize or tts_client.synthesize)(text=seg.khmer_text, output_path=str(tmp_path),
+                                                             **voice_kwargs)
         if not result.get("success"):
             raise TTSUnavailable(result.get("error") or "TTS synthesis failed")
         if result.get("mock") and _real_tts_configured():
@@ -170,13 +173,22 @@ async def _synthesize_segment_db(segment_id: str, db: AsyncSession) -> tuple[Seg
     if not seg.khmer_text or not seg.khmer_text.strip():
         raise HTTPException(status_code=400, detail="Segment has no Khmer text to synthesize")
 
-    # Resolve the assigned voice (segment override → speaker voice → legacy prompt)
-    voice_kwargs = await _resolve_voice(seg, db)
-
     # Resolve project_id for correct upload path
     j_result = await db.execute(select(Job).where(Job.id == seg.job_id))
     job = j_result.scalar_one_or_none()
     project_id = job.project_id if job else seg.job_id
+
+    project = (await db.execute(select(Project).where(Project.id == project_id))).scalar_one_or_none()
+    if single_voice.is_single_voice(project):
+        # One Edge voice for every line (0.5.7), never a character's voice
+        from app.services.single_voice import edge_voice
+        synthesize = functools.partial(edge_voice.synthesize, voice=project.voice_name or single_voice.DEFAULT_VOICE,
+                                       rate=project.voice_rate or 0)
+        voice_kwargs = {}
+    else:
+        synthesize = None
+        # Resolve the assigned voice (segment override → speaker voice → legacy prompt)
+        voice_kwargs = await _resolve_voice(seg, db)
 
     # Build output path: uploads/{project_id}/{job_id}/tts/seg_{id}.wav
     job_dir = Path(settings.UPLOAD_DIR) / project_id / seg.job_id
@@ -193,7 +205,7 @@ async def _synthesize_segment_db(segment_id: str, db: AsyncSession) -> tuple[Seg
     await db.commit()
 
     try:
-        final_path, duration, backend = await _render_segment_audio(seg, tts_dir, voice_kwargs, db)
+        final_path, duration, backend = await _render_segment_audio(seg, tts_dir, voice_kwargs, db, synthesize)
     except TTSUnavailable as e:
         raise HTTPException(status_code=503, detail=str(e))
 

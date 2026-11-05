@@ -239,3 +239,27 @@ async def test_a_layout_change_carries_fades_so_a_trim_undo_restores_them(client
         {"id": sid, "start_time": 0.0, "end_time": 2.0, "lane_index": 0, "voice_offset": 0.0,
          "fade_in_secs": 0.5, "fade_out_secs": 1.0}]})).json()["segments"][0]
     assert (back["end_time"], back["fade_in_secs"], back["fade_out_secs"]) == (2.0, 0.5, 1.0)
+
+
+def test_a_long_videos_music_dip_stays_one_formula_ffmpeg_can_read():
+    """ffmpeg can't evaluate one sum of ~100 dips ("Cannot allocate memory", found on a 17-minute video, 0.5.7): more
+    than DUCK_GROUP dips are written as a product of groups — the same gain, since merged spans never overlap — and a
+    short episode's formula is unchanged."""
+    import subprocess
+    from app.core.binaries import ffmpeg
+    from app.services.timeline import DUCK_GROUP
+    few = [(i * 3.0, i * 3.0 + 1.5) for i in range(DUCK_GROUP)]
+    assert "*(1-" not in duck_volume_expr(few) and duck_volume_expr(few).startswith("1-")
+    many = [(i * 3.0, i * 3.0 + 1.5) for i in range(300)]
+    expr = duck_volume_expr(many)
+    done = subprocess.run([ffmpeg(), "-v", "error", "-f", "lavfi", "-i", "sine=d=1", "-af",
+                           f"volume='{expr}':eval=frame", "-f", "null", "-"], capture_output=True)
+    assert done.returncode == 0, done.stderr.decode()[-300:]
+    # the same gain as the one-sum formula, sampled
+    import math
+    for t in (0.0, 0.7, 1.4, 1.6, 2.0, 150.7, 899.9):
+        terms = [min(max((t - (a - DUCK_RAMP_SECS)) / DUCK_RAMP_SECS, 0), 1)
+                 * min(max(((b + DUCK_RAMP_SECS) - t) / DUCK_RAMP_SECS, 0), 1) for a, b in many]
+        env = {"t": t, "clip": lambda x, lo, hi: min(max(x, lo), hi)}
+        assert math.isclose(eval(expr, env), duck_gain_at(many, t), abs_tol=1e-4)
+        assert sum(terms) <= 1.0

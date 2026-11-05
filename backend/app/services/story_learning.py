@@ -34,6 +34,9 @@ from app.services.translator import GeminiError, _gemini_with_retries
 
 logger = logging.getLogger(__name__)
 
+# Story notes go into every translation, so they're learned by translation's model (Settings → AI models →
+# Translation), not the Assistant's cheaper one (0.5.6).
+PURPOSE = "translation"
 LEARN_BATCH = 5
 LEARN_MAX_OUTPUT_TOKENS = 32768   # thinking + the answer, which re-lists every character and word
 
@@ -138,7 +141,7 @@ def _payload(notes_text: str, batch: list[dict]) -> dict:
         "responseMimeType": "application/json",
         "responseSchema": _RESPONSE_SCHEMA,
     }
-    if gemini_models.current_model("chat").startswith("gemini-3"):
+    if gemini_models.current_model(PURPOSE).startswith("gemini-3"):
         config["thinkingConfig"] = {"thinkingLevel": "low"}   # as the ASR does; Gemini 3 defaults to high
     return {
         "systemInstruction": {"parts": [{"text": _INSTRUCTION}]},
@@ -151,7 +154,7 @@ async def _ask_gemini(payload: dict) -> dict:
     """One learning request; the parsed JSON answer. Raises on failure (busy or overloaded: retried first)."""
     async def call() -> dict:
         try:
-            resp = await gemini_models.generate_content("chat", payload, timeout=httpx.Timeout(180.0, connect=10.0))
+            resp = await gemini_models.generate_content(PURPOSE, payload, timeout=httpx.Timeout(180.0, connect=10.0))
         except httpx.TimeoutException as e:
             raise AnswerCutOff("Gemini took too long to answer") from e
         except httpx.HTTPError as e:

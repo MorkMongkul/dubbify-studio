@@ -19,10 +19,11 @@ from app.services.pipeline_common import recover_orphaned_jobs
 from app.services.builtin_voices import seed_builtin_voices
 from app.services.timeline import convert_old_jobs
 from app.services.media_assets import resume_interrupted
-from app.services import line_timing
+from app.services import line_timing, local_asr, local_separation
 import app.core.database as core_db
 from app.api.routes import health, projects, jobs, segments, tts, voices, overlays, chat, story, stem_pieces, media
 from app.api.routes import settings as settings_routes
+from app.api.routes import single_voice as single_voice_routes
 
 # ── Logging setup ─────────────────────────────────────────────
 logging.basicConfig(
@@ -35,6 +36,15 @@ logger = logging.getLogger(__name__)
 # ── Lifespan (startup / shutdown) ─────────────────────────────
 # Startup work left running in the background (a task nobody holds can be collected)
 _background: set[asyncio.Task] = set()
+
+
+async def _separation_ready() -> None:
+    if await local_separation.ensure_model():
+        try:
+            from app.services.pipeline import separate_old_stems_again
+            await separate_old_stems_again()
+        except Exception:
+            logger.exception("Couldn't separate older episodes again")
 
 
 @asynccontextmanager
@@ -84,6 +94,15 @@ async def lifespan(app: FastAPI):
     # The speech model line timing uses: downloaded once into the data folder, in the background (until then lines
     # keep the pauses' timing)
     task = asyncio.create_task(line_timing.ensure_model())
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    # Spleeter, which separates vocals and music on this Mac: downloaded once the same way (until then, the HF Space);
+    # then the episodes 0.5.4's int8 model separated get new stems, once
+    task = asyncio.create_task(_separation_ready())
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    # Qwen3-ASR and the voice-kind model, which transcribe on this Mac (~1 GB, once; until then, Gemini)
+    task = asyncio.create_task(local_asr.ensure_model())
     _background.add(task)
     task.add_done_callback(_background.discard)
     yield
@@ -152,6 +171,7 @@ app.include_router(tts.router,       prefix="/api/v1")
 app.include_router(voices.router,    prefix="/api/v1")
 app.include_router(overlays.router,  prefix="/api/v1")
 app.include_router(media.router,     prefix="/api/v1")
+app.include_router(single_voice_routes.router, prefix="/api/v1")
 app.include_router(chat.router,      prefix="/api/v1")
 app.include_router(settings_routes.router, prefix="/api/v1")
 

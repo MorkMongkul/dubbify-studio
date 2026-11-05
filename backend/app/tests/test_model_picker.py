@@ -99,7 +99,7 @@ async def test_automatic_means_the_built_in_choice(client, desktop):
     assert resp.status_code == 200
     assert gemini_models.current_model("translation") == gemini_models.default_model("translation")
     assert "lite" not in gemini_models.current_model("translation")
-    assert gemini_models.current_model("tts") == "gemini-2.5-flash-preview-tts"
+    assert gemini_models.current_model("tts") == gemini_models.OFF        # Gemini voices are off unless chosen
     resp = await client.put("/api/v1/settings", json={"GEMINI_TTS_MODEL": "gemini-3.8-flash-tts"})
     assert gemini_models.current_model("tts") == "gemini-3.8-flash-tts"
 
@@ -108,3 +108,15 @@ async def test_automatic_means_the_built_in_choice(client, desktop):
 async def test_a_setting_never_changed_shows_as_automatic(client, desktop):
     choice = _choice((await client.get("/api/v1/settings/models")).json(), "GEMINI_ASR_MODEL")
     assert choice["value"] == "" and choice["automatic"] == choice["in_use"]
+
+
+@pytest.mark.asyncio
+async def test_the_voice_fallback_shows_off_and_testing_off_asks_nobody(client, desktop, monkeypatch):
+    choice = _choice((await client.get("/api/v1/settings/models")).json(), "GEMINI_TTS_MODEL")
+    assert choice["value"] == "" and choice["automatic"] == gemini_models.OFF
+
+    async def asked(*args, **kwargs):
+        pytest.fail("Google was asked")
+    monkeypatch.setattr(gemini_models, "_post", asked)
+    resp = await client.post("/api/v1/settings/models/test", json={"setting": "GEMINI_TTS_MODEL", "model": "off"})
+    assert resp.status_code == 200 and resp.json()["ok"]

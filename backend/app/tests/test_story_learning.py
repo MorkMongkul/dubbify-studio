@@ -309,3 +309,9 @@ def test_learning_leaves_room_for_thinking():
     # Thinking counts toward the output limit, and five episodes make a long answer
     assert config["maxOutputTokens"] >= 32768
     assert config["thinkingConfig"] == {"thinkingLevel": "low"}
+
+
+def test_story_notes_learn_with_the_translation_model():
+    """Story notes go into every translation, so they're learned by translation's model (3.6 Flash), not the
+    Assistant's cheaper one (0.5.6)."""
+    assert story_learning.PURPOSE == "translation"

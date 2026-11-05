@@ -274,6 +274,11 @@ async def _call_gemini(contents: list[dict], system: str = _SYSTEM_INSTRUCTION) 
         # which came back empty. Only the tokens used are billed.
         "generationConfig": {"temperature": 0.3, "maxOutputTokens": 8192},
     }
+    model = gemini_models.current_model("chat")
+    if model.startswith("gemini-3"):
+        # As little thinking as the model allows (0.5.6, the owner's choice: thinking is billed as output). Pro
+        # models don't offer "minimal".
+        payload["generationConfig"]["thinkingConfig"] = {"thinkingLevel": "low" if "pro" in model else "minimal"}
     # A retired chat model is replaced automatically (gemini_models).
     resp = await gemini_models.generate_content("chat", payload, timeout=httpx.Timeout(60.0, connect=10.0))
     if resp.status_code != 200:

@@ -137,6 +137,9 @@ function SecretRow({
   )
 }
 
+/** "off" (the voice fallback's default since 0.5.6) means the job never asks Gemini. */
+const modelLabel = (model: string) => (model === 'off' ? 'Off — never use Gemini voices' : model)
+
 /**
  * One row per AI job, filled with the models the saved key can use. Picking a
  * model runs a tiny real request (a listed model can still refuse to work);
@@ -204,8 +207,8 @@ function ModelRows({
               value={selected}
               onChange={(e) => pick(choice, e.target.value)}
             >
-              <option value="">Automatic — {choice.automatic}</option>
-              {options.map((m) => <option key={m} value={m}>{m}</option>)}
+              <option value="">Automatic — {modelLabel(choice.automatic)}</option>
+              {options.map((m) => <option key={m} value={m}>{modelLabel(m)}</option>)}
             </select>
             {result === 'testing' && <Note>Checking {selected}…</Note>}
             {result && result !== 'testing' && <Note tone={result.ok ? 'ok' : 'warn'}>{result.message}</Note>}
@@ -395,6 +398,26 @@ function SettingsWindow({
         return (
           <div>
             {devNote}
+            <Row label="After upload">
+              <select
+                className={fieldClass} disabled={disabled} aria-label="After upload"
+                value={value('AFTER_UPLOAD')}
+                onChange={(e) => edit({ AFTER_UPLOAD: e.target.value as AppSettingsValues['AFTER_UPLOAD'] })}
+              >
+                <option value="wait">Wait for Analyze</option>
+                <option value="analyze">Analyse straight away</option>
+              </select>
+            </Row>
+            <Row label="Transcription">
+              <select
+                className={fieldClass} disabled={disabled} aria-label="Transcription"
+                value={value('TRANSCRIPTION')}
+                onChange={(e) => edit({ TRANSCRIPTION: e.target.value as AppSettingsValues['TRANSCRIPTION'] })}
+              >
+                <option value="mac">On this Mac (free; Gemini only while its model downloads)</option>
+                <option value="gemini">Gemini</option>
+              </select>
+            </Row>
             <Row label="Translation engine">
               <select
                 className={fieldClass} disabled={disabled} aria-label="Translation engine"

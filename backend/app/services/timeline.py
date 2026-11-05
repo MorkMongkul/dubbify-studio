@@ -155,16 +155,25 @@ def duck_gain_at(spans, t: float) -> float:
     return 1 - (1 - _duck_floor()) * depth
 
 
+DUCK_GROUP = 50   # dips per sum: ffmpeg can't evaluate one sum of ~100 ("Cannot allocate memory", a 17-min video)
+
+
 def duck_volume_expr(spans) -> str:
     """duck_gain_at as an ffmpeg `volume` expression over `t` (the spans are
-    merged, so their ramps never overlap and a sum is their max)."""
+    merged, so their ramps never overlap and a sum is their max). More than
+    DUCK_GROUP spans are written as a product of one such dip per group — the
+    same gain, since at any moment at most one group dips."""
     if not spans:
         return "1"
     r = DUCK_RAMP_SECS
-    terms = "+".join(
-        f"clip((t-{a - r:.3f})/{r},0,1)*clip(({b + r:.3f}-t)/{r},0,1)" for a, b in spans
-    )
-    return f"1-{1 - _duck_floor():.6f}*({terms})"
+    depth = 1 - _duck_floor()
+
+    def dip(group) -> str:
+        terms = "+".join(f"clip((t-{a - r:.3f})/{r},0,1)*clip(({b + r:.3f}-t)/{r},0,1)" for a, b in group)
+        return f"1-{depth:.6f}*({terms})"
+    if len(spans) <= DUCK_GROUP:
+        return dip(spans)
+    return "*".join(f"({dip(spans[i:i + DUCK_GROUP])})" for i in range(0, len(spans), DUCK_GROUP))
 
 
 def actor_span(seg) -> tuple[float, float]:

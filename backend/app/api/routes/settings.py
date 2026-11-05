@@ -27,13 +27,13 @@ EDITABLE = (
     "GEMINI_API_KEY", "HF_TOKEN",
     "VOXCPM2_API_URL", "VOXCPM2_HF_SPACE_FALLBACK",
     "TRANSLATION_BACKEND", "GEMINI_MODEL", "GEMINI_ASR_MODEL", "GEMINI_CHAT_MODEL", "GEMINI_TTS_MODEL",
-    "TTS_BATCH_CONCURRENCY",
+    "TTS_BATCH_CONCURRENCY", "TRANSCRIPTION", "AFTER_UPLOAD",
 )
 
 # Settings → AI models: which Gemini job each model setting is for. An empty
 # value means "Automatic" — the built-in choice (see gemini_models).
 MODEL_SETTINGS = {
-    "GEMINI_MODEL": ("translation", "Translation"),
+    "GEMINI_MODEL": ("translation", "Translation and Story notes"),
     "GEMINI_ASR_MODEL": ("asr", "Transcription and speakers"),
     "GEMINI_CHAT_MODEL": ("chat", "Assistant"),
     "GEMINI_TTS_MODEL": ("tts", "Voice fallback (when VoxCPM is unavailable)"),
@@ -56,6 +56,8 @@ class SettingsUpdate(BaseModel):
     GEMINI_CHAT_MODEL: Optional[ModelName] = None
     GEMINI_TTS_MODEL: Optional[ModelName] = None
     TTS_BATCH_CONCURRENCY: Annotated[Optional[int], Field(ge=1, le=8)] = None
+    TRANSCRIPTION: Optional[Literal["mac", "gemini"]] = None
+    AFTER_UPLOAD: Optional[Literal["wait", "analyze"]] = None
 
     @field_validator("GEMINI_API_KEY", "HF_TOKEN", "VOXCPM2_API_URL")
     @classmethod
@@ -230,5 +232,7 @@ async def list_models() -> ModelsView:
 async def test_model(payload: ModelTest) -> ModelTestResult:
     """Check a model with a tiny real request — a listed model can still refuse to work."""
     _require_key()
+    if payload.model == gemini_models.OFF:
+        return ModelTestResult(ok=True, message="Off: Movelo won't ask Gemini for this.")
     ok, message = await gemini_models.probe(MODEL_SETTINGS[payload.setting][0], payload.model)
     return ModelTestResult(ok=ok, message=message)

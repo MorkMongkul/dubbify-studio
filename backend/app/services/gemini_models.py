@@ -44,6 +44,8 @@ class _Purpose:
     aliases: tuple[str, ...]     # Google's maintained aliases Settings offers first
 
 
+OFF = "off"   # a job's model setting that means "don't use Gemini for it" (only the voice fallback offers it)
+
 _VERSION = r"gemini-\d+(?:\.\d+)?"
 _TTS = re.compile(rf"^{_VERSION}-flash(?:-lite)?(?:-preview)?-tts(?:-preview)?$")
 PURPOSES: dict[str, _Purpose] = {
@@ -57,10 +59,11 @@ PURPOSES: dict[str, _Purpose] = {
         "GEMINI_ASR_MODEL", ("gemini-flash-latest",),
         re.compile(rf"^{_VERSION}-flash$"), re.compile(rf"^{_VERSION}-(?:flash|pro)$"),
         ("gemini-flash-latest", "gemini-pro-latest")),
+    # The Assistant (0.5.6: Flash-Lite, see config): a retired model is replaced by a Flash-Lite, never a pricier one.
     "chat": _Purpose(
-        "GEMINI_CHAT_MODEL", ("gemini-flash-latest",),
-        re.compile(rf"^{_VERSION}-flash$"), re.compile(rf"^{_VERSION}-(?:flash|pro)$"),
-        ("gemini-flash-latest", "gemini-pro-latest")),
+        "GEMINI_CHAT_MODEL", ("gemini-flash-lite-latest",),
+        re.compile(rf"^{_VERSION}-flash-lite$"), re.compile(rf"^{_VERSION}-(?:flash(?:-lite)?|pro)$"),
+        ("gemini-flash-lite-latest", "gemini-flash-latest", "gemini-pro-latest")),
     # Google has no "-latest" alias for speech models — the model list is the fallback.
     "tts": _Purpose("GEMINI_TTS_MODEL", (), _TTS, _TTS, ()),
 }

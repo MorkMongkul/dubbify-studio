@@ -275,28 +275,22 @@ async def pick_character(
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """
-    The user picks who speaks this line: it is confirmed for that speaker, and — when the speaker
-    changed and nobody edited its Khmer — translated again for them. The pick is saved first and never fails because
-    of the translation (retranslated=False then). previous_khmer lets the editor undo it.
+    The user picks who speaks this line: it is confirmed for that speaker. Its Khmer stays as it is (until 0.5.6 an
+    unedited line was translated again for the new speaker — one Gemini call with the whole translation prompt per
+    pick, removed at the owner's request), so retranslated is always False; previous_khmer is kept for undo.
     """
-    from app.services import pipeline
-
     seg = await _segment_or_404(db, segment_id)
     job = (await db.execute(select(Job).where(Job.id == seg.job_id))).scalar_one()
     speaker = (await db.execute(select(Speaker).where(Speaker.id == payload.speaker_id))).scalar_one_or_none()
     if speaker is None or speaker.project_id != job.project_id:
         raise HTTPException(status_code=400, detail="That character isn't in this project")
     previous = seg.khmer_text
-    # Confirming the speaker the line already has (Movelo's guess, the usual pick): the Khmer was
-    # translated for that speaker, so it isn't asked for again
-    same_speaker = seg.speaker_id == speaker.id
     seg.speaker_id, seg.who_confirmed, seg.who_check = speaker.id, True, None
-    await db.commit()   # the pick stands whatever the translation does, and the connection is free for Gemini
+    await db.commit()
     await _refresh_faces(db, job.project_id)   # the line's face may now be its character's best
-    retranslated = False if same_speaker else await pipeline.retranslate_line(db, seg.id)
     seg = (await db.execute(select(Segment).where(Segment.id == segment_id)
                             .execution_options(populate_existing=True))).scalar_one()
-    return CharacterPicked(segment=SegmentResponse.model_validate(seg), retranslated=retranslated,
+    return CharacterPicked(segment=SegmentResponse.model_validate(seg), retranslated=False,
                            previous_khmer=previous or "")
 
 

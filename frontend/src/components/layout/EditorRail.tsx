@@ -7,7 +7,7 @@
 import { useNavigate } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
 import {
-  FolderOpen, Users, Clapperboard, Mic, BookOpen, Bot, Settings,
+  FolderOpen, Users, Clapperboard, Mic, BookOpen, Bot, Settings, AudioLines,
 } from 'lucide-react'
 import { useEditorStore, type RailTab } from '@/store/editorStore'
 import { Tooltip } from '@/components/ui/Tooltip'
@@ -45,7 +45,8 @@ function RailButton({
   )
 }
 
-export function EditorRail() {
+/** singleVoice: a single-voice dub project (0.5.7) has no speakers — that tab is its Voice settings. */
+export function EditorRail({ singleVoice = false }: { singleVoice?: boolean }) {
   const navigate = useNavigate()
   const railTab = useEditorStore((s) => s.railTab)
   const setRailTab = useEditorStore((s) => s.setRailTab)
@@ -73,8 +74,8 @@ export function EditorRail() {
         <RailButton
           key={tab}
           active={railTab === tab}
-          label={label}
-          icon={icon}
+          label={singleVoice && tab === 'speakers' ? 'Voice' : label}
+          icon={singleVoice && tab === 'speakers' ? AudioLines : icon}
           onClick={() => setRailTab(tab)}
         />
       ))}
