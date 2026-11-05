@@ -78,6 +78,7 @@ trap 'rm -rf "$WORK"' EXIT
   --hidden-import sqlalchemy.dialects.postgresql.psycopg2 \
   --hidden-import sqlalchemy.dialects.sqlite.aiosqlite \
   --hidden-import aiosqlite \
+  --hidden-import edge_tts \
   --collect-data opencc \
   "$PWD/sidecar_entry.py"
 

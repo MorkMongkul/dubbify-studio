@@ -91,12 +91,19 @@ def self_test() -> int:
             character_models = models.self_test()
         except Exception as e:  # a missing model or a library that won't load: the build must not ship
             character_models = f"FAILED: {type(e).__name__}: {e}"
+        try:
+            import edge_tts  # noqa: F401 — single-voice dub's voices (0.5.7)
+            edge = "ok"
+        except Exception as e:  # noqa: BLE001
+            edge = f"FAILED: {type(e).__name__}: {e}"
     finally:
         shutil.rmtree(data_dir, ignore_errors=True)
     print(f"backend imports: ok\nKhmer text shaping: {shaping}\n"
           f"built-in voices: {len(voices)}" + (f", {len(missing)} clips missing" if missing else ""))
     print(character_models)
-    return 0 if shaping.startswith("ok") and voices and not missing and character_models == models.OK else 1
+    print(f"Edge voices: {edge}")
+    return 0 if (shaping.startswith("ok") and voices and not missing and character_models == models.OK
+                 and edge == "ok") else 1
 
 
 def main() -> None:

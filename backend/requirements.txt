@@ -45,6 +45,8 @@ python-multipart==0.0.32
 requests==2.34.2
 sherpa-onnx==2.0.0
 sherpa-onnx-core==2.0.0
+# Single-voice dub (0.5.7): Microsoft Edge's read-aloud voices; LGPL-3.0 (kept a replaceable module in the one-folder build)
+edge-tts==7.3.1
 soundfile==0.14.0
 soupsieve==2.9.1
 starlette==1.3.1
