@@ -152,6 +152,14 @@ class Project(Base):
     characters_version    = Column(Integer, nullable=True, default=CHARACTERS_VERSION)
     character_dismissals  = Column(Text, nullable=True)
 
+    # Single-voice dub (0.5.7, app/services/single_voice): "single_voice" — one Edge TTS voice for every line, no
+    # speaker work — or "characters" (NULL on rows from before it: the usual dubbing). Chosen at creation only. The
+    # voice, its speaking rate in percent, and whether an episode goes straight to a finished export.
+    dub_mode    = Column(String(20), nullable=True, default="characters")
+    voice_name  = Column(String(64), nullable=True)
+    voice_rate  = Column(Integer, nullable=True)
+    auto_export = Column(Boolean, nullable=True)
+
     jobs     = relationship("Job", back_populates="project", cascade="all, delete")
     speakers = relationship("Speaker", back_populates="project", cascade="all, delete")
     media_assets = relationship("MediaAsset", back_populates="project", cascade="all, delete")

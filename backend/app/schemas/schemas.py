@@ -2,7 +2,7 @@
 app/schemas/schemas.py
 Pydantic v2 schemas for all API request bodies and responses.
 """
-from pydantic import BaseModel, Field, computed_field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 import json
 import re as _re
 
@@ -34,12 +34,27 @@ class ProjectCreate(BaseModel):
     target_lang: str = "km"
     # Optional "About this drama" text; it starts the project's story notes
     story_intro: str = Field("", max_length=4000)
+    # Single-voice dub (0.5.7, app/services/single_voice): chosen here only
+    dub_mode: Literal["characters", "single_voice"] = "characters"
+    voice_name: Literal["km-KH-PisethNeural", "km-KH-SreymomNeural"] = "km-KH-PisethNeural"
+    voice_rate: int = Field(0, ge=-50, le=50)
+    auto_export: bool = False
 
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
     chat_edit_mode: Optional[str] = Field(None, pattern="^(manual|auto)$")
+    voice_name: Optional[Literal["km-KH-PisethNeural", "km-KH-SreymomNeural"]] = None
+    voice_rate: Optional[int] = Field(None, ge=-50, le=50)
+    auto_export: Optional[bool] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _kind_is_fixed(cls, data):
+        if isinstance(data, dict) and "dub_mode" in data:
+            raise ValueError("A project's kind is chosen when it's created and can't be changed")
+        return data
 
 
 class ProjectResponse(BaseModel):
@@ -52,6 +67,19 @@ class ProjectResponse(BaseModel):
     chat_edit_mode: str = "manual"
     created_at: datetime
     updated_at: datetime
+    # Single-voice dub (0.5.7); NULL on rows from before it
+    dub_mode: str = "characters"
+    voice_name: str = "km-KH-PisethNeural"
+    voice_rate: int = 0
+    auto_export: bool = False
+
+    @field_validator("dub_mode", "voice_name", "voice_rate", "auto_export", mode="before")
+    @classmethod
+    def _defaults_for_older_rows(cls, value, info):
+        if value is not None:
+            return value
+        return {"dub_mode": "characters", "voice_name": "km-KH-PisethNeural", "voice_rate": 0,
+                "auto_export": False}[info.field_name]
 
     @computed_field
     def logo_url(self) -> Optional[str]:
