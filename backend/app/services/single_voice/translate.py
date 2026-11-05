@@ -4,6 +4,7 @@ funny is fine). It never sounds awkward (ឆ្គង), keeps the Story notes' n
 avoids man/woman words where Khmer allows (one voice reads everyone). Gemini through translator's own plumbing
 (retries, billing errors); lines it leaves out are asked for once more, then go to the free Google Translate fallback.
 Only Khmer someone checked teaches (memory)."""
+import asyncio
 import logging
 import re
 
@@ -11,6 +12,7 @@ import httpx
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.models import Job, Segment
 from app.services import translator
 from app.services.translator import TranslationReport
@@ -92,11 +94,12 @@ async def translate(texts: list[str], durations: list[float], story: str, memory
     """Each line in Khmer ("" where nothing could translate it) and how it went."""
     report = TranslationReport()
     results = [""] * len(texts)
+    use_gemini = settings.TRANSLATION_BACKEND.lower() == "gemini" and bool(settings.GEMINI_API_KEY)
     for start in range(0, len(texts), CHUNK):
         chunk = list(range(start, min(len(texts), start + CHUNK)))
         todo = [i for i in chunk if (texts[i] or "").strip()]
         examples = translator.pick_examples(memory_pairs, [texts[i] for i in todo]) if memory_pairs else []
-        for _attempt in range(2):   # the lines Gemini left out are asked for once more
+        for _attempt in range(2 if use_gemini else 0):   # the lines Gemini left out are asked for once more
             if not todo:
                 break
             try:
@@ -106,10 +109,11 @@ async def translate(texts: list[str], durations: list[float], story: str, memory
                 logger.warning(f"Single-voice translation: Gemini failed: {e}")
                 break
             for i, km in zip(todo, got):
-                results[i] = km
+                results[i] = "" if translator._looks_untranslated(km, "zh") else km   # Chinese echoed back
             todo = [i for i in todo if not results[i]]
         if todo:   # the free fallback: no story, no style, but better than nothing
-            backup = translator._deep_translate_many([texts[i] for i in todo], "zh", "km")
+            # in a thread: it throttles itself with time.sleep, which would stop the whole backend
+            backup = await asyncio.to_thread(translator._deep_translate_many, [texts[i] for i in todo], "zh", "km")
             for i, km in zip(todo, backup):
                 results[i] = km
                 if km:

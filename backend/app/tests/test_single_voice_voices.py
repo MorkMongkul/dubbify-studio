@@ -55,6 +55,12 @@ def _voicing(monkeypatch, fail=()):
 
 async def test_lines_without_a_current_voice_are_voiced_then_exported(db_sessionmaker, monkeypatch, tmp_path):
     job_id, ids = await _project(db_sessionmaker, monkeypatch, tmp_path)
+    kept = tmp_path / "2.wav"
+    kept.write_bytes(b"RIFF")
+    async with db_sessionmaker() as s:   # line 2's voice is really there
+        seg = (await s.execute(select(Segment).where(Segment.id == ids[1]))).scalar_one()
+        seg.tts_audio_path = str(kept)
+        await s.commit()
     voiced, mixed = _voicing(monkeypatch)
     await voices.voice_and_export(job_id, "/Users/x/Movies/out.mp4")
     assert sorted(voiced) == sorted([ids[0], ids[2]])
@@ -128,3 +134,63 @@ async def test_a_lines_own_voice_uses_edge_in_a_single_voice_project(client, db_
 async def test_a_normal_projects_line_never_uses_edge(client, db_sessionmaker, monkeypatch, tmp_path):
     used = await _one_line_voice(client, db_sessionmaker, monkeypatch, tmp_path, "characters")
     assert used == [("tts_client",)]
+
+
+# ── review fixes ─────────────────────────────────────────────────
+
+async def test_warnings_from_the_analysis_survive_a_clean_export(db_sessionmaker, monkeypatch, tmp_path):
+    job_id, ids = await _project(db_sessionmaker, monkeypatch, tmp_path)
+    async with db_sessionmaker() as s:
+        job = (await s.execute(select(Job).where(Job.id == job_id))).scalar_one()
+        job.error_msg = "2 line(s) were translated by the basic fallback"
+        await s.commit()
+    voiced, mixed = _voicing(monkeypatch)
+
+    async def clean_mix(job_id, mute_original, export_path=None):
+        async with db_sessionmaker() as s:   # what _mix_job_task does when it succeeds
+            job = (await s.execute(select(Job).where(Job.id == job_id))).scalar_one()
+            job.status, job.error_msg = JobStatus.COMPLETED, ""
+            await s.commit()
+    monkeypatch.setattr(voices.tts_routes, "_mix_job_task", clean_mix)
+    await voices.voice_and_export(job_id, None)
+    async with db_sessionmaker() as s:
+        job = (await s.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    assert "basic fallback" in job.error_msg and "1 line had no Khmer" in job.error_msg
+
+
+async def test_progress_moves_as_voices_are_made(db_sessionmaker, monkeypatch, tmp_path):
+    job_id, ids = await _project(db_sessionmaker, monkeypatch, tmp_path)
+    seen = []
+
+    async def synth(segment_id, db):
+        async with db_sessionmaker() as s:
+            seen.append((await s.execute(select(Job.progress).where(Job.id == job_id))).scalar_one())
+        return None, "edge"
+    monkeypatch.setattr(voices.tts_routes, "_synthesize_segment_db", synth)
+
+    async def mix(job_id, mute_original, export_path=None):
+        pass
+    monkeypatch.setattr(voices.tts_routes, "_mix_job_task", mix)
+    monkeypatch.setattr(voices, "CONCURRENCY", 1)
+    await voices.voice_and_export(job_id, None)
+    assert seen[-1] > seen[0]
+
+
+async def test_an_unexpected_error_never_leaves_the_episode_busy(db_sessionmaker, monkeypatch, tmp_path):
+    job_id, ids = await _project(db_sessionmaker, monkeypatch, tmp_path)
+    _voicing(monkeypatch)
+
+    async def broken_mix(job_id, mute_original, export_path=None):
+        raise RuntimeError("disk full")
+    monkeypatch.setattr(voices.tts_routes, "_mix_job_task", broken_mix)
+    await voices.voice_and_export(job_id, None)
+    async with db_sessionmaker() as s:
+        job = (await s.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    assert job.status == JobStatus.COMPLETED and "disk full" in job.error_msg
+
+
+async def test_a_voice_whose_file_is_gone_is_made_again(db_sessionmaker, monkeypatch, tmp_path):
+    job_id, ids = await _project(db_sessionmaker, monkeypatch, tmp_path)   # ids[1]'s /v/2.wav doesn't exist
+    voiced, mixed = _voicing(monkeypatch)
+    await voices.voice_and_export(job_id, None)
+    assert ids[1] in voiced

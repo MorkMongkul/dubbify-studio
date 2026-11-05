@@ -47,6 +47,16 @@ sherpa-onnx==2.0.0
 sherpa-onnx-core==2.0.0
 # Single-voice dub (0.5.7): Microsoft Edge's read-aloud voices; LGPL-3.0 (kept a replaceable module in the one-folder build)
 edge-tts==7.3.1
+# edge-tts's own dependencies, pinned like the rest
+aiohttp==3.14.5
+aiohappyeyeballs==2.7.1
+aiosignal==1.4.0
+attrs==26.1.0
+frozenlist==1.8.0
+multidict==7.2.1
+propcache==0.5.4
+yarl==1.25.1
+tabulate==0.10.0
 soundfile==0.14.0
 soupsieve==2.9.1
 starlette==1.3.1

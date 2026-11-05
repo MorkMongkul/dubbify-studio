@@ -21,6 +21,7 @@ pytestmark = pytest.mark.asyncio
 # ── the translation request ──────────────────────────────────────
 
 async def test_the_request_asks_for_free_spoken_khmer_that_fits(monkeypatch):
+    monkeypatch.setattr(sv_translate.settings, "GEMINI_API_KEY", "key")
     payloads = []
 
     async def post(payload, timeout):
@@ -37,6 +38,7 @@ async def test_the_request_asks_for_free_spoken_khmer_that_fits(monkeypatch):
 
 
 async def test_lines_gemini_leaves_out_are_asked_for_again_then_go_to_the_fallback(monkeypatch):
+    monkeypatch.setattr(sv_translate.settings, "GEMINI_API_KEY", "key")
     answers = iter(["1. មួយ", ""])   # line 2 missing, then the retry answers with nothing for it
 
     async def post(payload, timeout):
@@ -143,7 +145,7 @@ async def test_gemini_never_hears_the_video_without_a_click(db_sessionmaker, mon
     async with db_sessionmaker() as s:
         job = (await s.execute(select(Job).where(Job.id == job_id))).scalar_one()
     assert heard == [] and job.status == JobStatus.STEMS_READY
-    assert "Press Analyze to transcribe with Gemini" in job.error_msg
+    assert "Press Analyze to transcribe it with Gemini" in job.error_msg
 
 
 async def test_analyze_lets_gemini_transcribe(db_sessionmaker, monkeypatch, tmp_path):
@@ -263,3 +265,55 @@ async def test_analyze_on_a_single_voice_project_runs_its_pipeline(client, db_se
         job_id = job.id
     resp = await client.post(f"/api/v1/jobs/{job_id}/analyze")
     assert resp.status_code == 202 and ran == [True]
+
+
+# ── review fixes ─────────────────────────────────────────────────
+
+async def test_a_mac_that_fails_waits_for_analyze_then_gemini_transcribes(db_sessionmaker, monkeypatch, tmp_path):
+    (project_id, job_id), heard = await _episode(db_sessionmaker, monkeypatch, tmp_path)
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError("exit -9: out of memory")
+    monkeypatch.setattr(sv_pipeline.local_asr, "transcribe", crash)
+    _translator(monkeypatch)
+    await sv_pipeline.run_analysis(job_id)
+    async with db_sessionmaker() as s:
+        job = (await s.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    assert job.status == JobStatus.STEMS_READY and "Press Analyze" in job.error_msg and heard == []
+    await sv_pipeline.run_analysis(job_id, allow_gemini=True)
+    assert heard == ["gemini"]
+
+
+async def test_the_free_fallback_never_blocks_the_app(monkeypatch):
+    import threading
+    main = threading.get_ident()
+    where = []
+
+    async def post(payload, timeout):
+        raise sv_translate.translator.GeminiError("Gemini 402", transient=False)
+    monkeypatch.setattr(sv_translate.translator, "_post_translation", post)
+    monkeypatch.setattr(sv_translate.translator, "_deep_translate_many",
+                        lambda lines, s, t: where.append(threading.get_ident()) or ["ok"] * len(lines))
+    monkeypatch.setattr(sv_translate.settings, "GEMINI_API_KEY", "key")
+    texts, report = await sv_translate.translate(["一"], [1.0], "", [], "km-KH-PisethNeural")
+    assert texts == ["ok"] and where and where[0] != main
+
+
+async def test_without_gemini_the_free_fallback_translates_straight_away(monkeypatch):
+    async def post(payload, timeout):
+        pytest.fail("Gemini was asked without a key")
+    monkeypatch.setattr(sv_translate.translator, "_post_translation", post)
+    monkeypatch.setattr(sv_translate.settings, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(sv_translate.translator, "_deep_translate_many", lambda lines, s, t: ["ok"] * len(lines))
+    texts, report = await sv_translate.translate(["一"], [1.0], "", [], "km-KH-PisethNeural")
+    assert texts == ["ok"] and report.fallback == 1
+
+
+async def test_chinese_gemini_echoes_back_is_not_kept(monkeypatch):
+    async def post(payload, timeout):
+        return {"candidates": [{"content": {"parts": [{"text": "1. 你好"}]}}]}
+    monkeypatch.setattr(sv_translate.translator, "_post_translation", post)
+    monkeypatch.setattr(sv_translate.settings, "GEMINI_API_KEY", "key")
+    monkeypatch.setattr(sv_translate.translator, "_deep_translate_many", lambda lines, s, t: ["សួស្តី"] * len(lines))
+    texts, _ = await sv_translate.translate(["你好"], [1.0], "", [], "km-KH-PisethNeural")
+    assert texts == ["សួស្តី"]

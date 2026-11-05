@@ -48,15 +48,20 @@ async def run_analysis(job_id: str, allow_gemini: bool = False) -> None:
             names = local_asr.names_from_notes(project.story_notes)
             clip_audio = original_sound_for(job)
             await db.commit()   # no connection held while transcribing
+            lines, why = None, ("its model is still downloading, or this Mac or language can't use it")
             if local_asr.use_mac(language):
-                lines = await local_asr.transcribe(vocals, clip_audio or vocals, names, [])
-            elif allow_gemini:
+                try:
+                    lines = await local_asr.transcribe(vocals, clip_audio or vocals, names, [])
+                except Exception as e:   # noqa: BLE001 — out of memory, a model file gone: Gemini, on a click
+                    logger.warning(f"Single-voice: transcribing on this Mac failed: {e}")
+                    why = f"transcribing on this Mac failed: {e}"
+            if lines is None and allow_gemini:
                 lines, _ = await transcribe_audio(vocals, references=[], taken_labels=[], language=language,
                                                   clip_audio=clip_audio)
-            else:
+            if lines is None:
                 await _update_job(db, job, JobStatus.STEMS_READY, 30,
-                                  "Transcription on this Mac isn't ready yet (its model is still downloading, or "
-                                  "this Mac or language can't use it). Press Analyze to transcribe with Gemini.")
+                                  f"This episode wasn't transcribed ({why}). Press Analyze to transcribe it with "
+                                  "Gemini — that sends its sound to Google and uses your Gemini credit.")
                 return
             lines = [line for line in lines if (line.source_text or "").strip()]
 

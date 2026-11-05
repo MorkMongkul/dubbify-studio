@@ -13,7 +13,7 @@ import { toast } from 'sonner'
 import { cn, formatTime, getSpeakerColor } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import { segments as segmentsApi, tts as ttsApi, type BatchSynthesisStatus } from '@/api/client'
-import { useAnalyzeJob, useJob, useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker, useTranslateMissing, useRetrySeparation, putSegments } from '@/hooks/useApi'
+import { useProject, useAnalyzeJob, useJob, useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker, useTranslateMissing, useRetrySeparation, putSegments } from '@/hooks/useApi'
 import { JobProgressRing } from '@/components/progress/JobProgressRing'
 import { useDoneFlash } from '@/hooks/useDoneFlash'
 import { jobProgress } from '@/lib/jobProgress'
@@ -64,6 +64,9 @@ export function TranscriptPanel({
   const translateMissing = useTranslateMissing()
   // "Audio ready" offers Analyze right there (the Vocals track has it too)
   const analyze = useAnalyzeJob()
+  // Single-voice dub (0.5.7): its episode stops at "Audio ready" with the reason when this Mac couldn't transcribe it
+  const { data: project } = useProject(projectId)
+  const singleVoiceWaiting = project?.dub_mode === 'single_voice' && job?.status === 'stems_ready' && !!job?.error_msg
   const missingTranslations = useMemo(
     () => segments.filter((s) => s.source_text?.trim() && !s.khmer_text?.trim()).length,
     [segments],
@@ -806,6 +809,9 @@ export function TranscriptPanel({
                   <RefreshCw size={18} className="text-emerald-400" />
                 </div>
                 <p className="text-[12px] font-semibold text-emerald-400">Audio ready</p>
+                {singleVoiceWaiting && (
+                  <p className="max-w-xs text-[11px] leading-snug text-amber-300/90">{job?.error_msg}</p>
+                )}
                 <button
                   onClick={() => analyze.mutate({ jobId }, {
                     onError: (e) => toast.error((e as Error).message || 'Could not start the analysis'),
