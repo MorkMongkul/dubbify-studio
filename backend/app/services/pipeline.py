@@ -24,7 +24,7 @@ from app.core.config import settings
 from app.models.models import Job, Project, Segment, Speaker, JobStatus
 from app.services.audio_extractor import extract_audio, get_video_duration, video_frame_rate
 from app.services.source_separator import render_bgm_volume, separate_vocals_bgm
-from app.services import line_timing, local_asr
+from app.services import line_timing, local_asr, single_voice
 from app.services.asr import VOICES, labels_for_spans, transcribe_audio
 from app.services.translator import translate_batch_with_report
 from app.services.timeline import actor_span, follow_text, lay_out_new, settle_job
@@ -110,8 +110,11 @@ async def run_pipeline(job_id: str) -> None:
             return
 
         # Settings → After upload: analyse straight away — never on music that couldn't be separated (the user may
-        # want Try again first), and claimed like the Analyze button (a click meanwhile has claimed it already)
-        if settings.AFTER_UPLOAD != "analyze" or degraded:
+        # want Try again first), and claimed like the Analyze button (a click meanwhile has claimed it already). A
+        # single-voice dub project always goes on to its own pipeline (it stops after translation by itself).
+        project = (await db.execute(select(Project).where(Project.id == job.project_id))).scalar_one_or_none()
+        single = single_voice.is_single_voice(project)
+        if (settings.AFTER_UPLOAD != "analyze" and not single) or degraded:
             return
         claimed = await db.execute(
             update(Job).where(Job.id == job_id, Job.status == JobStatus.STEMS_READY)
@@ -119,6 +122,10 @@ async def run_pipeline(job_id: str) -> None:
         await db.commit()
         if claimed.rowcount != 1:
             return
+    if single:
+        from app.services.single_voice import pipeline as sv_pipeline
+        await sv_pipeline.run_analysis(job_id)
+        return
     logger.info(f"Job {job_id[:8]} — analysing straight after upload (Settings → After upload)")
     await run_analysis_pipeline(job_id)
 

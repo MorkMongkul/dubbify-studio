@@ -19,7 +19,8 @@ from app.core.database import get_db
 from app.core.config import settings
 from app.models.models import Job, Project, JobStatus, Segment, StemPiece, MediaClip, LinePrint
 from app.schemas.schemas import JobResponse, PipelineStartResponse, BgmVolumeUpdate, JobTitleUpdate, JobFinishedUpdate, JobDuckingUpdate, TrackFlagsUpdate
-from app.services import picture_strip, story_learning, timeline
+from app.services import picture_strip, single_voice, story_learning, timeline
+from app.services.single_voice import pipeline as sv_pipeline
 from app.services.pipeline import (
     needs_translation, run_analysis_pipeline, run_pipeline, run_separation_retry, run_speaker_detection,
     run_translation,
@@ -362,7 +363,11 @@ async def analyze_job(
     job.status, job.progress, job.error_msg = JobStatus.DIARIZING, 35, ""
     await db.commit()
 
-    if is_subtitle_job:
+    project = (await db.execute(select(Project).where(Project.id == job.project_id))).scalar_one_or_none()
+    if single_voice.is_single_voice(project):
+        # Its own pipeline; pressing Analyze is the click that lets Gemini transcribe when this Mac can't
+        background_tasks.add_task(sv_pipeline.run_analysis, job_id, True)
+    elif is_subtitle_job:
         background_tasks.add_task(run_subtitle_analysis_pipeline, job_id, max_speakers)
     else:
         background_tasks.add_task(run_analysis_pipeline, job_id, max_speakers)
