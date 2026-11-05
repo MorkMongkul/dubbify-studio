@@ -23,6 +23,7 @@ from app.services import line_timing, local_asr, local_separation
 import app.core.database as core_db
 from app.api.routes import health, projects, jobs, segments, tts, voices, overlays, chat, story, stem_pieces, media
 from app.api.routes import settings as settings_routes
+from app.api.routes import single_voice as single_voice_routes
 
 # ── Logging setup ─────────────────────────────────────────────
 logging.basicConfig(
@@ -170,6 +171,7 @@ app.include_router(tts.router,       prefix="/api/v1")
 app.include_router(voices.router,    prefix="/api/v1")
 app.include_router(overlays.router,  prefix="/api/v1")
 app.include_router(media.router,     prefix="/api/v1")
+app.include_router(single_voice_routes.router, prefix="/api/v1")
 app.include_router(chat.router,      prefix="/api/v1")
 app.include_router(settings_routes.router, prefix="/api/v1")
 
