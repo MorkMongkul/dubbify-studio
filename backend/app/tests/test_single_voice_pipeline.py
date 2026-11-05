@@ -317,3 +317,32 @@ async def test_chinese_gemini_echoes_back_is_not_kept(monkeypatch):
     monkeypatch.setattr(sv_translate.translator, "_deep_translate_many", lambda lines, s, t: ["សួស្តី"] * len(lines))
     texts, _ = await sv_translate.translate(["你好"], [1.0], "", [], "km-KH-PisethNeural")
     assert texts == ["សួស្តី"]
+
+
+async def test_a_video_over_40_minutes_waits_at_audio_ready(db_sessionmaker, monkeypatch, tmp_path):
+    job_id, ran = await _uploaded(db_sessionmaker, monkeypatch, tmp_path, "single_voice")
+
+    async def long(path):
+        return sv_pipeline.MAX_SECS + 120
+    monkeypatch.setattr(pipeline, "get_video_duration", long)
+    await pipeline.run_pipeline(job_id)
+    async with db_sessionmaker() as s:
+        job = (await s.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    assert ran == [] and job.status == JobStatus.STEMS_READY and "40 minutes" in job.error_msg
+
+
+async def test_fully_automatic_claims_the_episode_before_exporting(db_sessionmaker, monkeypatch, tmp_path):
+    (project_id, job_id), heard = await _episode(db_sessionmaker, monkeypatch, tmp_path)
+    async with db_sessionmaker() as s:
+        project = (await s.execute(select(Project).where(Project.id == project_id))).scalar_one()
+        project.auto_export = True
+        await s.commit()
+    _translator(monkeypatch)
+    statuses = []
+
+    async def voices(job_id, export_path):
+        async with db_sessionmaker() as s:
+            statuses.append((await s.execute(select(Job.status).where(Job.id == job_id))).scalar_one())
+    monkeypatch.setattr(sv_pipeline, "voice_and_export", voices)
+    await sv_pipeline.run_analysis(job_id)
+    assert statuses == [JobStatus.SYNTHESIZING]   # an Export click now gets "busy", not a second run

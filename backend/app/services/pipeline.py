@@ -114,6 +114,10 @@ async def run_pipeline(job_id: str) -> None:
         # single-voice dub project always goes on to its own pipeline (it stops after translation by itself).
         project = (await db.execute(select(Project).where(Project.id == job.project_id))).scalar_one_or_none()
         single = single_voice.is_single_voice(project)
+        if single and (job.duration_secs or 0) > single_voice.MAX_SECS:
+            # Made for ~20 minutes: a longer video may run out of memory — it goes on only from Analyze
+            await _update_job(db, job, JobStatus.STEMS_READY, 30, single_voice.TOO_LONG)
+            return
         if (settings.AFTER_UPLOAD != "analyze" and not single) or degraded:
             return
         claimed = await db.execute(

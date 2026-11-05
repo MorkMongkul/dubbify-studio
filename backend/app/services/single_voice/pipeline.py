@@ -12,13 +12,12 @@ from app.services.asr import transcribe_audio
 from app.services.pipeline_common import (
     update_job_status as _update_job, original_sound_for, replace_job_segments, restore_or_fail_job, translation_story, vocals_path_for,
 )
-from app.services.single_voice import DEFAULT_VOICE
+from app.services.single_voice import DEFAULT_VOICE, MAX_SECS
 from app.services.single_voice import translate as sv_translate
 from app.services.timeline import lay_out_new
 
 logger = logging.getLogger(__name__)
 
-MAX_SECS = 2400   # 40 minutes: made for ~20 (ten episodes joined); longer ones may run out of memory on 8 GB
 
 
 async def voice_and_export(job_id: str, export_path: str | None) -> None:
@@ -98,6 +97,13 @@ async def run_analysis(job_id: str, allow_gemini: bool = False) -> None:
             await restore_or_fail_job(db, job_id, f"Analysis failed: {e}")
             return
         auto = bool(project.auto_export) and not report.failed
+        if auto:
+            # Claimed like the Generate voices & export button: an Export click meanwhile gets "busy"
+            from sqlalchemy import update
+            claimed = await db.execute(update(Job).where(Job.id == job_id, Job.status == JobStatus.COMPLETED)
+                                       .values(status=JobStatus.SYNTHESIZING, progress=5))
+            await db.commit()
+            auto = claimed.rowcount == 1
 
     if auto:
         await voice_and_export(job_id, None)

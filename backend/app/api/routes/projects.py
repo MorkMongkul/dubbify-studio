@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, update
 from typing import List
 
 from app.core.database import get_db
@@ -18,7 +18,7 @@ from app.models.models import (
     MediaAsset, MediaClip, MediaTemplate,
 )
 from app.schemas.schemas import ProjectCreate, ProjectUpdate, ProjectResponse
-from app.services import story_notes
+from app.services import single_voice, story_notes
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
@@ -66,8 +66,16 @@ async def update_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    revoice = single_voice.is_single_voice(project) and any(
+        key in changes and changes[key] != getattr(project, key) for key in ("voice_name", "voice_rate"))
+    for field, value in changes.items():
         setattr(project, field, value)
+    if revoice:
+        # Single-voice dub: every voice made so far is the old voice or speed — Generate voices & export makes
+        # them again (its rule: a voice whose text isn't the line's Khmer is out of date)
+        await db.execute(update(Segment).where(
+            Segment.job_id.in_(select(Job.id).where(Job.project_id == project.id))).values(voice_text=None))
 
     await db.flush()
     await db.refresh(project)

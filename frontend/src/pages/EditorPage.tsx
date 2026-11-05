@@ -35,6 +35,7 @@ import { EditorRail } from '@/components/layout/EditorRail'
 import { LayoutMenu } from '@/components/layout/LayoutMenu'
 import { loadLayout, saveLayout } from '@/lib/layoutStorage'
 import { SpeakersPanel } from '@/components/panels/SpeakersPanel'
+import { SingleVoicePanel } from '@/components/panels/SingleVoicePanel'
 import { ProjectsPanel } from '@/components/panels/ProjectsPanel'
 import { MediaPanel } from '@/components/panels/MediaPanel'
 import { VoicesPanel } from '@/components/panels/VoicesPanel'
@@ -659,7 +660,9 @@ export default function EditorPage() {
               {railTab === 'projects' ? (
                 <ProjectsPanel activeProjectId={projectId} activeJobId={jobId} onImportFile={onDropVideo} />
               ) : railTab === 'speakers' ? (
-                <SpeakersPanel projectId={projectId} jobId={jobId} />
+                singleVoiceProject && currentProject
+                  ? <SingleVoicePanel project={currentProject} />
+                  : <SpeakersPanel projectId={projectId} jobId={jobId} />
               ) : railTab === 'media' ? (
                 <MediaPanel projectId={projectId} jobId={jobId} />
               ) : railTab === 'voices' ? (
@@ -764,7 +767,7 @@ export default function EditorPage() {
   return (
     <div className="h-screen w-screen flex bg-surface-0 overflow-hidden text-white relative">
       {/* CapCut-style icon rail — full height, drives the dynamic dock */}
-      <EditorRail />
+      <EditorRail singleVoice={singleVoiceProject} />
       <div {...getRootProps()} className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden relative">
         <input {...getInputProps()} />
 
