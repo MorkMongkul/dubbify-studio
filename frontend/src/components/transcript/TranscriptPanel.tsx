@@ -66,6 +66,8 @@ export function TranscriptPanel({
   const analyze = useAnalyzeJob()
   // Single-voice dub (0.5.7): its episode stops at "Audio ready" with the reason when this Mac couldn't transcribe it
   const { data: project } = useProject(projectId)
+  // There are no speakers or per-line voices in a single-voice dub project: every line is its Edge voice
+  const singleVoice = project?.dub_mode === 'single_voice'
   const singleVoiceWaiting = project?.dub_mode === 'single_voice' && job?.status === 'stems_ready' && !!job?.error_msg
   const missingTranslations = useMemo(
     () => segments.filter((s) => s.source_text?.trim() && !s.khmer_text?.trim()).length,
@@ -848,10 +850,10 @@ export function TranscriptPanel({
                     onChange={() => toggleSelectAllSegments(segments.map((s) => s.id))}
                   />
                 </th>
-                <th className="p-2 w-20">Speakers</th>
+                {!singleVoice && <th className="p-2 w-20">Speakers</th>}
                 <th className="p-2 w-20">Timestamps</th>
                 <th className="p-2">Translation and original</th>
-                <th className="p-2 w-28">Voices</th>
+                {!singleVoice && <th className="p-2 w-28">Voices</th>}
                 <th className="p-2 w-16 text-center">Status</th>
               </tr>
             </thead>
@@ -916,6 +918,7 @@ export function TranscriptPanel({
                     </td>
  
                     {/* Speaker */}
+                    {!singleVoice && (
                     <td className={cn('p-2 whitespace-nowrap', whoOpen && 'align-top')} onClick={(e) => e.stopPropagation()}>
                       {whoOpen && (
                         <p className="mb-1 text-[10.5px] font-semibold text-amber-300">Who is this?</p>
@@ -938,6 +941,7 @@ export function TranscriptPanel({
                         </select>
                       </div>
                     </td>
+                    )}
  
                     {/* Time */}
                     <td className={cn(
@@ -989,6 +993,7 @@ export function TranscriptPanel({
                     </td>
 
                     {/* Voice Clone Select */}
+                    {!singleVoice && (
                     <td className="p-2" onClick={(e) => e.stopPropagation()}>
                       {(() => {
                         const ownVoiceName = seg.voice_id ? availableVoices.find((v) => v.id === seg.voice_id)?.name : null
@@ -1009,6 +1014,7 @@ export function TranscriptPanel({
                         )
                       })()}
                     </td>
+                    )}
 
                     {/* Status Badge */}
                     <td className="p-2 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
