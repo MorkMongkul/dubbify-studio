@@ -1,7 +1,7 @@
 // Run with `npm test` (Node's own test runner; Node strips the TypeScript types).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { holdPercent, jobProgress, stagePercent, uploadPercent } from '../src/lib/jobProgress.ts'
+import { holdPercent, jobProgress, singleVoiceTitle, stagePercent, uploadPercent } from '../src/lib/jobProgress.ts'
 
 test('a first analysis says what the long step really does, in plain words', () => {
   assert.equal(jobProgress('diarizing', false)!.title, 'Transcribing and finding speakers…')
@@ -146,4 +146,11 @@ test("Detect speakers' recognizing fills the whole ring", () => {
 test("transcribing includes line timing: 2 s + 0.04 s per second of video (6.4 s measured for 113 s)", () => {
   const usual = 2 + 0.04 * 113
   assert.equal(stagePercent('transcribing', usual / 2, 113), 55 + Math.floor(0.5 * 5))
+})
+
+test('a single-voice project never says it is finding speakers', () => {
+  assert.equal(singleVoiceTitle('diarizing'), 'Transcribing on your Mac…')
+  assert.equal(singleVoiceTitle('transcribing'), 'Transcribing on your Mac…')
+  assert.equal(singleVoiceTitle('synthesizing'), 'Making the voices…')
+  assert.equal(singleVoiceTitle('translating'), null)   // the usual wording fits
 })

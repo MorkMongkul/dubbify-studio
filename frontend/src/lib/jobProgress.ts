@@ -64,6 +64,13 @@ export function jobProgress(
   }
 }
 
+/** A single-voice dub project (0.5.7) has no speakers: its own wording where the usual one would mention them. */
+export function singleVoiceTitle(status: string | null | undefined): string | null {
+  if (status === 'diarizing' || status === 'transcribing') return 'Transcribing on your Mac…'
+  if (status === 'synthesizing') return 'Making the voices…'
+  return null
+}
+
 // ── The ring's percentage ───────────────────────────────────────────────────
 //
 // The steps run on services that don't say how far along they are (a short

@@ -85,3 +85,10 @@ async def test_a_click_first_means_no_second_run(db_sessionmaker, monkeypatch, t
     monkeypatch.setattr(pipeline, "_update_job", clicked_meanwhile)
     await pipeline.run_pipeline(job_id)
     assert analysed == []
+
+
+async def test_the_progress_ring_knows_when_analysis_began(db_sessionmaker, monkeypatch, tmp_path):
+    from app.services import job_clock
+    job_id, analysed = await _upload(db_sessionmaker, monkeypatch, tmp_path, "analyze")
+    await pipeline.run_pipeline(job_id)
+    assert job_clock.elapsed(job_id, JobStatus.DIARIZING) is not None

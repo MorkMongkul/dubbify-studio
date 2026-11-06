@@ -16,7 +16,7 @@ import { segments as segmentsApi, tts as ttsApi, type BatchSynthesisStatus } fro
 import { useProject, useAnalyzeJob, useJob, useVoices, useSynthesizeSegment, useSynthesizeBatch, useCreateSegment, useCreateSpeaker, useTranslateMissing, useRetrySeparation, putSegments } from '@/hooks/useApi'
 import { JobProgressRing } from '@/components/progress/JobProgressRing'
 import { useDoneFlash } from '@/hooks/useDoneFlash'
-import { jobProgress } from '@/lib/jobProgress'
+import { jobProgress, singleVoiceTitle } from '@/lib/jobProgress'
 import { recordSegmentChange, recordSegmentsChange, recordSegmentCreate } from '@/lib/historyHelpers'
 import { voiceUsers } from '@/lib/voiceTags'
 import { effectiveSpeed } from '@/lib/clipRules'
@@ -76,7 +76,11 @@ export function TranscriptPanel({
   // before the episode has lines, a thin bar above them after (the top bar
   // takes over only while this panel is hidden).
   const jobAction = useEditorStore((s) => s.jobActions[jobId])
-  const progress = jobProgress(job?.status, segments.length > 0, jobAction)
+  const usualProgress = jobProgress(job?.status, segments.length > 0, jobAction)
+  // (single-voice dub: "finding speakers" doesn't apply — project is read below)
+  const singleVoiceWording = singleVoiceTitle(job?.status)
+  const progress = usualProgress && project?.dub_mode === 'single_voice' && singleVoiceWording
+    ? { ...usualProgress, title: singleVoiceWording } : usualProgress
   // Before the episode has lines the progress is a ring, which says Done for a
   // moment when the analysis finishes, before the lines take its place
   // (only once this panel has seen the job running for itself, so coming back

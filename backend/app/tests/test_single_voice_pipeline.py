@@ -346,3 +346,27 @@ async def test_fully_automatic_claims_the_episode_before_exporting(db_sessionmak
     monkeypatch.setattr(sv_pipeline, "voice_and_export", voices)
     await sv_pipeline.run_analysis(job_id)
     assert statuses == [JobStatus.SYNTHESIZING]   # an Export click now gets "busy", not a second run
+
+
+async def test_the_progress_ring_knows_when_the_automatic_start_began(db_sessionmaker, monkeypatch, tmp_path):
+    """The claim after upload is a direct UPDATE, which the step clock's listener never sees: the ring sat at 0%."""
+    from app.services import job_clock
+    job_id, ran = await _uploaded(db_sessionmaker, monkeypatch, tmp_path, "single_voice")
+    await pipeline.run_pipeline(job_id)
+    assert ran and job_clock.elapsed(job_id, JobStatus.DIARIZING) is not None
+
+
+async def test_fully_automatics_voices_start_the_step_clock(db_sessionmaker, monkeypatch, tmp_path):
+    from app.services import job_clock
+    (project_id, job_id), heard = await _episode(db_sessionmaker, monkeypatch, tmp_path)
+    async with db_sessionmaker() as s:
+        project = (await s.execute(select(Project).where(Project.id == project_id))).scalar_one()
+        project.auto_export = True
+        await s.commit()
+    _translator(monkeypatch)
+
+    async def voices(job_id, export_path):
+        pass
+    monkeypatch.setattr(sv_pipeline, "voice_and_export", voices)
+    await sv_pipeline.run_analysis(job_id)
+    assert job_clock.elapsed(job_id, JobStatus.SYNTHESIZING) is not None

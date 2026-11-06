@@ -4,9 +4,9 @@
 // 2-second polls, from how long the step has run (step_elapsed_secs) plus the
 // time since that answer arrived.
 import { useEffect, useState } from 'react'
-import { useJob } from '@/hooks/useApi'
+import { useJob, useProject } from '@/hooks/useApi'
 import { useEditorStore } from '@/store/editorStore'
-import { holdPercent, jobProgress, stagePercent, type ShownPercent } from '@/lib/jobProgress'
+import { holdPercent, jobProgress, singleVoiceTitle, stagePercent, type ShownPercent } from '@/lib/jobProgress'
 import { ProgressRing } from '@/components/ui/ProgressRing'
 
 interface JobProgressRingProps {
@@ -40,6 +40,8 @@ export function JobProgressRing({ jobId, done = false, className }: JobProgressR
   const [shown, setShown] = useState<ShownPercent | null>(null)
   const next = holdPercent(shown, status, estimate, stagePercent(status, 0, videoSecs, action) ?? 0)
   if (next.status !== shown?.status || next.percent !== shown?.percent) setShown(next)
-  const title = jobProgress(status, false, action)?.title ?? 'Working…'
+  const { data: project } = useProject(job?.project_id ?? null)
+  const singleVoice = project?.dub_mode === 'single_voice'
+  const title = (singleVoice && singleVoiceTitle(status)) || jobProgress(status, false, action)?.title || 'Working…'
   return <ProgressRing percent={next.percent} title={title} done={done} className={className} />
 }

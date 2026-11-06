@@ -104,6 +104,9 @@ async def run_analysis(job_id: str, allow_gemini: bool = False) -> None:
                                        .values(status=JobStatus.SYNTHESIZING, progress=5))
             await db.commit()
             auto = claimed.rowcount == 1
+            if auto:
+                from app.services import job_clock
+                job_clock.mark(job_id, JobStatus.SYNTHESIZING)   # a direct UPDATE: the clock's listener didn't see it
 
     if auto:
         await voice_and_export(job_id, None)
