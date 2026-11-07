@@ -14,6 +14,7 @@ import { useEditorStore } from '@/store/editorStore'
 import { useThemeStore } from '@/store/themeStore'
 import { useAppSettings, useGeminiModels, useTestGeminiModel, useUpdateAppSettings } from '@/hooks/useApi'
 import { groupChanges, type SettingsGroup } from '@/lib/settingsDraft'
+import { GeminiKeysRow } from '@/components/settings/GeminiKeysRow'
 import { MoveloStudioIcon } from '@/components/brand/Movelo'
 import { cn } from '@/lib/utils'
 import type { AppSettings, AppSettingsUpdate, AppSettingsValues, GeminiModelChoice, GeminiModelTestResult } from '@/types'
@@ -348,11 +349,11 @@ function SettingsWindow({
         return (
           <div onKeyDown={saveOnEnter('keys')}>
             {devNote}
-            <SecretRow
-              label="Gemini API key" isSet={settings.secrets.GEMINI_API_KEY} disabled={disabled}
-              placeholder="Paste your key" value={draft.GEMINI_API_KEY ?? ''}
+            <GeminiKeysRow
+              count={settings.secrets.gemini_keys_count ?? (settings.secrets.GEMINI_API_KEY ? 1 : 0)} disabled={disabled}
+              value={draft.GEMINI_API_KEY ?? ''}
               onChange={(v) => edit({ GEMINI_API_KEY: v })}
-              onRemove={() => send({ GEMINI_API_KEY: '' }, 'Gemini API key removed')}
+              onRemove={() => send({ GEMINI_API_KEY: '' }, 'Gemini API keys removed')}
             />
             <SecretRow
               label="Hugging Face token" isSet={settings.secrets.HF_TOKEN} disabled={disabled}

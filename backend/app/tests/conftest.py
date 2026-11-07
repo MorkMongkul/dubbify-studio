@@ -122,3 +122,13 @@ def _no_backfill_queue_left():
     yield
     store.clear_backfill()
 
+
+
+@pytest.fixture(autouse=True)
+def _key_pool_in_a_temp_folder(tmp_path, monkeypatch):
+    """The Gemini key pool keeps its counters in gateway.db: every test gets its own, never the working folder's."""
+    from app.services import key_pool
+    monkeypatch.setattr(key_pool, "default_db_path", lambda: str(tmp_path / "gateway.db"))
+    key_pool.reset()
+    yield
+    key_pool.reset()

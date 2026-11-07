@@ -7,6 +7,9 @@ import asyncio
 import sys
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from contextlib import asynccontextmanager
@@ -24,6 +27,7 @@ import app.core.database as core_db
 from app.api.routes import health, projects, jobs, segments, tts, voices, overlays, chat, story, stem_pieces, media
 from app.api.routes import settings as settings_routes
 from app.api.routes import single_voice as single_voice_routes
+from app.api.routes import gateway
 
 # ── Logging setup ─────────────────────────────────────────────
 logging.basicConfig(
@@ -105,7 +109,14 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(local_asr.ensure_model())
     _background.add(task)
     task.add_done_callback(_background.discard)
+    try:      # the Gemini key pool: counters from gateway.db, keys from Settings (it follows later changes itself)
+        from app.services import key_pool
+        await key_pool.get_pool()
+    except Exception as e:  # noqa: BLE001 — a pool that can't start never stops the app: requests use the keys directly
+        logger.warning(f"Gemini key pool not started: {e}")
     yield
+    from app.services import key_pool
+    await key_pool.close()
     logger.info("Shutting down.")
 
 
@@ -161,6 +172,14 @@ app.add_middleware(APIGZipMiddleware)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
 
 # ── Routers ───────────────────────────────────────────────────
+@app.exception_handler(RequestValidationError)
+async def validation_error(request, exc: RequestValidationError):
+    """FastAPI's 422 repeats the rejected value as "input" — for Settings that would send a pasted key back (and into
+    logs). Everything else about the error stays."""
+    errors = [{k: v for k, v in e.items() if k not in ("input", "ctx")} for e in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+
+
 app.include_router(health.router)
 app.include_router(projects.router,  prefix="/api/v1")
 app.include_router(story.router,     prefix="/api/v1")
@@ -174,6 +193,7 @@ app.include_router(media.router,     prefix="/api/v1")
 app.include_router(single_voice_routes.router, prefix="/api/v1")
 app.include_router(chat.router,      prefix="/api/v1")
 app.include_router(settings_routes.router, prefix="/api/v1")
+app.include_router(gateway.router, prefix="/gateway")   # the key monitor; before the SPA catch-all
 
 # ── Static Files ──────────────────────────────────────────────
 from fastapi.staticfiles import StaticFiles

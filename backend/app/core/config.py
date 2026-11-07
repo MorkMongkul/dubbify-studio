@@ -7,7 +7,23 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from typing import List, Literal
 import os
+import re
 from pathlib import Path
+
+
+def parse_gemini_keys(raw: str | None) -> List[str]:
+    """
+    The Gemini keys in a GEMINI_API_KEY value: one per line or separated by commas, in order, a key given twice only
+    once. A label before `=` (`api_key01=AIza…`) is dropped — Google's keys never contain `=`.
+    """
+    keys: List[str] = []
+    for item in re.split(r"[\r\n,]+", raw or ""):
+        item = item.strip()
+        if "=" in item:
+            item = item.split("=", 1)[1].strip()
+        if item and item not in keys:
+            keys.append(item)
+    return keys
 
 
 def _data_dir() -> str:
@@ -41,6 +57,10 @@ class Settings(BaseSettings):
     # Where the data folder used to be, when the app moved it (the app ID
     # changed with the Movelo rename) — stored paths are rewritten at startup.
     DUBIFY_PREVIOUS_DATA_DIR: str = ""
+
+    def parsed_gemini_keys(self) -> List[str]:
+        """The Gemini keys saved in GEMINI_API_KEY (see parse_gemini_keys)."""
+        return parse_gemini_keys(self.GEMINI_API_KEY)
 
     @property
     def version(self) -> str:
@@ -77,7 +97,13 @@ class Settings(BaseSettings):
 
     # ── Google Gemini — translation ───────────────────────────
     # Free at: aistudio.google.com
+    # One key, or several (one per line, or comma-separated): requests are spread over them and move to the next key
+    # when one is out of quota (app/services/key_pool). Caps per key, counted by Movelo before it asks Google — the
+    # free tier's; 0 = no cap (a paid key).
     GEMINI_API_KEY: str = ""
+    GEMINI_RPM_PER_KEY: int = 12
+    GEMINI_RPD_PER_KEY: int = 450
+    GEMINI_TPD_PER_KEY: int = 900_000
     # A full Flash model, as for transcription and the Assistant: Chinese drama
     # dialogue into Khmer needs more than the cheap Flash-Lite, whose lines the
     # team had to fix one by one. Pinned version names get retired ("no longer

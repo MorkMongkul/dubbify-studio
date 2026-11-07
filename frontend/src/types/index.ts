@@ -439,7 +439,7 @@ export interface AppSettings {
   /** False during development, where settings come from backend/.env. */
   editable: boolean
   values: AppSettingsValues
-  secrets: { GEMINI_API_KEY: boolean; HF_TOKEN: boolean }
+  secrets: { GEMINI_API_KEY: boolean; HF_TOKEN: boolean; gemini_keys_count?: number }
   storage: { data_dir: string; upload_dir: string; database: 'local' | 'server'; log_dir: string }
   ffmpeg: string | null
   ffprobe: string | null

@@ -155,6 +155,21 @@ def _version_key(name: str) -> tuple:
     return major, minor, "preview" not in name, "lite" not in name
 
 
+async def _listing_key() -> str:
+    """The key to list models with: the first one in Settings that the pool hasn't found invalid (listing is free
+    and the same for every key, so it doesn't take a turn in the rotation)."""
+    keys = settings.parsed_gemini_keys()
+    try:
+        from app.services.key_pool import get_pool
+        pool = await get_pool()
+        for account in pool.accounts.values():
+            if not account.is_dead:
+                return account.raw_key
+    except Exception:  # noqa: BLE001 — listing never depends on the pool
+        pass
+    return keys[0] if keys else settings.GEMINI_API_KEY
+
+
 async def _list_models() -> list[dict]:
     """Every model this API key can see (name + supported methods). [] when the list can't be read."""
     models: list[dict] = []
@@ -164,7 +179,7 @@ async def _list_models() -> list[dict]:
             while True:
                 params = {"pageSize": 1000, **({"pageToken": token} if token else {})}
                 resp = await client.get(f"{API_BASE}/models", params=params,
-                                        headers={"x-goog-api-key": settings.GEMINI_API_KEY})
+                                        headers={"x-goog-api-key": await _listing_key()})
                 if resp.status_code != 200:
                     logger.warning(f"Couldn't list Gemini models ({resp.status_code}): {error_message(resp.text)}")
                     return models
@@ -214,9 +229,11 @@ async def probe(purpose: str, model: str) -> tuple[bool, str]:
     else:
         payload = {"contents": [{"parts": [{"text": "Reply with the single word OK."}]}],
                    "generationConfig": {"maxOutputTokens": 64}}
-    headers = {"Content-Type": "application/json", "x-goog-api-key": settings.GEMINI_API_KEY}
+    from app.services.key_pool.client import estimate_tokens, with_key
+    timeout = httpx.Timeout(60.0, connect=10.0)
     try:
-        resp = await _post(endpoint(model), payload, headers, httpx.Timeout(60.0, connect=10.0))
+        resp = await with_key(lambda headers: _post(endpoint(model), payload, headers, timeout),
+                              estimate_tokens(payload))
     except httpx.HTTPError as e:
         return False, f"Couldn't reach Google ({type(e).__name__}) — check your connection."
     if resp.status_code == 200:
@@ -268,9 +285,14 @@ async def generate_content(purpose: str, payload: dict, *, timeout) -> httpx.Res
     current one is unavailable. Any other response — success or error — is
     returned as it is; transport errors propagate.
     """
-    headers = {"Content-Type": "application/json", "x-goog-api-key": settings.GEMINI_API_KEY}
+    from app.services.key_pool.client import estimate_tokens, with_key
+    est = estimate_tokens(payload)
+
+    async def post(model: str) -> httpx.Response:
+        return await with_key(lambda headers: _post(endpoint(model), payload, headers, timeout), est)
+
     model = current_model(purpose)
-    resp = await _post(endpoint(model), payload, headers, timeout)
+    resp = await post(model)
     for _ in range(_MAX_SWITCHES):
         if resp.status_code == 200 or not is_model_unavailable(resp.status_code, resp.text):
             return resp
@@ -278,5 +300,5 @@ async def generate_content(purpose: str, payload: dict, *, timeout) -> httpx.Res
         if replacement is None:
             return resp
         model = replacement
-        resp = await _post(endpoint(model), payload, headers, timeout)
+        resp = await post(model)
     return resp

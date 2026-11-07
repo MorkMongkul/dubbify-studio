@@ -17,12 +17,14 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.binaries import find
-from app.core.config import settings
+from app.core.config import parse_gemini_keys, settings
 from app.services import gemini_models
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
 
 SECRETS = ("GEMINI_API_KEY", "HF_TOKEN")
+MAX_GEMINI_KEYS = 50
+_KEY_TOKEN = re.compile(r"[A-Za-z0-9_.\-~]{6,}")
 EDITABLE = (
     "GEMINI_API_KEY", "HF_TOKEN",
     "VOXCPM2_API_URL", "VOXCPM2_HF_SPACE_FALLBACK",
@@ -46,7 +48,7 @@ class SettingsUpdate(BaseModel):
     """Only the fields sent are changed. An empty secret clears it."""
     model_config = ConfigDict(extra="forbid")
 
-    GEMINI_API_KEY: Annotated[Optional[str], Field(max_length=200)] = None
+    GEMINI_API_KEY: Annotated[Optional[str], Field(max_length=5000)] = None   # one key, or one per line (up to MAX_GEMINI_KEYS)
     HF_TOKEN: Annotated[Optional[str], Field(max_length=200)] = None
     VOXCPM2_API_URL: Annotated[Optional[str], Field(max_length=500)] = None
     VOXCPM2_HF_SPACE_FALLBACK: Annotated[Optional[str], Field(max_length=200, pattern=r"^[A-Za-z0-9._/-]*$")] = None
@@ -59,7 +61,24 @@ class SettingsUpdate(BaseModel):
     TRANSCRIPTION: Optional[Literal["mac", "gemini"]] = None
     AFTER_UPLOAD: Optional[Literal["wait", "analyze"]] = None
 
-    @field_validator("GEMINI_API_KEY", "HF_TOKEN", "VOXCPM2_API_URL")
+    @field_validator("GEMINI_API_KEY")
+    @classmethod
+    def _keys(cls, value: Optional[str]) -> Optional[str]:
+        """Several keys, one per line (or comma-separated; an `api_key01=` label in front of each is dropped), kept as
+        one comma-joined line in settings.env. A bad line is named by its number, never shown."""
+        if value is None:
+            return None
+        if "\0" in value:
+            raise ValueError("contains a character that can't be in a key")
+        keys = parse_gemini_keys(value)
+        for number, key in enumerate(keys, 1):
+            if not _KEY_TOKEN.fullmatch(key):
+                raise ValueError(f"key {number} doesn't look like a Gemini API key (letters, digits, - and _ only)")
+        if len(keys) > MAX_GEMINI_KEYS:
+            raise ValueError(f"at most {MAX_GEMINI_KEYS} keys")
+        return ",".join(keys)
+
+    @field_validator("HF_TOKEN", "VOXCPM2_API_URL")
     @classmethod
     def _single_line(cls, value: Optional[str]) -> Optional[str]:
         if value is not None and any(c in value for c in "\r\n\0"):
@@ -84,7 +103,7 @@ class StorageInfo(BaseModel):
 class SettingsView(BaseModel):
     editable: bool
     values: dict[str, Union[str, int]]
-    secrets: dict[str, bool]
+    secrets: dict[str, Union[bool, int]]   # whether each secret is set; gemini_keys_count: how many Gemini keys (never the keys)
     storage: StorageInfo
     ffmpeg: Optional[str]
     ffprobe: Optional[str]
@@ -95,7 +114,8 @@ def _view() -> SettingsView:
     return SettingsView(
         editable=bool(settings.DUBIFY_DATA_DIR),
         values={k: getattr(settings, k) for k in EDITABLE if k not in SECRETS},
-        secrets={k: bool(getattr(settings, k)) for k in SECRETS},
+        secrets={**{k: bool(getattr(settings, k)) for k in SECRETS},
+                 "gemini_keys_count": len(settings.parsed_gemini_keys())},
         storage=StorageInfo(
             data_dir=settings.DUBIFY_DATA_DIR,
             upload_dir=str(Path(settings.UPLOAD_DIR).resolve()),

@@ -380,7 +380,8 @@ async def _post_gemini(payload: dict) -> dict:
     A retired model is replaced (gemini_models) and retried at once — that
     doesn't use up an attempt.
     """
-    headers = {"Content-Type": "application/json", "x-goog-api-key": settings.GEMINI_API_KEY}
+    from app.services.key_pool.client import estimate_tokens, with_key
+    est = estimate_tokens(payload)
     last_error: Exception = RuntimeError("Gemini ASR request was not attempted")
     model = gemini_models.current_model("asr")
     attempt = 0
@@ -390,7 +391,8 @@ async def _post_gemini(payload: dict) -> dict:
         try:
             async with _new_http_client(httpx.Timeout(ASR_CALL_TIMEOUT, connect=15.0)) as client:
                 resp = await asyncio.wait_for(
-                    client.post(gemini_models.endpoint(model), json=payload, headers=headers),
+                    with_key(lambda headers: client.post(gemini_models.endpoint(model), json=payload, headers=headers),
+                             est),
                     ASR_CALL_TIMEOUT + 10,
                 )
         except (httpx.TransportError, asyncio.TimeoutError) as e:
