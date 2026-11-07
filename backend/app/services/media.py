@@ -108,11 +108,19 @@ def fit_template(items: list[dict], episode_secs: float, existing: list[dict]) -
     return made
 
 
-def export_limit_message(clips: int) -> str | None:
-    """Why an episode can't be exported, or None: each media clip is an ffmpeg input (256 open files from Finder)."""
-    if clips <= MAX_EXPORT_CLIPS:
+def export_inputs(media: list[dict]) -> int:
+    """How many files the export opens at once: one per video clip, one per image file however often it repeats
+    (audio_extractor.mix_dubbed_audio shares an image's input)."""
+    images = {m["path"] for m in media if m["kind"] == "image"}
+    return sum(1 for m in media if m["kind"] != "image") + len(images)
+
+
+def export_limit_message(inputs: int) -> str | None:
+    """Why an episode can't be exported, or None: each is an ffmpeg input (256 open files from Finder)."""
+    if inputs <= MAX_EXPORT_CLIPS:
         return None
-    return f"This episode has {clips} media clips; at most {MAX_EXPORT_CLIPS} can be exported."
+    return (f"This episode uses {inputs} media files at once; at most {MAX_EXPORT_CLIPS} can be exported "
+            "(an image shown again and again counts once).")
 
 
 def flags_from(raw) -> Flags:

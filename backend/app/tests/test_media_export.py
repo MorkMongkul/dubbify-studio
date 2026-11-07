@@ -131,9 +131,20 @@ async def test_a_muted_track_is_not_heard(base_video, voice, jingle, tmp_path):
     assert max(_rms(samples, sr, 2.2, 2.8)) < 0.01
 
 
-def test_an_export_takes_at_most_32_media_clips():
+def test_an_export_takes_at_most_32_media_files_at_once():
     assert media_rules.export_limit_message(32) is None
-    assert media_rules.export_limit_message(33) == "This episode has 33 media clips; at most 32 can be exported."
+    assert media_rules.export_limit_message(33) == (
+        "This episode uses 33 media files at once; at most 32 can be exported (an image shown again and again counts once).")
+
+
+def test_a_repeated_image_counts_once_but_every_video_clip_counts():
+    """0.5.8: a logo or lower third repeated down the episode is one input in ffmpeg, so it must be one here."""
+    still = [{"kind": "image", "path": "/m/logo.png"} for _ in range(60)]
+    videos = [{"kind": "video", "path": "/m/card.mov"} for _ in range(3)]
+    assert media_rules.export_inputs(still) == 1
+    assert media_rules.export_inputs(still + [{"kind": "image", "path": "/m/other.png"}]) == 2
+    assert media_rules.export_inputs(still + videos) == 4
+    assert media_rules.export_inputs([]) == 0
 
 
 @pytest.mark.asyncio
@@ -210,3 +221,22 @@ async def test_32_media_clips_and_a_full_episode_stay_within_the_open_file_limit
     await ax.mix_dubbed_audio("/in.mp4", clips, str(tmp_path / "out.mp4"), media=media, video_width=640, video_height=360)
     inputs_per_run = [c.count("-i") for c in commands if c[0].endswith("ffmpeg")]
     assert max(inputs_per_run) <= ax.DUB_BATCH + 4 + media_rules.MAX_EXPORT_CLIPS
+
+
+@needs_ffmpeg
+@pytest.mark.asyncio
+async def test_an_image_shown_again_and_again_exports_as_one_input(tmp_path, voice):
+    """0.5.8: a logo or lower third repeated down a whole episode (62 appearances here) is one ffmpeg input and still
+    draws exactly where it should."""
+    from PIL import Image
+    base = tmp_path / "long.mov"
+    _ff("-f", "lavfi", "-i", "color=c=0x698873:s=64x128:d=125:r=2", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+        "-t", "125", "-c:v", "png", "-c:a", "pcm_s16le", str(base))
+    png = tmp_path / "logo.png"
+    Image.new("RGBA", (16, 16), (255, 255, 255, 255)).save(png)
+    media = [_clip(png, kind="image", start=2.0 * k, end=2.0 * k + 1.0) for k in range(62)]
+    assert media_rules.export_inputs(media) == 1
+    out = await _export(base, voice, tmp_path, media)
+    assert _near(_pixel(out, 0.0), (255, 255, 255)) and _near(_pixel(out, 1.5), BASE)
+    assert _near(_pixel(out, 60.0), (255, 255, 255)) and _near(_pixel(out, 61.5), BASE)
+    assert _near(_pixel(out, 122.0), (255, 255, 255)) and _near(_pixel(out, 123.5), BASE)

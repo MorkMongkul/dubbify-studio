@@ -83,6 +83,78 @@ function place(c: MediaClip, placed: MediaClip[], locked: Set<number> = new Set(
   return { ...c, lane_index: Math.max(c.lane_index, ...placed.map((p) => p.lane_index)) + 1 }
 }
 
+/** How often and how long a clip comes back (Repeat…): shown `showSecs`, again every `everySecs` from its own start, until `untilSecs`. */
+export interface RepeatOptions { showSecs: number; everySecs: number; untilSecs: number }
+
+/**
+ * When the appearances of a clip starting at `start` begin: every `everySecs` (never closer than the show itself, so
+ * they never overlap), as long as the whole show ends by `untilSecs` and the episode's end. An appearance that
+ * wouldn't fit is left out, never cut short.
+ */
+export function repeatStarts(start: number, opts: RepeatOptions, episodeSecs: number): number[] {
+  const show = opts.showSecs
+  if (!(show > 0) || !(opts.everySecs > 0)) return []
+  const gap = Math.max(opts.everySecs, show)
+  const limit = Math.min(opts.untilSecs, episodeSecs > 0 ? episodeSecs : Infinity)
+  const starts: number[] = []
+  for (let t = start; t + show <= limit + EPS; t += gap) starts.push(round6(t))
+  return starts
+}
+
+/** The clip (a lower third, a sponsor card) shown again at each appearance: the clip itself first, then its copies. */
+export function repeatClip(
+  clip: MediaClip, asset: Pick<MediaAsset, 'kind' | 'duration_secs'>, opts: RepeatOptions, episodeSecs: number,
+  existing: MediaClip[], locked: Set<number> = new Set(),
+): MediaClip[] {
+  // A video never plays past its own end
+  const show = asset.kind === 'video' ? Math.min(opts.showSecs, (asset.duration_secs ?? 0) - clip.source_in) : opts.showSecs
+  const placed = existing.filter((c) => c.id !== clip.id)
+  const made: MediaClip[] = []
+  repeatStarts(clip.start_time, { ...opts, showSecs: show }, episodeSecs).forEach((start, i) => {
+    const one = place({ ...clip, id: i === 0 ? clip.id : newId(), start_time: start, end_time: round6(start + show) }, placed, locked)
+    placed.push(one)
+    made.push(one)
+  })
+  return made
+}
+
+/**
+ * The clip shown for the whole episode (a logo): an image stretched from 0 to the end; a video played back to back
+ * from 0 until the end, the last copy cut there. Same size, place and volume; where the track is busy or locked, on a
+ * new track above.
+ */
+export function coverEpisode(
+  clip: MediaClip, asset: Pick<MediaAsset, 'kind' | 'duration_secs'>, episodeSecs: number,
+  existing: MediaClip[], locked: Set<number> = new Set(),
+): MediaClip[] {
+  const placed = existing.filter((c) => c.id !== clip.id)
+  if (!(episodeSecs > 0)) return [clip]
+  if (asset.kind !== 'video') return [place({ ...clip, start_time: 0, end_time: round6(episodeSecs), source_in: 0 }, placed, locked)]
+  const length = asset.duration_secs ?? 0
+  if (length < MIN_CLIP_SECS) return [clip]
+  const made: MediaClip[] = []
+  for (let start = 0; start < episodeSecs - EPS; start += length) {
+    const one = place({
+      ...clip, id: made.length ? newId() : clip.id, start_time: round6(start),
+      end_time: round6(Math.min(start + length, episodeSecs)), source_in: 0,
+    }, placed, locked)
+    placed.push(one)
+    made.push(one)
+  }
+  return made
+}
+
+/** How many files the export opens at once for these clips: one for each video clip, one for each image however often it repeats. */
+export function exportInputs(clips: MediaClip[], assets: Map<string, Pick<MediaAsset, 'kind'>>): number {
+  const images = new Set<string>()
+  let videos = 0
+  for (const c of clips) {
+    if (assets.get(c.asset_id)?.kind === 'video') videos += 1
+    else images.add(c.asset_id)
+  }
+  return videos + images.size
+}
+
 /** A new clip (the tile's +, at the playhead): on the top unlocked track that is free over its span, else a new track above. */
 export function addAt(clip: MediaClip, existing: MediaClip[], locked: Set<number> = new Set()): MediaClip {
   const lanes = mediaRows(existing)

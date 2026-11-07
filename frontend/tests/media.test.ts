@@ -3,8 +3,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  addAt, defaultClip, drawOrder, dropNewClip, duplicateClip, fitBox, mediaExportWarnings, mediaRows, mediaVideoStep, mediaWindow,
-  pasteClips, planMediaDrop, resizeBox, splitClip, trimMediaEnd, trimMediaStart,
+  addAt, coverEpisode, defaultClip, drawOrder, dropNewClip, duplicateClip, exportInputs, fitBox, mediaExportWarnings, mediaRows,
+  mediaVideoStep, mediaWindow, pasteClips, planMediaDrop, repeatClip, repeatStarts, resizeBox, splitClip, trimMediaEnd,
+  trimMediaStart,
 } from '../src/lib/media.ts'
 import type { MediaAsset, MediaClip } from '../src/types/index.ts'
 
@@ -245,4 +246,76 @@ test('clips get ids where the browser has no crypto.randomUUID (Safari before 15
     if (had) Object.defineProperty(globalThis.crypto, 'randomUUID', had)
     else delete (globalThis.crypto as { randomUUID?: unknown }).randomUUID
   }
+})
+
+
+// ── A logo for the whole episode, a lower third that comes back (0.5.8) ──────
+
+const card = (start: number, end: number, lane = 0, fields: Partial<MediaClip> = {}) =>
+  clip(start, end, lane, { asset_id: 'i', width: 0.4, height: 0.1, x: 0.3, y: 0.8, volume_db: -3, ...fields })
+
+test('an image shown for the whole episode is one clip from 0 to the end, as sized, placed and loud as before', () => {
+  const c = card(20, 25)
+  const [whole, ...more] = coverEpisode(c, IMAGE, 600, [c])
+  assert.equal(more.length, 0)
+  assert.deepEqual([whole.id, whole.start_time, whole.end_time, whole.lane_index], [c.id, 0, 600, 0])
+  assert.deepEqual([whole.x, whole.y, whole.width, whole.height, whole.volume_db], [0.3, 0.8, 0.4, 0.1, -3])
+})
+
+test('a video shown for the whole episode plays back to back until the end, the last copy cut there', () => {
+  const c = clip(5, 12)            // VIDEO is 7 s long
+  const made = coverEpisode(c, VIDEO, 30, [c])
+  assert.deepEqual(made.map((m) => [m.start_time, m.end_time, m.source_in]), [[0, 7, 0], [7, 14, 0], [14, 21, 0], [21, 28, 0], [28, 30, 0]])
+  assert.equal(made[0].id, c.id)
+  assert.equal(new Set(made.map((m) => m.id)).size, made.length)
+  assert.ok(made.every((m) => m.lane_index === 0))
+})
+
+test('covering the episode never lands on another clip: it goes on a new track above', () => {
+  const c = card(20, 25, 0)
+  const other = clip(100, 110, 0)
+  const [whole] = coverEpisode(c, IMAGE, 600, [c, other])
+  assert.equal(whole.lane_index, 1)
+  // and never onto a locked track
+  const [free] = coverEpisode(card(20, 25, 0), IMAGE, 600, [card(20, 25, 0)], new Set([0]))
+  assert.equal(free.lane_index, 1)
+})
+
+test('a lower third repeats: shown N seconds, every M, from its own start until the end', () => {
+  const c = card(10, 18)           // 8 s
+  const made = repeatClip(c, IMAGE, { showSecs: 8, everySecs: 60, untilSecs: 600 }, 600, [c])
+  assert.deepEqual(made.map((m) => m.start_time), [10, 70, 130, 190, 250, 310, 370, 430, 490, 550])
+  assert.ok(made.every((m) => m.end_time - m.start_time === 8))
+  assert.equal(made[0].id, c.id)
+  assert.ok(made.every((m) => m.lane_index === 0 && m.x === 0.3 && m.width === 0.4 && m.volume_db === -3))
+})
+
+test('an appearance that would not fit before the end is left out, not cut short', () => {
+  assert.deepEqual(repeatStarts(10, { showSecs: 8, everySecs: 60, untilSecs: 600 }, 600), [10, 70, 130, 190, 250, 310, 370, 430, 490, 550])
+  assert.deepEqual(repeatStarts(10, { showSecs: 8, everySecs: 60, untilSecs: 135 }, 600), [10, 70])   // 130 + 8 > 135
+  assert.deepEqual(repeatStarts(10, { showSecs: 8, everySecs: 60, untilSecs: 9999 }, 130), [10, 70])                    // the episode ends first
+})
+
+test('the gap can never be shorter than the show: appearances never overlap', () => {
+  assert.deepEqual(repeatStarts(0, { showSecs: 10, everySecs: 4, untilSecs: 40 }, 100), [0, 10, 20, 30])
+})
+
+test('a repeated video appears no longer than itself', () => {
+  const c = clip(0, 7)
+  const made = repeatClip(c, VIDEO, { showSecs: 20, everySecs: 60, untilSecs: 200 }, 200, [c])
+  assert.ok(made.every((m) => m.end_time - m.start_time === 7))
+})
+
+test('a repeat in the way of another clip puts that appearance on a new track above, the rest stay', () => {
+  const c = card(10, 18)
+  const blocker = clip(70, 100, 0)
+  const made = repeatClip(c, IMAGE, { showSecs: 8, everySecs: 60, untilSecs: 200 }, 200, [c, blocker])
+  assert.deepEqual(made.map((m) => [m.start_time, m.lane_index]), [[10, 0], [70, 1], [130, 0], [190, 0]])
+})
+
+test('the export counts each video clip, but a repeated image only once', () => {
+  const assets = new Map([['v', VIDEO], ['i', IMAGE]])
+  const clips = [...Array.from({ length: 50 }, (_, k) => card(k * 10, k * 10 + 5)), clip(0, 7), clip(10, 17)]
+  assert.equal(exportInputs(clips, assets), 3)
+  assert.equal(exportInputs([], assets), 0)
 })

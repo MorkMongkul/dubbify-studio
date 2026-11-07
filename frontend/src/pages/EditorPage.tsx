@@ -24,7 +24,7 @@ import {
   useProjectJobs,
   useCreateProject, useUploadVideo, useUploadWithSubtitle,
   useAnalyzeJob, useMixFinalAudio, useSingleVoiceExport,
-  useProject, useUpdateProject, useMediaClips,
+  useProject, useUpdateProject, useMediaClips, useMediaAssets,
 } from '@/hooks/useApi'
 import { useEditorStore } from '@/store/editorStore'
 
@@ -44,7 +44,7 @@ import { StoryPanel } from '@/components/panels/StoryPanel'
 import { Button } from '@/components/ui/Button'
 import { Modal, InputField } from '@/components/ui/Modal'
 import { exportWarnings } from '@/lib/trackFlags'
-import { MAX_EXPORT_CLIPS, mediaExportWarnings, mediaRows } from '@/lib/media'
+import { MAX_EXPORT_CLIPS, exportInputs, mediaExportWarnings, mediaRows } from '@/lib/media'
 import { trackRows } from '@/lib/tracks'
 import { layoutPlan, type Area, type LayoutName } from '@/lib/layouts'
 import { MoveloStudioLogo } from '@/components/brand/Movelo'
@@ -232,6 +232,7 @@ export default function EditorPage() {
   const { data: currentProject } = useProject(projectId ?? null)
   const singleVoiceProject = currentProject?.dub_mode === 'single_voice'
   const { data: mediaClips } = useMediaClips(jobId ?? null)
+  const { data: mediaAssets } = useMediaAssets(projectId ?? null)
   const updateProject = useUpdateProject()
   // Inline project rename in the header — null = not editing.
   const [editingProjectName, setEditingProjectName] = useState<string | null>(null)
@@ -425,8 +426,9 @@ export default function EditorPage() {
   const handleExport = () => {
     if (!jobId) return
     const media = mediaClips?.clips ?? []
-    if (media.length > MAX_EXPORT_CLIPS) {
-      toast.error(`This episode has ${media.length} media clips; at most ${MAX_EXPORT_CLIPS} can be exported.`)
+    const inputs = exportInputs(media, new Map((mediaAssets ?? []).map((a) => [a.id, a])))
+    if (inputs > MAX_EXPORT_CLIPS) {
+      toast.error(`This episode uses ${inputs} media files at once; at most ${MAX_EXPORT_CLIPS} can be exported (an image shown again and again counts once).`)
       return
     }
     const leftOut = [

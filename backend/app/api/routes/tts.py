@@ -689,7 +689,7 @@ async def _mix_job_task(job_id: str, mute_original: bool, export_path: str | Non
                     "draw": draw, "sound": sound, "volume_db": clip.volume_db or 0.0,
                     "channels": channels.get(str(path), 2),
                 })
-            limit = media_rules.export_limit_message(len(media_list))
+            limit = media_rules.export_limit_message(media_rules.export_inputs(media_list))
             if limit:
                 job.status = JobStatus.COMPLETED
                 job.error_msg = limit

@@ -9,8 +9,8 @@
 // kind, lock, hide and — when a clip has sound — mute.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Clapperboard, ClipboardPaste, Copy, CopyPlus, Eye, EyeOff, Image as ImageIcon, Lock, LockOpen,
-  SplitSquareHorizontal, Trash2, Volume2, VolumeX,
+  ArrowLeftRight, Clapperboard, ClipboardPaste, Copy, CopyPlus, Eye, EyeOff, Image as ImageIcon, Lock, LockOpen,
+  Repeat, SplitSquareHorizontal, Trash2, Volume2, VolumeX,
 } from 'lucide-react'
 import type { MediaClip } from '@/types'
 import type { MediaEditing } from '@/hooks/useMediaEditing'
@@ -25,6 +25,7 @@ import { ContextMenu, type MenuItem } from '@/components/ui/ContextMenu'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { TrackSwitch } from './TrackSwitch'
 import { DragTip } from './DragTip'
+import { RepeatMediaDialog } from './RepeatMediaDialog'
 
 export const MEDIA_LANE_HEIGHT = 44
 // A checkerboard under each clip's pictures, so transparency reads as transparency
@@ -59,6 +60,7 @@ export function MediaTracks({ edit, zoom, pxPerSec, duration, activeTool, speake
   const [draft, setDraft] = useState<MediaClip | null>(null)
   const [volumeTip, setVolumeTip] = useState<{ x: number; y: number; db: number } | null>(null)
   const [menu, setMenu] = useState<{ clip: MediaClip; x: number; y: number; at: number } | null>(null)
+  const [repeatFor, setRepeatFor] = useState<MediaClip | null>(null)
   const px = (t: number) => timeToPixels(t, zoom, pxPerSec)
 
   // Where a pointer at clientY would drop: onto a row, or a new track between rows
@@ -249,6 +251,9 @@ export function MediaTracks({ edit, zoom, pxPerSec, duration, activeTool, speake
       'separator',
       { icon: SplitSquareHorizontal, label: 'Split', shortcut: 'S', disabled: locked, onSelect: () => edit.split(m.at) },
       'separator',
+      { icon: ArrowLeftRight, label: 'Show for the whole episode', disabled: locked, onSelect: () => edit.coverEpisode(m.clip) },
+      { icon: Repeat, label: 'Repeat…', disabled: locked, onSelect: () => setRepeatFor(m.clip) },
+      'separator',
       { icon: Trash2, label: 'Delete', shortcut: '⌫', disabled: locked, onSelect: edit.remove },
     ]
   }
@@ -374,6 +379,9 @@ export function MediaTracks({ edit, zoom, pxPerSec, duration, activeTool, speake
       {volumeTip && <DragTip x={volumeTip.x} y={volumeTip.y} text={dbLabel(volumeTip.db)} />}
       {/* The menu is a portal, but React still bubbles its presses up here: they mustn't
           reach the timeline's empty-space press (a seek that clears the selection) */}
+      {repeatFor && (
+        <RepeatMediaDialog clip={repeatFor} edit={edit} duration={duration} onClose={() => setRepeatFor(null)} />
+      )}
       {menu && (
         <div onMouseDown={(e) => e.stopPropagation()}>
           <ContextMenu x={menu.x} y={menu.y} items={menuItems(menu)} onClose={() => setMenu(null)} />

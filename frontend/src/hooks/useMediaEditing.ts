@@ -10,7 +10,10 @@ import type { AxiosError } from 'axios'
 import type { MediaAsset, MediaClip, MediaClipList, MediaTrackFlagMap, MediaTrackSwitches } from '@/types'
 import { useMediaAssets, useMediaClips, useSetMediaClips } from '@/hooks/useApi'
 import { recordMediaChange } from '@/lib/historyHelpers'
-import { MIN_CLIP_SECS, defaultClip, dropNewClip, duplicateClip, mediaSwitchesOf, pasteClips, splitClip, withMediaSwitch } from '@/lib/media'
+import {
+  MAX_EXPORT_CLIPS, MIN_CLIP_SECS, coverEpisode, defaultClip, dropNewClip, duplicateClip, exportInputs, mediaSwitchesOf, pasteClips,
+  repeatClip, splitClip, withMediaSwitch, type RepeatOptions,
+} from '@/lib/media'
 import type { DropSpot } from '@/lib/tracks'
 import { useEditorStore } from '@/store/editorStore'
 
@@ -30,6 +33,10 @@ export interface MediaEditing {
   remove: () => void
   /** A tile from the Media tab dropped at `at` on `spot`. */
   dropTile: (asset: MediaAsset, at: number, spot: DropSpot) => void
+  /** A logo: the clip shown for the whole episode (a video plays back to back). */
+  coverEpisode: (clip: MediaClip) => void
+  /** A lower third or sponsor card: the clip shown again every so often. Returns whether it was placed. */
+  repeat: (clip: MediaClip, opts: RepeatOptions) => boolean
   toggleSwitch: (lane: number, key: keyof MediaTrackSwitches) => void
 }
 
@@ -38,6 +45,8 @@ const errorText = (e: unknown, fallback: string) =>
   ((e as AxiosError<{ detail?: string }>)?.response?.data?.detail) || fallback
 export const mediaLockedNotice = () => toast.info('This track is locked. Unlock it to edit its clips.')
 const lockedIn = (l: MediaClipList, c: MediaClip) => mediaSwitchesOf(l.track_flags, c.lane_index).locked
+const lockedLanes = (l: MediaClipList) =>
+  new Set(Object.keys(l.track_flags).map(Number).filter((lane) => mediaSwitchesOf(l.track_flags, lane).locked))
 const SWITCH_LABELS: Record<keyof MediaTrackSwitches, [string, string]> = {
   locked: ['Lock track', 'Unlock track'],
   hidden: ['Hide track', 'Show track'],
@@ -93,7 +102,7 @@ export function useMediaEditing(jobId: string | undefined, projectId: string | u
       toast.error("The copied clips' media isn't in this project")
       return true
     }
-    const locked = new Set(Object.keys(l.track_flags).map(Number).filter((lane) => mediaSwitchesOf(l.track_flags, lane).locked))
+    const locked = lockedLanes(l)
     const made = pasteClips(usable, useEditorStore.getState().currentTime, l.clips, locked)
     commit([...l.clips, ...made], 'Paste')
     useEditorStore.getState().setSelectedMedia(made.map((c) => c.id))
@@ -149,6 +158,42 @@ export function useMediaEditing(jobId: string | undefined, projectId: string | u
     useEditorStore.getState().setSelectedMedia([clip.id])
   }, [current, duration, commit])
 
+  // The clip, replaced in the episode's list by `made` (the clip itself first), unless the export couldn't open them all
+  const replaceWith = useCallback((l: MediaClipList, c: MediaClip, made: MediaClip[], label: string): boolean => {
+    const next = l.clips.flatMap((x) => (x.id === c.id ? made : [x]))
+    if (exportInputs(next, assets) > MAX_EXPORT_CLIPS) {
+      toast.error(`That would need more than ${MAX_EXPORT_CLIPS} media files at once for the export (a repeated image counts once, every video clip counts).`)
+      return false
+    }
+    commit(next, label)
+    useEditorStore.getState().setSelectedMedia(made.map((x) => x.id))
+    return true
+  }, [assets, commit])
+
+  const coverWholeEpisode = useCallback((target: MediaClip) => {
+    const l = current()
+    const c = l?.clips.find((x) => x.id === target.id)
+    const asset = c && assets.get(c.asset_id)
+    if (!l || !c || !asset) return
+    if (lockedIn(l, c)) return mediaLockedNotice()
+    if (!(duration > 0)) return void toast.error("This episode's length isn't known yet")
+    replaceWith(l, c, coverEpisode(c, asset, duration, l.clips, lockedLanes(l)), 'Show for the whole episode')
+  }, [current, assets, duration, replaceWith])
+
+  const repeat = useCallback((target: MediaClip, opts: RepeatOptions): boolean => {
+    const l = current()
+    const c = l?.clips.find((x) => x.id === target.id)
+    const asset = c && assets.get(c.asset_id)
+    if (!l || !c || !asset) return false
+    if (lockedIn(l, c)) { mediaLockedNotice(); return false }
+    const made = repeatClip(c, asset, opts, duration, l.clips, lockedLanes(l))
+    if (made.length < 2) {
+      toast.error("Nothing to repeat: the show and the gap don't fit before the end")
+      return false
+    }
+    return replaceWith(l, c, made, 'Repeat')
+  }, [current, assets, duration, replaceWith])
+
   const toggleSwitch = useCallback((lane: number, key: keyof MediaTrackSwitches) => {
     const l = current()
     if (!l) return
@@ -160,5 +205,6 @@ export function useMediaEditing(jobId: string | undefined, projectId: string | u
 
   return useMemo(() => ({
     list, assets, isLocked, commit, copy, paste, duplicate, split, remove, dropTile, toggleSwitch,
-  }), [list, assets, isLocked, commit, copy, paste, duplicate, split, remove, dropTile, toggleSwitch])
+    coverEpisode: coverWholeEpisode, repeat,
+  }), [list, assets, isLocked, commit, copy, paste, duplicate, split, remove, dropTile, toggleSwitch, coverWholeEpisode, repeat])
 }
