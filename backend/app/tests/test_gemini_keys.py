@@ -1,5 +1,5 @@
 """
-Several Gemini API keys in one setting (0.6.0): GEMINI_API_KEY may hold one key or many — one per line or separated by
+Several Gemini API keys in one setting (0.5.8): GEMINI_API_KEY may hold one key or many — one per line or separated by
 commas, with or without a label such as `api_key01=`. Duplicates count once, a key is never required to look a certain
 way here (the Settings route checks the format), and each key has its own daily and per-minute caps (0 = no cap).
 """

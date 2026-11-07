@@ -1,5 +1,5 @@
 """
-The Gemini key pool (0.6.0, app/services/key_pool; from the Gemini Key-Pool Gateway): several keys share the work, each
+The Gemini key pool (0.5.8, app/services/key_pool; from the Gemini Key-Pool Gateway): several keys share the work, each
 is counted against its own caps BEFORE Google is asked, a key that is out of quota is skipped and the request moves to
 the next one, and nothing here can break a request when the pool itself fails. Google is replaced by a fake `send`;
 the keys are made up.

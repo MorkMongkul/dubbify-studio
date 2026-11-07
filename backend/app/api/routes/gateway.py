@@ -1,4 +1,4 @@
-"""The Gemini key pool's monitor and gateway (0.6.0): GET /gateway is the Key Monitor page, /gateway/stats its figures,
+"""The Gemini key pool's monitor and gateway (0.5.8): GET /gateway is the Key Monitor page, /gateway/stats its figures,
 and /gateway/translate and /gateway/v1/chat/completions let other local tools use the same keys. Like the rest of the
 API this has no login and listens on 127.0.0.1 only, so any program on this Mac can spend the saved keys through it —
 the same as it can already do through /api/v1. Nothing here ever returns a key: keys are shown as key_1, key_2 …

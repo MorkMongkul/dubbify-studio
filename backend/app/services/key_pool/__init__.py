@@ -1,4 +1,4 @@
-"""Several Gemini keys, shared (0.6.0). `get_pool()` is the one pool of the app: its keys are always the ones in
+"""Several Gemini keys, shared (0.5.8). `get_pool()` is the one pool of the app: its keys are always the ones in
 Settings (GEMINI_API_KEY) — it follows a change by itself, so nothing has to tell it — and its numbers are kept in
 `gateway.db` in the app's data folder. See pool.py; `client.with_key` is how a request uses it."""
 import asyncio
