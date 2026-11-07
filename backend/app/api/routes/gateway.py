@@ -9,7 +9,7 @@ import uuid
 from typing import Annotated, Any, Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,9 +17,20 @@ from app.api.routes.gateway_dashboard import DASHBOARD_HTML
 from app.services import gemini_models, key_pool
 from app.services.key_pool.client import estimate_tokens, with_key
 from app.services.key_pool.gemini import Translator
-from app.services.key_pool.pool import classify_failure
+from app.services.key_pool.pool import KeyReservation
 
-router = APIRouter(tags=["Gateway"])
+async def same_origin_only(request: Request) -> None:
+    """These routes spend the user's keys, so a web page open in the user's browser must not be able to call them
+    (a cross-site form POST needs no preflight). Browsers say where a request came from; the app's own pages and
+    programs that send neither header (curl, other local tools) pass."""
+    if request.headers.get("sec-fetch-site", "same-origin") not in ("same-origin", "none"):
+        raise HTTPException(status_code=403, detail="Cross-site requests aren't allowed")
+    origin = request.headers.get("origin")
+    if origin and origin not in (f"http://{request.headers.get('host', '')}", "tauri://localhost"):
+        raise HTTPException(status_code=403, detail="Cross-site requests aren't allowed")
+
+
+router = APIRouter(tags=["Gateway"], dependencies=[Depends(same_origin_only)])
 
 MAX_SEGMENTS = 220
 _MODEL = re.compile(r"[A-Za-z0-9._-]{1,100}")
@@ -47,17 +58,29 @@ async def test_key(alias: Annotated[str, Field(max_length=20)]) -> Dict[str, Any
     payload = {"contents": [{"parts": [{"text": "Reply with the single word OK."}]}],
                "generationConfig": {"maxOutputTokens": 64}}
     headers = {"Content-Type": "application/json", "x-goog-api-key": account.raw_key}
+    est = estimate_tokens(payload)
+    # Counted like any request: against this key's caps, and a refusal rests it as usual
+    await account.semaphore.acquire()
+    if not await account.reserve(est):
+        account.semaphore.release()
+        return {"ok": False, "alias": alias, "message": "This key is at its limit or resting right now"}
+    reservation = KeyReservation(account, est)
     started = time.perf_counter()
     try:
         resp = await gemini_models._post(gemini_models.endpoint(model), payload, headers,
                                          httpx.Timeout(30.0, connect=10.0))
     except httpx.HTTPError as e:
+        await reservation.release_and_reconcile(success=False)
         return {"ok": False, "alias": alias, "message": f"Couldn't reach Google ({type(e).__name__})"}
     latency = round((time.perf_counter() - started) * 1000)
     if resp.status_code == 200:
+        try:
+            tokens = int((resp.json().get("usageMetadata") or {}).get("totalTokenCount") or 0)
+        except ValueError:
+            tokens = 0
+        await reservation.release_and_reconcile(actual_tokens=tokens, success=True)
         return {"ok": True, "alias": alias, "latency_ms": latency, "model": model}
-    kind, seconds = classify_failure(resp.status_code, resp.text)
-    await account.rest(kind, seconds)
+    await reservation.release_and_reconcile(success=False, error_status=resp.status_code, error_text=resp.text)
     return {"ok": False, "alias": alias, "latency_ms": latency,
             "message": f"{resp.status_code}: {gemini_models.error_message(resp.text)[:160]}"}
 

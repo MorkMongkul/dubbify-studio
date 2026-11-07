@@ -134,3 +134,20 @@ async def test_chat_completions_validates_the_model_and_answers(client, monkeypa
     assert bad.status_code == 422
     ok = await client.post("/gateway/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
     assert ok.status_code == 200 and ok.json()["choices"][0]["message"]["content"] == "hello"
+
+
+async def test_other_websites_cannot_spend_the_keys(client, monkeypatch, google):
+    monkeypatch.setattr(app_settings, "GEMINI_API_KEY", K1)
+    await client.get("/gateway/stats")
+    for headers in ({"sec-fetch-site": "cross-site"}, {"origin": "https://evil.example"}):
+        assert (await client.post("/gateway/keys/key_1/test", headers=headers)).status_code == 403
+    assert google.keys == []
+    assert (await client.post("/gateway/keys/key_1/test", headers={"sec-fetch-site": "same-origin"})).json()["ok"]
+
+
+async def test_a_ping_counts_against_the_keys_caps(client, monkeypatch, google):
+    monkeypatch.setattr(app_settings, "GEMINI_API_KEY", K1)
+    monkeypatch.setattr(app_settings, "GEMINI_RPM_PER_KEY", 1)
+    assert (await client.post("/gateway/keys/key_1/test")).json()["ok"] is True
+    again = (await client.post("/gateway/keys/key_1/test")).json()
+    assert again["ok"] is False and len(google.keys) == 1
